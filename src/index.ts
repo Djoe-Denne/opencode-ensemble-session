@@ -13,7 +13,7 @@ import { isWorktreeInstance } from "./util"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation, shouldNudgeIdleMember, handleSessionErrorEvent } from "./hooks"
 import { notifyTeamEvent, notifyWorkingProgress, notifyLead } from "./notify"
 import { hasReportedCompletion } from "./messaging"
-import { getMemberModel } from "./member-model"
+import { getMemberPromptModel } from "./member-model"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
 import { log, initLog } from "./log"
 import { findTeamBySession } from "./types"
@@ -23,6 +23,7 @@ import { ActivityBuffer, recordFromV2Event, recordFromToolBefore, recordFromTool
 import { startDashboard } from "./dashboard"
 import { executeTeamCreate } from "./tools/team-create"
 import { executeTeamSpawn } from "./tools/team-spawn"
+import { executeTeamHandoff } from "./tools/team-handoff"
 import { executeTeamMessage } from "./tools/team-message"
 import { executeTeamBroadcast } from "./tools/team-broadcast"
 import { executeTeamShutdown } from "./tools/team-shutdown"
@@ -35,6 +36,7 @@ import { executeTeamClaim } from "./tools/team-claim"
 import { executeTeamResults } from "./tools/team-results"
 import { executeTeamStatus } from "./tools/team-status"
 import { executeTeamView } from "./tools/team-view"
+import { pumpTeam } from "./dispatch"
 import type { ToolDeps, } from "./types"
 import { TokenBucket } from "./rate-limit"
 import { Watchdog } from "./watchdog"
@@ -217,15 +219,19 @@ const plugin: Plugin = async (input) => {
             if (!nudgedMembers.has(nudgeKey) && shouldNudgeIdleMember(db, transition.teamId, transition.memberName) && !hasReportedCompletion(db, transition.teamId, transition.memberName)) {
               nudgedMembers.add(nudgeKey)
               log(`nudge:idle-without-report name=${transition.memberName}`)
-              const nudgeModel = getMemberModel(db, transition.teamId, transition.memberName)
+              const nudgeModel = getMemberPromptModel(db, transition.teamId, transition.memberName)
               client.session.promptAsync({
                 sessionID,
                 parts: [{ type: "text", text: "[System]: You completed your work but did not report results. Send your findings to the lead via team_message now." }],
-                ...(nudgeModel ? { model: nudgeModel } : {}),
+                ...nudgeModel,
               }).catch((err) => {
                 log(`nudge:idle-without-report:failed name=${transition.memberName} team=${transition.teamId} err=${err instanceof Error ? err.message : String(err)}`)
               })
             }
+
+            // Pull-based pool: feed the newly idle member, then scale up if
+            // work remains and the cap allows (opt-in — docs/task-pool.md).
+            pumpTeam(deps, transition.teamId)
           } else if (transition.to === "error") {
             notifyTeamEvent(client, "error", { memberName: transition.memberName })
           } else if (transition.to === "busy") {
@@ -308,11 +314,11 @@ const plugin: Plugin = async (input) => {
             ).get(member.team_id, member.name, staleThreshold) as { c: number }
             if (peerMsgs.c > 0) {
               log(`wake-peer: ${member.name} has ${peerMsgs.c} pending peer messages`)
-              const peerModel = getMemberModel(db, member.team_id, member.name)
+              const peerModel = getMemberPromptModel(db, member.team_id, member.name)
               client.session.promptAsync({
                 sessionID,
                 parts: [{ type: "text", text: `[System: ${peerMsgs.c} new message(s) from teammates]` }],
-                ...(peerModel ? { model: peerModel } : {}),
+                ...peerModel,
               }).catch((err) => {
                 log(`wake-peer:failed err=${err instanceof Error ? err.message : String(err)}`)
               })
@@ -443,14 +449,30 @@ const plugin: Plugin = async (input) => {
           agent: tool.schema.string().default("build").describe("Agent type (e.g. 'build', 'plan', 'explore')"),
           prompt: tool.schema.string().describe("Task instructions for the teammate"),
           model: tool.schema.string().optional().describe("Model in provider/model format (optional, uses default)"),
+          variant: tool.schema.string().optional().describe("Native reasoning variant for an explicit/configured model; routed models use the catalogue effort"),
+          complexity: tool.schema.number().int().min(0).max(100).optional().describe("Task complexity for deterministic model routing; overrides claim_task"),
+          risk: tool.schema.number().int().min(0).max(100).optional().describe("Task risk for deterministic model routing only; overrides claim_task"),
           claim_task: tool.schema.string().optional().describe("Task ID to auto-claim for this teammate (optional)"),
           worktree: tool.schema.boolean().default(true).describe("Create a git worktree for file isolation (default: true, set false for read-only agents)"),
           plan_approval: tool.schema.boolean().default(false).describe("Require teammate to send a plan for approval before writing files (default: false)"),
+          context: tool.schema.object({
+            mode: tool.schema.enum(["fresh", "fork", "checkpoint", "compact_fork"]),
+            from: tool.schema.string().optional(),
+            messageID: tool.schema.string().optional().describe("Exclusive native checkpoint boundary"),
+          }).optional().describe("Session inheritance requires a V2 host. Defaults to fresh; never silently falls back."),
         },
         async execute(args, ctx) {
           const result = await executeTeamSpawn(deps, args, ctx.sessionID)
           ctx.metadata({ title: `Spawned ${args.name} (${args.agent})` })
           return result
+        },
+      }),
+
+      team_handoff: tool({
+        description: "Switch your own team session's native agent while retaining history. Requires OpenCode V2; V1 returns an explicit capability error.",
+        args: { agent: tool.schema.string().describe("Target agent name") },
+        async execute(args, ctx) {
+          return executeTeamHandoff(deps, args, ctx.sessionID)
         },
       }),
 
@@ -514,6 +536,9 @@ const plugin: Plugin = async (input) => {
             content: tool.schema.string().describe("Task description"),
             priority: tool.schema.enum(["high", "medium", "low"]).default("medium").describe("Task priority"),
             depends_on: tool.schema.array(tool.schema.string()).optional().describe("Task IDs this depends on"),
+            agent: tool.schema.string().optional().describe("Agent type affinity for auto-dispatch (e.g. build). Omit for any member."),
+            complexity: tool.schema.number().int().min(0).max(100).optional().describe("Task complexity for deterministic model routing"),
+            risk: tool.schema.number().int().min(0).max(100).optional().describe("Task risk for model routing only (not review policy)"),
           })).describe("Tasks to add"),
         },
         async execute(args, ctx) {

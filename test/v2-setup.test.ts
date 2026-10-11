@@ -188,6 +188,20 @@ describe("v2-setup (issue #36)", () => {
     expect(extractQuestionOutput(undefined)).toBe("")
   })
 
+  test("context hook blocks native auto-wakes while an inherited spawn is being prepared", async () => {
+    const { ctx, hooks } = mockSetupCtx()
+    const handle = await setupEnsemble(ctx, { dbPath: ":memory:", dashboardPort: 0 })
+    handle.db.run("INSERT INTO team (id, name, lead_session_id, status, delegate, time_created, time_updated) VALUES ('pending-team', 'pending-team', 'ses_lead', 'active', 0, 0, 0)")
+    handle.db.run("INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, spawn_pending, time_created, time_updated) VALUES ('pending-team', 'pending', 'ses_pending', 'build', 'busy', 'starting', 1, 0, 0)")
+    const context = hooks["session"]![0]!
+    expect(() => context({ sessionID: "ses_pending", system: [] } as never)).toThrow("initialization")
+    handle.db.run("UPDATE team_member SET spawn_pending = 2 WHERE session_id = 'ses_pending'")
+    expect(() => context({ sessionID: "ses_pending", system: [], messages: [] } as never)).toThrow("initialization")
+    expect(() => context({ sessionID: "ses_pending", system: [], messages: [{ content: "[Ensemble task ses_pending]" }] } as never)).not.toThrow()
+    await handle.dispose()
+    handle.db.close()
+  })
+
   test("setup rehydrates registry and nudges already-idle silent members", async () => {
     const { tmpdir } = await import("node:os")
     const { join } = await import("node:path")
@@ -223,6 +237,7 @@ describe("v2-setup (issue #36)", () => {
     expect(nudges.length).toBe(1)
     expect(JSON.stringify(nudges[0])).toContain("ses_alice")
     await handle.dispose()
+    handle.db.close()
     // A second setup (hot-reload) must NOT nudge again within the hour.
     const prompts2: unknown[] = []
     const { ctx: ctxReload } = mockSetupCtx()
@@ -236,6 +251,7 @@ describe("v2-setup (issue #36)", () => {
     const handle2 = await setupEnsemble(ctxReload, { dbPath, dashboardPort: 0 })
     expect(prompts2.filter((p) => JSON.stringify(p).includes("did not report")).length).toBe(0)
     await handle2.dispose()
+    handle2.db.close()
     const { rm } = await import("node:fs/promises")
     await rm(dbPath, { force: true })
   })

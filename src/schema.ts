@@ -203,7 +203,23 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE team_member ADD COLUMN retry_until INTEGER;
    ALTER TABLE team_member ADD COLUMN retry_attempt INTEGER;
    ALTER TABLE team_member ADD COLUMN retry_provider TEXT;
-   ALTER TABLE team_member ADD COLUMN retry_message TEXT;`,
+    ALTER TABLE team_member ADD COLUMN retry_message TEXT;`,
+  // Migration 11: native history stays in OpenCode; only provenance and admission intent live here.
+  `ALTER TABLE team_member ADD COLUMN context_mode TEXT NOT NULL DEFAULT 'fresh';
+   ALTER TABLE team_member ADD COLUMN source_session_id TEXT;
+   ALTER TABLE team_member ADD COLUMN context_message_id TEXT;
+   ALTER TABLE team_member ADD COLUMN spawn_pending INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE team_member ADD COLUMN handoff_pending TEXT;
+   ALTER TABLE team ADD COLUMN handoff_pending TEXT;`,
+  // Migration 12: task affinity for the pull-based pool (docs/task-pool.md).
+  // Nullable agent *type* — NULL means "any member may be auto-dispatched".
+  // Guides dispatch ordering only; manual team_claim stays unrestricted.
+  `ALTER TABLE team_task ADD COLUMN agent TEXT;`,
+  // Migration 13: routing inputs and native variant/provenance. No review policy.
+  `ALTER TABLE team_task ADD COLUMN complexity INTEGER CHECK(complexity IS NULL OR (typeof(complexity) = 'integer' AND complexity BETWEEN 0 AND 100));
+   ALTER TABLE team_task ADD COLUMN risk INTEGER CHECK(risk IS NULL OR (typeof(risk) = 'integer' AND risk BETWEEN 0 AND 100));
+   ALTER TABLE team_member ADD COLUMN model_variant TEXT;
+   ALTER TABLE team_member ADD COLUMN model_routing TEXT;`,
 ]
 
 /**

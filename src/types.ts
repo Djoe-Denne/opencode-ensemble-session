@@ -20,6 +20,8 @@ export interface ToolDeps {
   config: Required<EnsembleConfig>
   /** Stall/activity tracker — shared with the Watchdog. */
   progressTracker: ProgressTracker
+  /** Branch preservation seam for spawn rollback; defaults to the real Git helper. */
+  preserveBranch?: (source: string, target: string, directory: string) => Promise<boolean>
 }
 
 /** A single permission rule for session-level enforcement. */
@@ -29,12 +31,30 @@ export interface PermissionRule {
   action: "allow" | "deny" | "ask"
 }
 
+/** Opt-in native context inheritance. messageID is an exclusive checkpoint boundary. */
+export interface SpawnContext {
+  mode: "fresh" | "fork" | "checkpoint" | "compact_fork"
+  from?: string
+  messageID?: string
+}
+
+/** Public V2 operations; absent on V1 and on hosts without these capabilities. */
+export interface SessionContinuity {
+  fork(options: { sessionID: string; before?: string }): Promise<{ id: string }>
+  switchAgent(options: { sessionID: string; agent: string; permission?: PermissionRule[]; initializing?: boolean }, signal?: AbortSignal): Promise<void>
+  move(options: { sessionID: string; directory: string }): Promise<void>
+  compact(options: { sessionID: string }): Promise<void>
+  remove(options: { sessionID: string }): Promise<void>
+}
+
 /**
  * Minimal interface for the OpenCode v2 SDK client methods we actually use.
  * Uses flat params matching the v2 SDK (imported from @opencode-ai/sdk/v2).
  * Makes mocking trivial in tests.
  */
 export interface PluginClient {
+  /** Capability-gated V2 session continuity, using the same host as session.*. */
+  continuity?: SessionContinuity
   session: {
     create(options: {
       parentID?: string
@@ -47,11 +67,15 @@ export interface PluginClient {
       sessionID: string
       parts: Array<{ type: "text"; text: string }>
       model?: { providerID: string; modelID: string }
+      /** Native reasoning-effort variant for the selected model. */
+      variant?: string
       agent?: string
       tools?: Record<string, boolean>
       system?: string
       /** V2: deliver as a synthetic (system) message instead of a user prompt. */
       synthetic?: boolean
+      /** V2 durable admission marker; never copied or used to reconstruct history. */
+      metadata?: Record<string, unknown>
     }): Promise<unknown>
     abort(options: { sessionID: string }): Promise<unknown>
     status(): Promise<{ data?: Record<string, { type: string }> }>
@@ -117,7 +141,8 @@ export function findTeamBySession(
        JOIN team t ON tm.team_id = t.id
        WHERE tm.session_id = ?
          AND t.status = 'active'
-         AND tm.status NOT IN ('shutdown', 'error')`
+          AND tm.status NOT IN ('shutdown', 'error')
+          AND tm.spawn_pending = 0`
     ).get(sessionId) as { team_id: string; member_name: string; team_name: string } | null
     if (memberRow) {
       // Populate the cache so subsequent lookups skip the SQL query.

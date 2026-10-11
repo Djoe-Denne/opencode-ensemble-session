@@ -62,11 +62,15 @@ All PRs require at least one approval from a code owner before merging. Direct p
 
 ## Testing
 
-- All tests use in-memory SQLite (`:memory:`) — no disk I/O, no cleanup
+Canonical skills live in `skills/opencode-ensemble/` (team operation) and `skills/ensemble-project-setup/` (interactive onboarding); keep their corresponding copies under `agent/skills/` synchronized. Root `opencode.json` exposes the canonical directory to V2. When updating guidance, check linked resources and each skill's `evals/` and scenario references. Setup evaluations must cover proposal-only behavior, approved minimal edits, and a no-op rerun preserving customizations. Native continuity implementation details remain in `docs/native-session-continuity.md`; manual project integration guidance belongs in the operational skill's `references/project-integration.md`.
+
+- Business-logic tests use in-memory SQLite (`:memory:`); runtime and native continuity tests also exercise temporary databases and Git directories.
 - Mock `OpencodeClient` for integration tests (see `test/helpers.ts`)
 - Race condition tests use `Promise.all()` / `Promise.allSettled()`
 - No mocking of business logic — test actual SQLite transactions
 - `bun test` is the only test runner
+
+For session inheritance or V2 lifecycle changes, also run `bun run eval:continuity` with `OPENCODE_TEST_BIN` pointing to an OpenCode V2 executable. This starts an isolated native server and a deterministic local model provider, exercises real sessions/worktrees/compaction/SQLite, and cleans up its fixtures. See [session continuity](docs/native-session-continuity.md#validation) for commands and scope.
 
 ## Project Structure
 
@@ -86,17 +90,23 @@ src/
 ├── recovery.ts          # Crash recovery and orphan cleanup
 ├── result-parser.ts     # Teammate result parsing helpers
 ├── schema.ts            # CREATE TABLE migrations
+├── session-continuity.ts # Context sources, admission rollback, handoff reconciliation
 ├── state.ts             # In-memory registry, descendant tracker, and purge approval state
 ├── system-prompt.ts     # Lead/teammate prompt injection text
 ├── types.ts             # Shared types + helper functions
 ├── util.ts              # ID generation + name validation
+├── v2-continuity.ts      # Native fork/move/compact/switchAgent adapter + HTTP bridge
 ├── watchdog.ts          # Timeout and stall watchdog
-└── tools/               # 14 team tools plus shared/merge helpers
+└── tools/               # 15 team tools plus shared/merge helpers
 
 test/
 ├── helpers.ts        # Shared test utilities (setupDb, mockClient, etc.)
 ├── *.test.ts         # Unit tests for each src module
 └── tools/            # Tool-specific tests
+
+eval/
+├── native-continuity.ts # Private V2 server + deterministic model provider
+└── native-fixture/      # Real native operations through Ensemble tools
 ```
 
 ## Open Questions

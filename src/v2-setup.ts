@@ -10,6 +10,7 @@ import { registerV2Tools } from "./v2-tools"
 import type { ToolDeps } from "./types"
 import { ProgressTracker } from "./progress"
 import { checkToolIsolation, shouldNudgeIdleMember } from "./hooks"
+import { pumpTeam } from "./dispatch"
 import { hasReportedCompletion } from "./messaging"
 import { enrichToolError } from "./tool-arg-hint"
 import { rehydrateRegistry } from "./recovery"
@@ -22,6 +23,8 @@ import { startDashboard, type DashboardServer } from "./dashboard"
 import { EnsembleRpc, emitMemberEvent, emitNoticeEvent } from "./v2-rpc"
 import { isWorktreeInstance } from "./util"
 import { vlog } from "./log"
+import { recoverSessionContinuity } from "./session-continuity"
+import { MEMBER_TOOLS } from "./v2-continuity"
 
 /** V2 setup context subset (structural, mock-friendly). */
 export interface V2SetupContext {
@@ -32,6 +35,7 @@ export interface V2SetupContext {
   }
   worktree: V2Context["worktree"]
   permission: V2Context["permission"]
+  agent?: V2Context["agent"]
   event: {
     subscribe(opts?: { signal?: AbortSignal }): AsyncIterable<V2EventLike>
   }
@@ -101,6 +105,9 @@ export async function setupEnsemble(
   const activityBuffer = new ActivityBuffer()
   const progressTracker = new ProgressTracker()
   const nudgedMembers = new Set<string>()
+  const continuityOptions = { apiUrl: config.v2ApiUrl, authorization: process.env.OPENCODE_ENSEMBLE_V2_AUTHORIZATION }
+  await recoverSessionContinuity({ db, registry, tracker, purgeApprovals, progressTracker, config,
+    directory: ctx.location.directory, client: createV2Client(ctx, continuityOptions) })
 
   // Rehydrate the in-memory registry from SQLite so members from before a
   // restart are visible again. Without this, their events are ignored and
@@ -159,7 +166,13 @@ export async function setupEnsemble(
     // waits forever — the exact failure seen live on 2026-09-14.
     if (transition && transition.to === "ready" && transition.from === "busy") {
       const entry = registry.getByName(transition.teamId, transition.memberName)
-      if (entry) nudgeMember(transition.teamId, transition.memberName, entry.sessionId)
+      if (entry) {
+        nudgeMember(transition.teamId, transition.memberName, entry.sessionId)
+        // Pull-based pool: feed the newly idle member, then scale up if work
+        // remains and the cap allows (opt-in — docs/task-pool.md). deps is
+        // captured lazily; events only flow after setup completes.
+        pumpTeam(deps, transition.teamId)
+      }
     }
     if (transition && rpc) {
       await emitMemberEvent(rpc, transition).catch(() => {
@@ -286,8 +299,15 @@ export async function setupEnsemble(
     const event = raw as unknown as {
       sessionID: string
       system: Array<{ type: string; text: string }>
+      messages?: unknown[]
     }
     if (!event.sessionID) return
+    // Native switchAgent can wake an idle fork. Stop dispatch until isolation is
+    // bound; no provider/tools may run at the source location during preparation.
+    const preparing = db.query("SELECT spawn_pending FROM team_member WHERE session_id = ?").get(event.sessionID) as { spawn_pending: number } | null
+    if (preparing?.spawn_pending && (preparing.spawn_pending === 1 || !JSON.stringify(event.messages ?? []).includes(`[Ensemble task ${event.sessionID}]`))) {
+      throw new Error("Ensemble teammate initialization is still in progress")
+    }
     const teamInfo = findTeamBySession(db, registry, event.sessionID)
     if (!teamInfo) return
     const prompt =
@@ -320,12 +340,20 @@ export async function setupEnsemble(
     event.system.push({ type: "text", text: context })
   })
 
+  // Modern V2 removed permission.rules. Keep the same scoped team-tool grants,
+  // while nested edit/shell calls still use the target agent's normal policy.
+  await ctx.permission?.hook?.("evaluate", event => {
+    if (event.action !== "execute" && !(MEMBER_TOOLS as readonly string[]).includes(event.action)) return
+    const team = findTeamBySession(db, registry, event.sessionID)
+    if (team?.role === "member") event.effect = "allow"
+  })
+
   // OQ-V2-shell: the V2 shell hook carries no sessionID, so per-session
   // ENSEMBLE_* env cannot be scoped. Registered as a placeholder until the
   // API gains session scope — team tools and prompts carry identity instead.
   await ctx.shell.hook("create.before", () => undefined)
 
-  const client = createV2Client(ctx, rpc ? { rpcEmitter: rpc } : {})
+  const client = createV2Client(ctx, { ...continuityOptions, ...(rpc ? { rpcEmitter: rpc } : {}) })
   const deps: ToolDeps = {
     db,
     registry,

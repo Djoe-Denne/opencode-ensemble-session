@@ -124,19 +124,37 @@ The lead runs the repository verification commands, summarizes the result, and o
 
 ## Agent Skill
 
-Install the companion skill to teach your AI how to form useful Ensemble teams, write better teammate prompts, choose models, and avoid common coordination failures:
+Use the companion skill as the reusable operating guide: it helps choose useful teams, native context transitions, model strategy, bounded missions, and integration practices. Team size and profiles are chosen per mission; no explorer/architect/implementer sequence is required.
+
+**For this local fork**, expose its `skills/` directory in your OpenCode V2 configuration, or copy the complete `skills/opencode-ensemble/` directory into your project's `.opencode/skills/`. Load the matching runtime plugin separately. This repository's root `opencode.json` already exposes the canonical skill when working from its root.
+
+Add a short instruction to the project's `AGENTS.md` to load `opencode-ensemble` when teamwork is useful. Keep durable expertise and permissions in optional `.opencode/agents/*.md` profiles, and put task-specific ownership in spawn prompts. See the [project integration guide](skills/opencode-ensemble/references/project-integration.md) for copyable configuration, project policy, and an optional native agent profile. You can also explicitly request `@opencode-ensemble` in V2.
+
+For **interactive installation**, use the companion [ensemble-project-setup](skills/ensemble-project-setup/README.md) skill:
+
+```text
+@ensemble-project-setup Analyze this project's existing agents and instructions.
+Propose the smallest useful Ensemble integration for approval, preserving our
+profiles, models, permissions, and flexible team composition.
+```
+
+It diagnoses the current setup, explains inferred preferences, proposes a diff, and applies approved changes. Repeat runs can produce no changes. Both skills are exposed by this repository's `skills/` source: `ensemble-project-setup` handles onboarding; `opencode-ensemble` handles team missions.
+
+For the **published upstream skill**:
 
 ```bash
 npx skills@latest add hueyexe/opencode-ensemble --skill opencode-ensemble
 ```
 
-The skill is useful when you want the agent to decide whether parallel work is appropriate, split work into independent slices, use `depends_on` correctly, or pick a safe mix of `explore` and `build` teammates.
+The upstream version may not yet include this fork's continuity features; keep skill and plugin versions aligned. Installing the skill alone does not install the plugin's tools.
 
-Good team shapes:
+Optional team shapes:
 
 - **Scout, builder, reviewer**: one read-only `explore` agent maps the code, one `build` agent changes it, one read-only `explore` agent reviews the diff.
 - **Parallel slices**: two or three `build` agents own independent files or vertical slices, then one reviewer checks the combined result.
 - **Risky change**: use `plan_approval: true` on the implementing teammate, then approve or reject the plan through `team_message` before edits begin.
+- **Shared research**: fork independent workers directly from an existing member's native history; give each only its new mission delta.
+- **Same-session continuation**: use `team_handoff` when the current session needs another specialty, retaining its history, team role, directory, and model.
 
 ## Dashboard
 
@@ -261,14 +279,14 @@ No build step needed for local testing — but run `bun run typecheck && bun tes
 
 ## Tools
 
-14 tools. The lead has all of them. Teammates get 6 (messaging + tasks).
+15 tools. Teammates can use messaging, tasks, inspection, and V2 `team_handoff` (10 tools); spawning, shutdown, and merging remain lead-only. V1 keeps the original 14 operations and reports an explicit unsupported-capability error for handoff or inherited spawning.
 
 **Team lifecycle** (lead only, except archived-team purge may also be run from the main session)
 
 | Tool | What it does |
 |------|-------------|
 | `team_create` | Create a team. Caller becomes the lead. Accepts optional `project_name` to label the project. |
-| `team_spawn` | Start a new teammate with a task. Supports `plan_approval` mode. |
+| `team_spawn` | Start a new teammate with a task. Supports `plan_approval` and opt-in V2 context inheritance. |
 | `team_shutdown` | Ask a teammate to stop. Preserves their branch before aborting. Supports `force` flag. |
 | `team_merge` | Merge a shutdown teammate's branch into working directory (unstaged). Blocks if you have local changes to overlapping files. |
 | `team_cleanup` | Remove the current team when done. Safety-net merges forgotten branches. With `purge`, previews archived-team deletion and returns exact approval labels plus a confirmation token. |
@@ -294,6 +312,48 @@ Archived-team purge is intentionally two-step. First call `team_cleanup` with `p
 | `team_tasks_complete` | Mark a task done. Unblocks dependents. |
 | `team_claim` | Claim a pending task. Atomic, prevents double-claims. |
 
+**Session continuity** (V2, any team member including the lead)
+
+- `team_handoff({ agent })`: change the calling session's native agent for subsequent turns. Keeps the session ID, history, team role, tasks, and worktree.
+
+## Session inheritance (V2)
+
+`team_spawn` starts fresh unless `context` is supplied. To give a worker a scout's actual native history:
+
+```javascript
+await tools.team_spawn({
+  name: "parser",
+  agent: "build",
+  prompt: "Implement the parser using the researched interfaces.",
+  context: { mode: "fork", from: "scout" },
+})
+```
+
+The modes are:
+
+- **`fresh`**: an independent session; also the default when `context` is omitted.
+- **`fork`**: fork the source's full projected native history, then append the new identity and task.
+- **`checkpoint`**: fork before `messageID`, an **exclusive** native boundary. For history A/B/C/D/E, use D's ID to include C and exclude D/E.
+- **`compact_fork`**: compact a distinct, idle source with OpenCode, verify its durable checkpoint completed, then fork the native summary and retained recent context.
+
+`from` defaults to `"current"`; it also accepts `"lead"`, a member name, or a session ID belonging to this team. Finished members remain valid sources while their native sessions exist. Only the lead can spawn.
+
+Inside the scout, `await tools.team_handoff({ agent: "plan" })` changes the agent in the **same session**, so research can become architecture without another spawn. Native agent selection preserves the session's selected model. The lead can change a teammate's model separately with `team_message({ to, model })`.
+
+### Native fork connection
+
+OpenCode 2.0.25/2.0.26 exposes `session.fork` over its public HTTP API but omits it from the plugin context. Configure the **same server** in `.opencode/ensemble.json`:
+
+```json
+{ "v2ApiUrl": "http://127.0.0.1:4096" }
+```
+
+Use your server's actual URL. `OPENCODE_ENSEMBLE_V2_API_URL` overrides this setting; `OPENCODE_ENSEMBLE_V2_AUTHORIZATION` supplies the complete Authorization header (for example, the server's Basic authorization value). Set these in the server process environment. The adapter verifies the source session's identity, project, creation time, and directory before forking. A host-provided `ctx.session.fork` takes precedence when available.
+
+Inherited writers receive separate worktrees. The source and destination must be clean and at the same Git HEAD before a native move; otherwise spawning fails explicitly. The child is moved and its agent selected before its task is admitted. Initialization hooks prevent premature model execution. There is no silent replacement with a fresh session or shared-directory fallback for inherited spawns.
+
+See the [continuity guide](docs/native-session-continuity.md) for the complete Explorer → Architect → three workers workflow, checkpoint examples, recovery, compatibility, validation results, and remaining limitations.
+
 ## What you see in the TUI
 
 The plugin works within OpenCode's existing UI on every client (terminal, desktop, web): tools, approvals, messages, and the [dashboard](#dashboard) at `http://localhost:4747` all live server-side.
@@ -313,6 +373,7 @@ What you get:
 - **Git worktree isolation**: each teammate gets their own worktree by default, so multiple agents can edit files without conflicts. Opt out with `worktree: false` for read-only agents.
 - **System prompt injection**: the lead's system prompt includes team state (member statuses, task counts) on every LLM call. Teammates get a short role reminder.
 - **Compaction safety**: team context is preserved when OpenCode compacts long conversations
+- **Native session continuity (V2)**: optional forks/checkpoints and same-session agent handoff, with persisted provenance and interrupted-spawn reconciliation
 - **Shell environment**: teammate shells get `ENSEMBLE_TEAM`, `ENSEMBLE_MEMBER`, `ENSEMBLE_ROLE`, and `ENSEMBLE_BRANCH` variables
 - **Sub-agent isolation**: teammates' sub-agents can't use team tools (parent chain tracking, max depth 10)
 - **Crash recovery**: stale busy members marked as errored on restart, orphaned sessions aborted, orphaned worktrees cleaned up, undelivered messages redelivered
@@ -328,7 +389,7 @@ What you get:
 
 ## Model Selection
 
-Control which AI models your agents use. By default, agents use whatever model OpenCode is configured with. You can override this per-agent, per-agent-type, or with automatic rotation.
+Control which AI models your agents use. Without an Ensemble override, fresh spawns use OpenCode's native default and inherited spawns retain the source session's selected model. You can override this per-agent, per-agent-type, or with automatic rotation.
 
 **All agents use the same model:**
 ```json
@@ -370,9 +431,9 @@ When `promptForModels` is true, the lead uses the question tool to ask which mod
 2. `modelsByAgent` mapping for this agent type
 3. `modelAssignment` strategy (`rotate` or `random` from `modelPool`)
 4. `defaultModel`
-5. OpenCode's default model
+5. Native selection: OpenCode's default for fresh spawns; the source session's selected model for inherited spawns
 
-The lead can always override by passing `model` directly on `team_spawn`, regardless of config.
+The lead can override by passing `model` directly on `team_spawn`, regardless of config. An explicit override is a choice, not a requirement. Native `team_handoff` retains the existing selected model; use `team_message({ to, model })` to change a teammate's model separately.
 
 Model IDs use the `provider/model` format from [models.dev](https://models.dev) (e.g. `anthropic/claude-opus-4-7`, `openai/gpt-5.4`). For OpenCode Zen models, use the `opencode/` prefix (e.g. `opencode/big-pickle`).
 
@@ -414,11 +475,16 @@ All fields are optional. Missing fields use defaults.
 | `timeoutMs` | `1800000` (30 min) | Hard timeout for busy teammates. `0` disables. |
 | `rateLimitCapacity` | `10` | Token bucket capacity for team tool calls. `0` disables. |
 | `dashboardPort` | `4747` | Dashboard server port. `0` disables. |
-| `defaultModel` | `""` | Default model for all agents (e.g. `"anthropic/claude-sonnet-4-6"`). Empty = OpenCode's default. |
+| `defaultModel` | `""` | Default model for all agents (e.g. `"anthropic/claude-sonnet-4-6"`). Empty = native selection (source selection for inherited sessions). |
 | `modelPool` | `[]` | List of models for rotation/random assignment. |
 | `modelsByAgent` | `{}` | Map agent type to model (e.g. `{"build": "anthropic/claude-opus-4-7"}`). |
 | `modelAssignment` | `"default"` | How to assign models: `"default"`, `"rotate"`, or `"random"`. |
 | `promptForModels` | `false` | Lead asks user about model preferences before spawning. |
+| `v2ApiUrl` | `""` | Public API URL of the same V2 server, required for inherited spawns when the plugin host omits `session.fork`. |
+| `maxActiveMembers` | `0` | Max members per team in non-terminal status (task pool cap). `0` = unlimited. Spawn refuses with an explicit error at the cap. |
+| `autoDispatch` | `false` | Pull-based pool: when a member goes idle, push it the next eligible board task. Order: agent affinity (`@agent`) first, then priority, then FIFO. |
+| `autoScale` | `false` | Spawn `pool-<N>` workers to fill `maxActiveMembers` while unassigned work remains. Agent type from task affinity; pair with `modelPool` + `modelAssignment: "rotate"` to spread across providers. |
+| `modelRouting` | `{ "beta": 0.35, "models": [] }` | Deterministic minimum-cost routing from task complexity/risk and a scored model/effort catalogue. Explicit `model` wins; no scores preserves existing selection. |
 
 ### Environment variables
 
@@ -442,13 +508,31 @@ STALL_THRESHOLD_MS=300000
 
 # Disable stall detection
 STALL_THRESHOLD_MS=0
+
+# Cap active members per team (task pool; default: 0 = unlimited)
+OPENCODE_ENSEMBLE_MAX_MEMBERS=4
 ```
+
+### Deterministic complexity/risk routing
+
+Merge the supplied 17-candidate [catalogue](examples/ensemble.model-routing.json)
+into your plugin `ensemble.json`. Supply optional integer `complexity` and
+`risk` (0–100) directly to `team_spawn`, or on `team_tasks_add` entries that a
+spawn claims through `claim_task`. Native reasoning efforts are transmitted as
+variants, persisted across wakes, and treated as distinct scored candidates.
+
+Selection is explicit model → task router → existing Ensemble configuration →
+OpenCode default. The router selects the cheapest sufficient model and exposes
+an eligible fallback, preferring another provider. It makes no LLM/JEV calls,
+does not change review policy, and does not auto-retry on its fallback.
+The cost rule is not provider load balancing. See [routing details](docs/model-routing.md)
+and the opt-in [`ensemble-model-catalogue` maintenance skill](skills/ensemble-model-catalogue/SKILL.md).
 
 ## Best practices
 
 - Start with 2-3 teammates. More agents means more coordination overhead.
 - Give each teammate specific, self-contained tasks. Vague prompts produce vague results.
-- Spawn an explore agent first to understand the codebase, then spawn build agents with that context.
+- Choose profiles and context transitions for the mission. Reuse relevant native research through a fork, continue a session through handoff, or start fresh when independence is useful.
 - Use `worktree: false` for read-only agents (research, review, code analysis).
 - Use `plan_approval: true` for risky changes. The teammate sends a plan first, you review and approve before they write any code.
 - Don't micromanage. Teammates message you when done or when they're blocked.
@@ -456,9 +540,10 @@ STALL_THRESHOLD_MS=0
 
 ## Known limitations
 
-- **Teammate messages may switch the lead's agent mode (v1).** When a teammate sends a message back to the lead, OpenCode can start the next prompt loop in build mode even if the lead was in plan/explore mode. Tracked upstream; the lead's mode restores when you send your next message. On v2, pass an explicit `model` on `team_spawn` so teammates never inherit the server default.
+- **Teammate messages may switch the lead's agent mode (v1).** When a teammate sends a message back to the lead, OpenCode can start the next prompt loop in build mode even if the lead was in plan/explore mode. Tracked upstream; the lead's mode restores when you send your next message. On V2, model selection is separate from agent selection; use an explicit spawn model only when an override is intended.
 - **Session switching is opt-in (v2).** `team_view` reports the teammate's session ID by default; it switches the user's client only when asked for with `navigate: true` — agents never hijack the client unprompted. The live sidebar (terminal only) shows member status on every client's dashboard at `http://localhost:4747`.
 - **Per-session shell env is unavailable (v2).** The v2 shell hook carries no session ID, so `ENSEMBLE_*` variables are not injected into teammate shells. Team identity travels in prompts and tool calls instead.
+- **Native continuity has explicit boundaries (v2).** `compact_fork` requires a distinct idle source; cross-directory inheritance requires clean, matching Git HEADs. Lost native creation acknowledgements can leave resources whose IDs were never received; see the [recovery limits](docs/native-session-continuity.md#remaining-limits).
 
 ## How this differs from Claude Code agent teams
 
@@ -477,8 +562,10 @@ Same coordination model (shared tasks, peer messaging, lead coordination) with s
 ```bash
 bun install
 bun run typecheck
-bun test             # 835 tests
+bun test
 bun run build
+# Requires an OpenCode V2 executable; set OPENCODE_TEST_BIN if it is not on PATH.
+bun run eval:continuity
 ```
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for development guidelines.

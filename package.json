@@ -36,6 +36,7 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "eval:smoke": "bun eval/smoke.ts",
+    "eval:continuity": "bun eval/native-continuity.ts",
     "build": "bun build src/index.ts --outdir dist --target node",
     "prepublishOnly": "bun run typecheck && bun test && bun run build"
   },
@@ -59,6 +60,6 @@
   "dependencies": {
     "@opencode-ai/plugin": "^1.17.18",
     "@opencode-ai/sdk": "^1.17.18",
-    "@opencode/plugin": "2.0.3"
+    "@opencode/plugin": "2.0.26"
   }
 }

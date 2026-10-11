@@ -2,7 +2,7 @@ import type { ToolDeps } from "../types"
 import { resolveRecipientSession } from "../types"
 import { requireTeamMember } from "./shared"
 import { sendMessage, markDelivered, hasReportedCompletion } from "../messaging"
-import { parseModelId, getMemberModel } from "../member-model"
+import { parseModelId, getMemberPromptModel } from "../member-model"
 import { log } from "../log"
 
 /**
@@ -41,7 +41,7 @@ export async function executeTeamMessage(
       throw new Error(`Teammate "${args.to}" is shut down — spawn a new teammate instead of updating the model.`)
     }
     deps.db.run(
-      "UPDATE team_member SET model = ?, time_updated = ? WHERE team_id = ? AND name = ?",
+      "UPDATE team_member SET model = ?, model_variant = NULL, model_routing = NULL, time_updated = ? WHERE team_id = ? AND name = ?",
       [args.model, Date.now(), teamInfo.teamId, args.to],
     )
     log(`team_message:model-update to=${args.to} model=${args.model}`)
@@ -144,11 +144,11 @@ export async function executeTeamMessage(
   // For member-to-member messages, fire-and-forget delivery is safe.
   // Deliver on the recipient's configured model, if any (#26).
   const deliveryText = `[Team message from ${senderName}]: ${messageText}`
-  const recipientModel = getMemberModel(deps.db, teamInfo.teamId, args.to)
+  const recipientModel = getMemberPromptModel(deps.db, teamInfo.teamId, args.to)
   deps.client.session.promptAsync({
     sessionID: recipientSessionId,
     parts: [{ type: "text", text: deliveryText }],
-    ...(recipientModel ? { model: recipientModel } : {}),
+    ...recipientModel,
   }).then(() => {
     markDelivered(deps.db, msgId)
   }).catch((err) => {

@@ -1,13 +1,14 @@
-import type { ToolDeps, PermissionRule } from "../types"
+import type { ToolDeps, PermissionRule, SpawnContext } from "../types"
+import { resolveSpawnContext, rollbackInheritedSpawn } from "../session-continuity"
 import { validateMemberName } from "../util"
 import { requireLead } from "./shared"
 import { claimTask } from "./team-claim"
 import { notifyLead } from "../notify"
-import { releaseMemberTasks } from "../tasks"
 import { parseModelId } from "../member-model"
 import { log } from "../log"
 import type { EnsembleConfig } from "../config"
-import { getTeamResourceParts, teamWorktreeName } from "./merge-helper"
+import { routeModel, validateTaskRoutingScores, type TaskRoutingScores } from "../model-router"
+import { getTeamResourceParts, teamWorktreeName, preserveBranch, preservedBranchName } from "./merge-helper"
 
 /** Tracks consecutive spawn failures per team for circuit breaker. */
 export const spawnFailures = new Map<string, { count: number; lastError: string }>()
@@ -63,7 +64,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
  */
 export async function executeTeamSpawn(
   deps: ToolDeps,
-  args: { name: string; agent?: string | null; prompt: string; model?: string; claim_task?: string; worktree?: boolean; plan_approval?: boolean },
+  args: { name: string; agent?: string | null; prompt: string; model?: string; variant?: string; complexity?: number; risk?: number; claim_task?: string; worktree?: boolean; plan_approval?: boolean; context?: SpawnContext },
   sessionId: string,
 ): Promise<string> {
   // Normalize agent: the tool schema defaults to "build", but Zod's .default()
@@ -75,6 +76,9 @@ export async function executeTeamSpawn(
   if (nameError) throw new Error(nameError)
 
   const teamInfo = requireLead(deps, sessionId)
+  const inheritance = resolveSpawnContext(deps, args.context, teamInfo.teamId, sessionId)
+  const inherited = inheritance.mode !== "fresh"
+  const continuity = deps.client.continuity
 
   // Circuit breaker — stop retrying after 3 consecutive failures
   const failures = spawnFailures.get(teamInfo.teamId)
@@ -87,8 +91,47 @@ export async function executeTeamSpawn(
     .get(teamInfo.teamId, args.name)
   if (existing) throw new Error(`Teammate "${args.name}" already exists in team "${teamInfo.teamName}"`)
 
+  // Deterministic concurrency cap (docs/task-pool.md). Members in non-terminal
+  // status still occupy a slot (shutdown_requested still owns a worktree).
+  // Explicit refusal before any resource is created — never a silent queue.
+  if (deps.config.maxActiveMembers > 0) {
+    const active = (deps.db.query(
+      "SELECT COUNT(*) as c FROM team_member WHERE team_id = ? AND status NOT IN ('shutdown', 'error')",
+    ).get(teamInfo.teamId) as { c: number }).c
+    if (active >= deps.config.maxActiveMembers) {
+      throw new Error(
+        `Active member limit reached for team "${teamInfo.teamName}": ${active}/${deps.config.maxActiveMembers}. ` +
+        "Shut down a teammate or raise maxActiveMembers before spawning.",
+      )
+    }
+  }
+
+  // Resolve before any fork/session/worktree allocation: invalid routing must
+  // never strand resources. Explicit scores override those on claim_task.
+  const taskScores = args.claim_task
+    ? deps.db.query("SELECT complexity, risk FROM team_task WHERE id = ? AND team_id = ?")
+      .get(args.claim_task, teamInfo.teamId) as { complexity: number | null; risk: number | null } | null
+    : null
+  const scores: TaskRoutingScores = {
+    complexity: args.complexity ?? taskScores?.complexity ?? undefined,
+    risk: args.risk ?? taskScores?.risk ?? undefined,
+  }
+  validateTaskRoutingScores(scores)
+  const hasScores = scores.complexity !== undefined || scores.risk !== undefined
+  const routing = !args.model && hasScores && deps.config.modelRouting.models.length
+    ? routeModel({ complexity: scores.complexity ?? 0, risk: scores.risk ?? 0, ...deps.config.modelRouting })
+    : undefined
+  if (routing && !parseModelId(routing.selected.id)) throw new Error(`Routed model id must be in provider/model format: ${routing.selected.id}`)
+  const memberCount = (deps.db.query("SELECT COUNT(*) as c FROM team_member WHERE team_id = ? AND name != ?")
+    .get(teamInfo.teamId, args.name) as { c: number }).c
+  const resolvedModel = args.model || routing?.selected.id || resolveModel(undefined, agent, memberCount, deps.config)
+  const resolvedVariant = routing
+    ? routing.selected.reasoningEffort === "default" ? undefined : routing.selected.reasoningEffort
+    : args.variant
+  if (routing) log(`spawn:routing name=${args.name} demand=${routing.demand} ${routing.reason}`)
+
   const isReadOnly = agent === "plan" || agent === "explore"
-  const useWorktree = args.worktree !== false && !isReadOnly && !isWorktreeDirectory(deps.directory)
+  const useWorktree = args.worktree !== false && !isReadOnly && (inherited || !isWorktreeDirectory(deps.directory))
   const usePlanApproval = args.plan_approval === true
 
   log(`spawn:start name=${args.name} agent=${agent} worktree=${useWorktree}`)
@@ -96,6 +139,27 @@ export async function executeTeamSpawn(
   // Create worktree if enabled
   let worktreeDir: string | null = null
   let worktreeBranch: string | null = null
+  let worktreeWarning = ""
+  let childSessionId: string | undefined
+
+  if (inherited) {
+    if (!continuity || !inheritance.source) throw new Error("Native continuity and a source are required for inherited spawning")
+    // Validate the persisted native source even for a finished Ensemble member.
+    await deps.client.session.get({ sessionID: inheritance.source })
+    if (inheritance.mode === "compact_fork") await continuity.compact({ sessionID: inheritance.source })
+    const child = await continuity.fork({ sessionID: inheritance.source, before: inheritance.before })
+    childSessionId = child.id
+    try {
+      // Persist immediately after fork, before switch/worktree/move, for crash recovery.
+      deps.db.run(`INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status,
+        prompt, context_mode, source_session_id, context_message_id, spawn_pending, time_created, time_updated)
+        VALUES (?, ?, ?, ?, 'busy', 'starting', ?, ?, ?, ?, 1, ?, ?)`,
+      [teamInfo.teamId, args.name, child.id, agent, args.prompt, inheritance.mode, inheritance.source, inheritance.before ?? null, Date.now(), Date.now()])
+    } catch (error) {
+      await continuity.remove({ sessionID: child.id })
+      throw error
+    }
+  }
 
   if (useWorktree) {
     const resource = getTeamResourceParts(deps.db, teamInfo.teamId)
@@ -109,9 +173,16 @@ export async function executeTeamSpawn(
       if (result.data) {
         worktreeDir = result.data.directory
         worktreeBranch = result.data.branch
+        if (inherited) deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ? WHERE team_id = ? AND name = ?", [worktreeDir, worktreeBranch, teamInfo.teamId, args.name])
       }
+      if (inherited && (!worktreeDir || !worktreeBranch)) throw new Error("worktree.create returned no isolated worktree")
       log(`spawn:worktree:done name=${args.name} dir=${worktreeDir}`)
     } catch (err) {
+      if (inherited) {
+        await rollbackInheritedSpawn(deps, teamInfo.teamId, args.name)
+        throw err
+      }
+      worktreeWarning = ` WARNING: Worktree creation failed for "${args.name}"; using shared directory.`
       log(`spawn:worktree:failed name=${args.name} err=${err instanceof Error ? err.message : String(err)}`)
       try {
         await deps.client.tui.showToast({
@@ -127,7 +198,7 @@ export async function executeTeamSpawn(
   // Create workspace from worktree branch — links session to worktree directory.
   // OQ-workspace: assumes workspace.create({ branch }) auto-links to the worktree at that branch.
   let workspaceId: string | null = null
-  if (worktreeDir && worktreeBranch) {
+  if (worktreeDir && worktreeBranch && !inherited) {
     try {
       log(`spawn:workspace:start name=${args.name}`)
       const wsResult = await withTimeout(
@@ -147,9 +218,9 @@ export async function executeTeamSpawn(
   // Permission rules on session.create are the hard gate (server-enforced).
   // For read-only agents, deny write tools and explicitly allow team tools.
   // For all agents with worktrees, allowlist the worktree path for edit/bash.
-  // The 9 member-accessible tools per the documented tool table: the 6 worker
-  // tools plus the 3 inspection tools (team_results/team_status/team_view —
-  // any member). Caught live 2026-09-15: teammates could not read each
+  // The 9 shared member tools plus V2 handoff: the 6 worker tools and the
+  // 3 inspection tools (team_results/team_status/team_view — any member).
+  // Caught live 2026-09-15: teammates could not read each
   // other's messages because team_results was missing from this list.
   const TEAM_TOOLS = [
     "team_message",
@@ -161,6 +232,7 @@ export async function executeTeamSpawn(
     "team_results",
     "team_status",
     "team_view",
+    ...(deps.client.continuity ? ["team_handoff"] : []),
   ] as const
   const permission: PermissionRule[] = []
 
@@ -192,21 +264,33 @@ export async function executeTeamSpawn(
 
   // Create child session — bind to workspace if available (server-enforced CWD isolation).
   // Falls back to no workspace binding if workspace.create failed.
-  let childSessionId: string | undefined
   try {
     log(`spawn:session:start name=${args.name}`)
-    const createResult = await withTimeout(
-      deps.client.session.create({
-        parentID: sessionId,
-        title: `${args.name} (@${agent} teammate)`,
-        permission,
-        ...(workspaceId ? { workspaceID: workspaceId } : {}),
-      }),
-      getSpawnTimeout(), `session.create for "${args.name}"`
-    )
-    childSessionId = createResult.data?.id
+    if (inherited) {
+      if (!continuity || !childSessionId) throw new Error("Native continuity did not create an inherited child")
+      // Native move binds actual tool CWD. Never transfer source changes or fall back to a prompt-only CWD.
+      await continuity.move({ sessionID: childSessionId, directory: worktreeDir ?? deps.directory })
+      // Switch only after move: native agent-switch synthetic input can wake a
+      // fork, and must never run the requested writer at the source location.
+      await continuity.switchAgent({ sessionID: childSessionId, agent, initializing: true })
+    } else {
+      const createResult = await withTimeout(
+        deps.client.session.create({
+          parentID: sessionId,
+          title: `${args.name} (@${agent} teammate)`,
+          permission,
+          ...(workspaceId ? { workspaceID: workspaceId } : {}),
+        }),
+        getSpawnTimeout(), `session.create for "${args.name}"`
+      )
+      childSessionId = createResult.data?.id
+    }
     log(`spawn:session:done name=${args.name} sessionId=${childSessionId}`)
   } catch (err) {
+    if (inherited) {
+      await rollbackInheritedSpawn(deps, teamInfo.teamId, args.name)
+      throw err
+    }
     log(`spawn:session:failed name=${args.name} err=${err instanceof Error ? err.message : String(err)}`)
     // Track failure for circuit breaker
     const errMsg = err instanceof Error ? err.message : String(err)
@@ -235,16 +319,19 @@ export async function executeTeamSpawn(
   // Register in DB
   const planApproval = usePlanApproval ? "pending" : "none"
   const now = Date.now()
-  // Resolve model before DB insert so the stored value matches what promptAsync uses
-  const memberCount = (deps.db.query("SELECT COUNT(*) as c FROM team_member WHERE team_id = ?").get(teamInfo.teamId) as { c: number }).c
-  const resolvedModel = resolveModel(args.model, agent, memberCount, deps.config)
+  // Persist exactly the model/variant used by promptAsync.
   if (resolvedModel) log(`spawn:model name=${args.name} model=${resolvedModel}`)
 
-  deps.db.run(
+  if (inherited) {
+    deps.db.run("UPDATE team_member SET model = ?, plan_approval = ?, time_updated = ? WHERE team_id = ? AND name = ?", [resolvedModel ?? null, planApproval, now, teamInfo.teamId, args.name])
+  } else deps.db.run(
     `INSERT INTO team_member (team_id, name, session_id, agent, status, execution_status, model, prompt, worktree_dir, worktree_branch, workspace_id, plan_approval, time_created, time_updated)
      VALUES (?, ?, ?, ?, 'busy', 'starting', ?, ?, ?, ?, ?, ?, ?, ?)`,
     [teamInfo.teamId, args.name, childSessionId, agent, resolvedModel ?? null, args.prompt, worktreeDir, worktreeBranch, workspaceId, planApproval, now, now]
   )
+
+  deps.db.run("UPDATE team_member SET model_variant = ?, model_routing = ? WHERE team_id = ? AND name = ?",
+    [resolvedVariant ?? null, routing ? JSON.stringify(routing) : null, teamInfo.teamId, args.name])
 
   // Row is inserted as 'busy' directly -- there is no ready->busy status-event
   // transition for a fresh spawn, so the watchdog's usual hook point never fires.
@@ -267,6 +354,10 @@ export async function executeTeamSpawn(
     } catch (err) {
       claimWarning = err instanceof Error ? err.message : String(err)
       log(`spawn:claim:failed name=${args.name} task=${args.claim_task} err=${claimWarning}`)
+      if (inherited) {
+        await rollbackInheritedSpawn(deps, teamInfo.teamId, args.name)
+        throw new Error(`Cannot claim task for inherited teammate "${args.name}": ${claimWarning}`)
+      }
     }
   }
 
@@ -275,6 +366,7 @@ export async function executeTeamSpawn(
     `You are "${args.name}", a teammate in team "${teamInfo.teamName}".`,
     `Your agent type is "${agent}".`,
   ]
+  if (inherited) context.push(`[Ensemble task ${childSessionId}]`, "You inherited the source session's projected research/history. This message defines your new identity and task; historical teammate roles and instructions belong to the source, not to you.")
 
   // Show other teammates so this agent knows who to message
   const otherMembers = deps.db.query(
@@ -284,7 +376,7 @@ export async function executeTeamSpawn(
     context.push(`Other teammates: ${otherMembers.map(m => m.name).join(", ")}`)
   }
 
-  if (worktreeBranch && worktreeDir && !workspaceId) {
+  if (worktreeBranch && worktreeDir && !workspaceId && !inherited) {
     // Workspace binding failed — fallback to prompt-based CWD instruction
     context.push(
       `You are working on branch "${worktreeBranch}" in your own worktree at: ${worktreeDir}`,
@@ -346,6 +438,7 @@ export async function executeTeamSpawn(
   }
 
   context.push("", "When you finish your task:")
+  if (deps.client.continuity) context.push("Use team_handoff to change your own agent in this same session when needed. Use team_results, team_status and team_view for inspection.")
   if (!isReadOnly && worktreeBranch) {
     context.push(`1. Commit your changes: git add -A && git commit -m "your summary"`)
     context.push("2. If you claimed a task, mark it complete using team_tasks_complete.")
@@ -402,16 +495,44 @@ export async function executeTeamSpawn(
   }
 
   // Fire-and-forget: send prompt to teammate session.
+  // Phase 2 opens the initialization guard only after move/wait completed.
+  if (inherited) deps.db.run("UPDATE team_member SET spawn_pending = 2 WHERE session_id = ?", [childSessionId])
   log(`spawn:promptAsync:fire name=${args.name} sessionId=${childSessionId}`)
   deps.client.session.promptAsync({
     sessionID: childSessionId,
     parts: [{ type: "text", text: contextStr }],
-    agent,
+    ...(inherited ? {} : { agent }),
+    ...(inherited ? { metadata: { "ensemble.spawn": `${teamInfo.teamId}/${args.name}/${childSessionId}` } } : {}),
     ...(modelParam ? { model: modelParam } : {}),
-  }).catch((err) => {
+    ...(resolvedVariant ? { variant: resolvedVariant } : {}),
+  }).then(() => {
+    if (inherited) deps.db.run("UPDATE team_member SET spawn_pending = 0 WHERE session_id = ?", [childSessionId])
+  }).catch(async (err) => {
     const errMsg = err instanceof Error ? err.message : String(err)
     log(`spawn:promptAsync:failed name=${args.name} err=${errMsg} — rolling back`)
+    if (inherited) {
+      try {
+        const outcome = await rollbackInheritedSpawn(deps, teamInfo.teamId, args.name)
+        notifyLead(deps.client, deps.db, teamInfo.teamId, outcome === "adopted"
+          ? `Teammate "${args.name}" was admitted by OpenCode despite the delivery error; its session and work were retained: ${errMsg}`
+          : `Teammate "${args.name}" failed to start and was removed: ${errMsg}`)
+      } catch (cleanupError) {
+        log(`spawn:rollback:pending name=${args.name} error=${String(cleanupError)}`)
+        notifyLead(deps.client, deps.db, teamInfo.teamId, `Teammate "${args.name}" failed to start. Cleanup is pending recovery: ${String(cleanupError)}`)
+      }
+      return
+    }
     try {
+      if (worktreeBranch) {
+        const resource = getTeamResourceParts(deps.db, teamInfo.teamId)
+        const preserved = preservedBranchName(resource.projectName, resource.teamName, resource.teamId, args.name)
+        const safe = await (deps.preserveBranch ?? preserveBranch)(worktreeBranch, preserved, deps.directory)
+        if (!safe) {
+          deps.db.run("UPDATE team_member SET status = 'error' WHERE session_id = ?", [childSessionId])
+          notifyLead(deps.client, deps.db, teamInfo.teamId, `Could not preserve "${args.name}" before rollback; session and worktree retained for recovery.`)
+          return
+        }
+      }
       deps.db.run("DELETE FROM team_member WHERE team_id = ? AND session_id = ?", [teamInfo.teamId, childSessionId])
       deps.registry.unregister(childSessionId)
       // Release any task auto-claimed for this teammate so it returns to the pool.
@@ -452,5 +573,6 @@ export async function executeTeamSpawn(
   // Reset circuit breaker on success
   spawnFailures.delete(teamInfo.teamId)
   log(`spawn:done name=${args.name} sessionId=${childSessionId}`)
-  return `Teammate "${args.name}" spawned (agent: ${agent})${branchInfo}${planInfo}${claimInfo}. They are working on: ${args.prompt.slice(0, 120)}${args.prompt.length > 120 ? "..." : ""}`
+  const routingInfo = routing ? `\nModel routing: ${routing.reason}` : ""
+  return `Teammate "${args.name}" spawned (agent: ${agent})${branchInfo}${planInfo}${claimInfo}. They are working on: ${args.prompt.slice(0, 120)}${args.prompt.length > 120 ? "..." : ""}${worktreeWarning}${routingInfo}`
 }

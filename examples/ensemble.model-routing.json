@@ -1,0 +1,24 @@
+{
+  "modelRouting": {
+    "beta": 0.35,
+    "models": [
+      { "id": "opencode/mimo-v2.6-flash-free", "provider": "opencode", "reasoningEffort": "default", "intelligenceScore": 38, "averageCostPerTask": 0, "available": true, "paidFallback": "opencode-go/gpt-6-luna", "level": "simple", "usage": "volume" },
+      { "id": "opencode-go/gpt-6-luna", "provider": "opencode-go", "reasoningEffort": "medium", "intelligenceScore": 30, "averageCostPerTask": 0.02, "available": true, "level": "simple", "usage": "petites_fonctions" },
+      { "id": "opencode-go/claude-haiku-5-5", "provider": "opencode-go", "reasoningEffort": "high", "intelligenceScore": 38, "averageCostPerTask": 0.08, "available": true, "level": "simple", "usage": "coding_rapide" },
+      { "id": "opencode/ling-3.1-flash-free", "provider": "opencode", "reasoningEffort": "default", "intelligenceScore": 41, "averageCostPerTask": 0, "available": true, "paidFallback": "opencode-go/mimo-v2.6-pro", "level": "simple", "usage": "analyse" },
+      { "id": "opencode-go/deepseek-v4.1-flash", "provider": "opencode-go", "reasoningEffort": "max", "intelligenceScore": 39, "averageCostPerTask": 0.27, "available": true, "level": "simple", "usage": "generation_rapide" },
+      { "id": "cursor/claude-haiku-5-5", "provider": "cursor", "reasoningEffort": "high", "intelligenceScore": 38, "averageCostPerTask": 0.08, "available": true, "cursorBenchCostPerTask": 0.32, "level": "simple", "usage": "coding_rapide_cursor" },
+      { "id": "opencode/step-5-preview-free", "provider": "opencode", "reasoningEffort": "default", "intelligenceScore": 44, "averageCostPerTask": 0, "available": true, "paidFallback": "opencode-go/mimo-v2.6-pro", "level": "medium", "usage": "raisonnement" },
+      { "id": "zai-coding-plan/glm-5.3-flash", "provider": "zai-coding-plan", "reasoningEffort": "max", "intelligenceScore": 42, "averageCostPerTask": 0.25, "available": true, "level": "medium", "usage": "coding_agentique" },
+      { "id": "opencode-go/mimo-v2.6-pro", "provider": "opencode-go", "reasoningEffort": "default", "intelligenceScore": 46, "averageCostPerTask": 0.13, "available": true, "level": "medium", "usage": "implementation" },
+      { "id": "openai/gpt-6.1-sol", "provider": "openai", "reasoningEffort": "medium", "intelligenceScore": 48, "averageCostPerTask": 0.21, "available": true, "level": "medium", "usage": "coding_et_raisonnement" },
+      { "id": "opencode/gemini-3.8-flash", "provider": "opencode", "reasoningEffort": "medium", "intelligenceScore": 40, "averageCostPerTask": 0.93, "available": true, "level": "medium", "usage": "multimodal" },
+      { "id": "cursor/claude-sonnet-5-5", "provider": "cursor", "reasoningEffort": "high", "intelligenceScore": 47, "averageCostPerTask": 0.88, "available": true, "cursorBenchCostPerTask": 1.2, "level": "medium", "usage": "coding_et_review" },
+      { "id": "cursor/grok-4.7", "provider": "cursor", "reasoningEffort": "high", "intelligenceScore": 46, "averageCostPerTask": 2.73, "available": true, "cursorBenchCostPerTask": 4.69, "level": "complexe", "usage": "agentique_cursor" },
+      { "id": "opencode/claude-sonnet-5-5", "provider": "opencode", "reasoningEffort": "high", "intelligenceScore": 47, "averageCostPerTask": 0.88, "available": true, "level": "complexe", "usage": "implementation_complexe" },
+      { "id": "openai/gpt-6-astra", "provider": "openai", "reasoningEffort": "high", "intelligenceScore": 51, "averageCostPerTask": 1.73, "available": true, "level": "complexe", "usage": "raisonnement_complexe" },
+      { "id": "opencode/claude-opus-5-5", "provider": "opencode", "reasoningEffort": "high", "intelligenceScore": 54, "averageCostPerTask": 1.82, "available": true, "level": "complexe", "usage": "review_critique" },
+      { "id": "cursor/claude-opus-5-5", "provider": "cursor", "reasoningEffort": "medium", "intelligenceScore": 51, "averageCostPerTask": 1.34, "available": true, "cursorBenchCostPerTask": 2.91, "level": "complexe", "usage": "arbitrage_complexe" }
+    ]
+  }
+}

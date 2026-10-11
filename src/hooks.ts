@@ -222,9 +222,9 @@ export function checkToolIsolation(
  * Returns true if the member is idle/ready and has no outbound messages.
  */
 export function shouldNudgeIdleMember(db: Database, teamId: string, memberName: string): boolean {
-  const member = db.query("SELECT status FROM team_member WHERE team_id = ? AND name = ?")
-    .get(teamId, memberName) as { status: string } | null
-  if (!member || member.status !== "ready") return false
+  const member = db.query("SELECT status, spawn_pending FROM team_member WHERE team_id = ? AND name = ?")
+    .get(teamId, memberName) as { status: string; spawn_pending: number } | null
+  if (!member || member.status !== "ready" || member.spawn_pending) return false
 
   const msg = db.query("SELECT id FROM team_message WHERE team_id = ? AND from_name = ? AND (to_name = 'lead' OR to_name IS NULL) LIMIT 1")
     .get(teamId, memberName) as { id: string } | null

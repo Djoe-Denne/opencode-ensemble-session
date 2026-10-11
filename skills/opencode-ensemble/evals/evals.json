@@ -1,0 +1,30 @@
+{
+  "skill_name": "opencode-ensemble",
+  "evals": [
+    {
+      "id": 7,
+      "prompt": "Integrate Ensemble into our TypeScript project. We sometimes need API and documentation specialists, sometimes just one agent. Propose the minimal project instructions and any optional agent profile. Do not make explorer/architect/implementers a mandatory sequence. This is a planning exercise: show configuration/instructions, do not apply them or launch agents.",
+      "expected_output": "A discoverable skill and compatible runtime plugin, a short conditional AGENTS.md policy, optional durable native profiles, mission-specific spawn prompts, and dynamic team composition allowing single-agent work.",
+      "files": [],
+      "expectations": [
+        "Explains how to make the skill discoverable/loadable and distinguishes it from the runtime plugin/tools.",
+        "Provides a short conditional AGENTS.md coordination policy instead of duplicating the full tool protocol.",
+        "Keeps optional durable profile expertise/permissions distinct from mission-specific spawn ownership.",
+        "Allows direct single-agent work and adapts team composition without a mandatory role chain."
+      ]
+    },
+    {
+      "id": 8,
+      "prompt": "On V2, our read-only member mapper has relevant history A/B/C/D/E and should continue under the available contract-analyst profile. Later the lead needs an isolated worker from history through C and an independent reviewer. Keep the current model; there are no Ensemble model overrides and all Git directories are clean at the same HEAD. Explain the calls and who makes them; do not execute them. Use placeholders explicitly for native message IDs that have not been supplied.",
+      "expected_output": "Mapper calls team_handoff in its own session, retaining membership/directory/model. The lead spawns a checkpoint worker from mapper with D's actual native message ID (exclusive); the reviewer is fresh/read-only. No model override, fabricated message ID, or leadership transfer.",
+      "files": [],
+      "expectations": [
+        "Mapper calls team_handoff to contract-analyst in its own existing session without gaining lead rights.",
+        "The lead spawns a checkpoint worker from mapper using D's explicitly placeholder native message ID as the exclusive boundary.",
+        "The implementation worker uses an isolated worktree; handoff is not claimed to create one or transfer file changes.",
+        "The independent reviewer uses fresh context, a read-only profile, and worktree false.",
+        "Retains the existing native selected model and does not inject an unnecessary model override."
+      ]
+    }
+  ]
+}

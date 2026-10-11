@@ -1,6 +1,7 @@
 import type { ToolDeps } from "./types"
 import { executeTeamCreate } from "./tools/team-create"
 import { executeTeamSpawn } from "./tools/team-spawn"
+import { executeTeamHandoff } from "./tools/team-handoff"
 import { executeTeamMessage } from "./tools/team-message"
 import { executeTeamBroadcast } from "./tools/team-broadcast"
 import { executeTeamTasksList } from "./tools/team-tasks-list"
@@ -19,7 +20,7 @@ export interface V2ToolDef {
   name: string
   description: string
   input: Record<string, unknown>
-  execute(input: unknown, context: { sessionID: string }): Promise<{ content: string }>
+  execute(input: unknown, context: { sessionID: string; signal?: AbortSignal }): Promise<{ content: string }>
 }
 
 /** Minimal structural subset of the V2 tool domain. */
@@ -54,7 +55,7 @@ export function normalizePriority(value: string | undefined): TaskPriority {
 }
 
 /**
- * Register all 14 team tools on a V2 context. Each execute delegates to the
+ * Register all 15 team tools on a V2 context. Each execute delegates to the
  * same implementation V1 uses (DRY) — only arg transport changes from Zod to
  * JSON Schema. V1 applied schema defaults before execute; V2 may not, so
  * priority is normalized here (team_tasks_add writes it straight to SQLite).
@@ -98,7 +99,8 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
       description:
         "Spawn a new teammate that works in parallel. The teammate starts immediately with the given prompt. " +
         "Each teammate gets their own git worktree for file isolation. " +
-        "Teammates work asynchronously and will message you when done. Do not poll for their status.",
+        "Teammates work asynchronously and will message you when done. Do not poll for their status. " +
+        "Context is fresh by default; opt into fork/checkpoint/compact_fork to inherit a team's session history. Lead only.",
       input: {
         type: "object",
         properties: {
@@ -106,14 +108,35 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
           agent: str("Agent type (e.g. 'build', 'plan', 'explore')"),
           prompt: str("Task instructions for the teammate"),
           model: str("Model in provider/model format (optional, uses default)"),
+          variant: str("Native reasoning variant for an explicit/configured model; routed models use the catalogue effort"),
+          complexity: { type: "integer", minimum: 0, maximum: 100, description: "Task complexity for deterministic model routing; overrides claim_task" },
+          risk: { type: "integer", minimum: 0, maximum: 100, description: "Task risk for deterministic model routing only; overrides claim_task" },
           claim_task: str("Task ID to auto-claim for this teammate (optional)"),
           worktree: bool("Create a git worktree for file isolation (default: true, set false for read-only agents)", true),
           plan_approval: bool("Require teammate to send a plan for approval before writing files (default: false)", false),
+          context: {
+            type: "object",
+            description: "Opt-in V2 history inheritance; independent reviewers should use fresh.",
+            properties: {
+              mode: { type: "string", enum: ["fresh", "fork", "checkpoint", "compact_fork"] },
+              from: str("current (default), lead, or a member name/session ID in this team; compact_fork requires a distinct idle source"),
+              messageID: str("checkpoint only: exclusive native boundary; this message and later messages are excluded"),
+            },
+            required: ["mode"],
+            additionalProperties: false,
+          },
         },
         required: ["name", "prompt"],
         additionalProperties: false,
       },
       execute: run(executeTeamSpawn),
+    })
+
+    editor.add({
+      name: "team_handoff",
+      description: "V2: switch your own team session to another agent for subsequent provider turns, retaining its history, identity, tasks and worktree. This does not grant lead privileges.",
+      input: { type: "object", properties: { agent: str("Native target agent name") }, required: ["agent"], additionalProperties: false },
+      execute: async (input, context) => ({ content: await executeTeamHandoff(deps, input as { agent: string }, context.sessionID, context.signal) }),
     })
 
     editor.add({
@@ -184,6 +207,12 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
                   items: { type: "string" },
                   description: "Task IDs this depends on",
                 },
+                agent: {
+                  type: "string",
+                  description: "Agent type affinity for auto-dispatch (e.g. build). Omit for any member.",
+                },
+                complexity: { type: "integer", minimum: 0, maximum: 100, description: "Task complexity for deterministic model routing" },
+                risk: { type: "integer", minimum: 0, maximum: 100, description: "Task risk for model routing only (not review policy)" },
               },
               required: ["content"],
               additionalProperties: false,
@@ -195,7 +224,7 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
       },
       execute: async (input: unknown, context: { sessionID: string }) => {
         const args = input as {
-          tasks: Array<{ content: string; priority?: string; depends_on?: string[] }>
+          tasks: Array<{ content: string; priority?: string; depends_on?: string[]; agent?: string; complexity?: number; risk?: number }>
         }
         const content = await executeTeamTasksAdd(
           deps,
@@ -204,6 +233,9 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
               content: task.content,
               priority: normalizePriority(task.priority),
               ...(task.depends_on ? { depends_on: task.depends_on } : {}),
+              ...(task.agent ? { agent: task.agent } : {}),
+              ...(task.complexity !== undefined ? { complexity: task.complexity } : {}),
+              ...(task.risk !== undefined ? { risk: task.risk } : {}),
             })),
           },
           context.sessionID,

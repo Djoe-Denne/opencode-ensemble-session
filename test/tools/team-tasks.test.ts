@@ -364,3 +364,44 @@ describe("team_tasks_complete — ownership and state validation (issue #27)", (
     expect(cAfterB.status).toBe("pending")
   })
 })
+
+describe("team_tasks_add — agent affinity", () => {
+  let deps: ReturnType<typeof setupDeps>
+
+  beforeEach(() => {
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+    insertMember(deps.db, "t1", "alice", "sess-alice")
+    deps.registry.register("t1", "alice", "sess-alice")
+  })
+
+  test("stores the agent affinity", async () => {
+    await executeTeamTasksAdd(deps, { tasks: [
+      { content: "API work", priority: "high", agent: "build" },
+    ] }, "sess-alice")
+
+    const row = deps.db.query("SELECT agent FROM team_task WHERE team_id = 't1'").get() as { agent: string | null }
+    expect(row.agent).toBe("build")
+  })
+
+  test("stores NULL for omitted or blank agent values", async () => {
+    await executeTeamTasksAdd(deps, { tasks: [
+      { content: "Any member", priority: "medium" },
+      { content: "Blank agent", priority: "medium", agent: "   " },
+    ] }, "sess-alice")
+
+    const rows = deps.db.query("SELECT agent FROM team_task WHERE team_id = 't1' ORDER BY time_created ASC").all() as Array<{ agent: string | null }>
+    expect(rows).toHaveLength(2)
+    expect(rows[0]!.agent).toBeNull()
+    expect(rows[1]!.agent).toBeNull()
+  })
+
+  test("list renders the affinity", async () => {
+    await executeTeamTasksAdd(deps, { tasks: [
+      { content: "API work", priority: "high", agent: "build" },
+    ] }, "sess-alice")
+
+    const result = await executeTeamTasksList(deps, "sess-alice")
+    expect(result).toContain("@build")
+  })
+})

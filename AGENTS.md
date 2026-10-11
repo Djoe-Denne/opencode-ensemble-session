@@ -7,6 +7,31 @@ agents running in parallel with peer-to-peer communication, shared task
 management, and coordinated execution. Built entirely on the public OpenCode
 plugin SDK (@opencode-ai/plugin) with zero internal dependencies.
 
+## Using Ensemble on This Project
+
+For work that benefits from a team, load the `opencode-ensemble` skill before
+coordinating it. The project exposes the canonical `skills/` directory through
+`opencode.json`. If the skill catalog has not refreshed, read
+`skills/opencode-ensemble/SKILL.md` and the references it calls for.
+
+The lead chooses the team size, agent profiles, dependencies, and context
+transitions for the actual task. Explorer → architect → implementers is one
+optional recipe, not a required sequence or a plugin-level workflow. Each
+delegated mission needs a bounded scope, a deliverable, and verification criteria.
+The lead owns integration and the verification commands documented below.
+
+Keep reusable coordination guidance in the skill. Keep project-specific policy
+here, durable expertise/permissions in optional `.opencode/agents/*.md` profiles,
+and task-specific ownership in spawn prompts. A profile name does not confer
+Ensemble lead rights; `team_handoff` changes the native agent, not team leadership.
+See `skills/opencode-ensemble/references/project-integration.md` for templates.
+
+For interactive project onboarding or adaptation of existing agent definitions,
+use `ensemble-project-setup` (`skills/ensemble-project-setup/SKILL.md`). It
+diagnoses the existing policy, proposes a minimal diff, applies approved changes,
+and checks that repeat runs preserve existing customization without duplicates.
+Use `opencode-ensemble` for operating teams after setup.
+
 ## Design Context
 
 ### Users
@@ -53,18 +78,22 @@ triage.
 
 The plugin supports both hosts from one package: V1 hosts call the exported
 `server()` function; V2 hosts load `Plugin.define({ id: "ensemble", setup })`.
-All 14 tool implementations, the state machine, and SQLite persistence are
+All 15 tool implementations, the state machine, and SQLite persistence are
 shared — the `src/v2-*.ts` modules adapt the V2 plugin context onto them:
 
 - `v2-client.ts` — V2 ctx → shared PluginClient adapter (permissions, worktree bridge, synthetic wakes)
 - `v2-events.ts` — V2 server events → shared member state machine
 - `v2-setup.ts` — setup wiring: db, hooks, RPC, nudges, dashboard, tools
-- `v2-tools.ts` — the 14 tools on the V2 tool transform (JSON Schema)
+- `v2-tools.ts` — the 15 tools on the V2 tool transform (JSON Schema)
+- `session-continuity.ts` / `v2-continuity.ts` — native history inheritance,
+  same-session handoff, admission recovery, and the explicit same-server HTTP fork bridge
 - `v2-rpc.ts` / `rpc.ts` — companion RPC bridge (member/notice/view events)
 - `tui.tsx` — terminal companion: sidebar widget + opt-in session navigation
 
 On V2, teammate wakes deliver as persistent synthetic system messages, and
-teammates receive 9 member tools (6 worker + team_results/team_status/team_view).
+teammates receive 10 member tools (6 worker + team_results/team_status/team_view
+and team_handoff). Handoff and inherited spawning require V2 capabilities;
+V1 keeps fresh spawning and rejects unsupported continuity requests explicitly.
 
 ### Plugin SDK Constraint
 
@@ -78,7 +107,7 @@ Key SDK primitives:
 - client.session.abort() — cancel/shutdown teammates
 - client.session.status() — poll session idle/busy state
 - event hook — subscribe to session.status events for state transitions
-- tool hook — register the 14 team tools
+- tool hook — register the 15 team tools
 - tool.execute.before hook — rate limiting + sub-agent isolation
 
 ### Storage
@@ -114,12 +143,13 @@ populated from session events. When a team tool call arrives from an unknown
 session, walks the parent chain (max depth 10). If any ancestor is a team
 member, the call is blocked. This covers sub-agents at arbitrary depth.
 
-## The 14 Tools
+## The 15 Tools
 
 | Tool                | Who Can Use | Purpose                              |
 |---------------------|-------------|--------------------------------------|
 | team_create         | Any session | Create a new team, caller is lead    |
 | team_spawn          | Lead only   | Spawn a teammate with a prompt (supports plan_approval mode) |
+| team_handoff        | Any member  | V2: change the calling session's agent, retaining its identity/history/worktree |
 | team_message        | Any member  | Send message to teammate or lead (approve/reject plans) |
 | team_broadcast      | Any member  | Send message to all team members     |
 | team_tasks_list     | Any member  | View the shared team task board      |
@@ -150,7 +180,7 @@ Three hooks wired in index.ts:
 
 1. SQLite via the internal database adapter — not file JSON, not in-memory-only, not external native packages
 2. promptAsync for message delivery — not session injection, not polling
-3. 14 separate tools — not a unified action tool, no exceptions
+3. 15 separate tools — not a unified action tool, no exceptions
 4. Fire-and-forget spawn — not blocking, not tmux
 5. tool.execute.before for rate limiting — token bucket, in-memory
 6. tool.execute.before for sub-agent isolation — full descendant tracking via parent chain
@@ -321,7 +351,7 @@ It must contain exactly:
 3. The tools they can use — the 6 worker tools (team_message,
    team_broadcast, team_tasks_list, team_tasks_add,
    team_tasks_complete, team_claim) plus inspection via team_results,
-   team_status, and team_view
+   team_status, and team_view, plus team_handoff on V2
    with a one-line description of each
 4. How to report completion (team_message to lead with findings)
 5. How to get unblocked (team_message to lead with the blocker)

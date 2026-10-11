@@ -104,6 +104,7 @@ export function setupDeps(db?: EnsembleDatabase): ToolDeps & { client: ReturnTyp
     directory: "/tmp/test-project",
     config: { ...DEFAULT_CONFIG },
     progressTracker: new ProgressTracker(),
+    preserveBranch: async () => true,
   }
 }
 
