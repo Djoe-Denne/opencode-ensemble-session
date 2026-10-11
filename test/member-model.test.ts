@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach } from "bun:test"
 import { setupDb, insertTeam, insertMember } from "./helpers"
 import type { Database } from "../src/db"
-import { parseModelId, getMemberModel } from "../src/member-model"
+import { parseModelId, getMemberModel, getMemberPromptModel } from "../src/member-model"
 
 describe("parseModelId", () => {
   test("parses a valid provider/model string", () => {
@@ -57,5 +57,14 @@ describe("getMemberModel", () => {
 
   test("returns undefined for an unknown member", () => {
     expect(getMemberModel(db, "t1", "nobody")).toBeUndefined()
+  })
+
+  test("returns a paired native variant for later deliveries, and no fields for an unknown member", () => {
+    insertMember(db, "t1", "alice", "sess-alice")
+    db.run("UPDATE team_member SET model = 'openai/model', model_variant = 'high' WHERE name = 'alice'")
+    expect(getMemberPromptModel(db, "t1", "alice")).toEqual({ model: { providerID: "openai", modelID: "model" }, variant: "high" })
+    expect(getMemberPromptModel(db, "t1", "nobody")).toEqual({})
+    db.run("UPDATE team_member SET model = 'malformed' WHERE name = 'alice'")
+    expect(getMemberPromptModel(db, "t1", "alice")).toEqual({})
   })
 })

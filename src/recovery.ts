@@ -3,7 +3,7 @@ import type { PluginClient } from "./types"
 import type { MemberRegistry } from "./state"
 import { getUndeliveredMessages, markDelivered, hasReportedCompletion } from "./messaging"
 import { releaseMemberTasks } from "./tasks"
-import { getMemberModel } from "./member-model"
+import { getMemberPromptModel } from "./member-model"
 import { preserveBranch, preservedBranchName, teamResourceSegment } from "./tools/merge-helper"
 import { log } from "./log"
 import { runCommand } from "./process"
@@ -234,11 +234,11 @@ export async function recoverUndeliveredMessages(
       }
 
       try {
-        const recipientModel = getMemberModel(db, team.id, msg.to_name)
+        const recipientModel = getMemberPromptModel(db, team.id, msg.to_name)
         await client.session.promptAsync({
           sessionID: recipientSessionId,
           parts: [{ type: "text", text: `[Recovered team message from ${msg.from_name}]: ${msg.content}` }],
-          ...(recipientModel ? { model: recipientModel } : {}),
+          ...recipientModel,
         })
         markDelivered(db, msg.id)
         redelivered++
@@ -267,7 +267,7 @@ export function rehydrateRegistry(db: Database, registry: MemberRegistry): numbe
     `SELECT tm.team_id, tm.name, tm.session_id
      FROM team_member tm
      JOIN team t ON tm.team_id = t.id
-     WHERE t.status = 'active' AND tm.status NOT IN ('shutdown', 'error')`
+      WHERE t.status = 'active' AND tm.status NOT IN ('shutdown', 'error') AND tm.spawn_pending = 0`
   ).all() as Array<{ team_id: string; name: string; session_id: string }>
   for (const m of members) {
     registry.register(m.team_id, m.name, m.session_id)

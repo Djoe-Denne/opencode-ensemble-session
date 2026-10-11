@@ -1,5 +1,6 @@
 import type { ToolDeps } from "../types"
 import { requireTeamMember } from "./shared"
+import { pumpTeam } from "../dispatch"
 import { log } from "../log"
 
 /**
@@ -83,5 +84,10 @@ export async function executeTeamTasksComplete(
   } catch { log(`tasks-complete:toast:failed`) }
 
   const unblockedMsg = unblocked > 0 ? ` Unblocked ${unblocked} dependent task${unblocked !== 1 ? "s" : ""}.` : ""
+
+  // Pull-based pool: newly unblocked work may exceed idle capacity — feed
+  // idle members, then scale up within the cap (opt-in — docs/task-pool.md).
+  pumpTeam(deps, teamInfo.teamId)
+
   return `Completed task: ${task.content}${unblockedMsg}`
 }

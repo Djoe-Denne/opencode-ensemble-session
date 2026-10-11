@@ -1,0 +1,45 @@
+{
+  "skill_name": "ensemble-project-setup",
+  "evals": [
+    {
+      "id": 1,
+      "name": "proposal-before-approval",
+      "prompt": "In the supplied fixture project, analyze existing instructions and native agents and propose a minimal Ensemble integration. We sometimes use API and documentation specialists, but do not want a fixed role chain. I have not approved edits yet. Native catalogs/global configuration are unavailable in this offline fixture; the plugin string is configured only, not runtime-verified. Show your inferred policy and a concrete proposed diff or exact changes, then the decision needed to proceed. Do not contact a server or run a team.",
+      "expected_output": "Evidence-based proposal respecting explicit-delegation policy, existing models/permissions/modes, minimal project guidance, and a request for approval. All target files remain byte-identical.",
+      "files": ["files/project-AGENTS.md", "files/project-opencode.jsonc", "files/api-specialist.md", "files/docs-reviewer.md", "files/internal-skill.md"],
+      "expectations": [
+        "Leaves every target file byte-identical before approval.",
+        "Presents evidence-based minimal per-file changes and asks for the decision needed before applying.",
+        "Preserves explicit-request-only delegation and flexible team composition without changing native profile fields.",
+        "Distinguishes configured/filesystem evidence from unavailable native runtime verification."
+      ]
+    },
+    {
+      "id": 2,
+      "name": "approved-minimal-application",
+      "prompt": "Apply this already-approved setup proposal in the supplied fixture project only: add the supplied verified operational skill source to the existing skills array without replacing existing entries; append one compact Ensemble policy block to AGENTS.md preserving its explicit-delegation requirement; append a short body-only coordination reminder to api-specialist.md. Preserve all other content, JSONC comments, native modes/models/permissions, plugin configuration, and docs-reviewer.md. No other files or profile creation are approved. Do not request the same approval again. Native catalogs are unavailable; do not contact a server or run a team. Verify file syntax/preservation and compare the resulting intended state without making a second batch of edits.",
+      "expected_output": "Exactly three minimally edited files, one added skill source, one policy block, one agent-body reminder. Frontmatter and unrelated content remain unchanged. Runtime verification remains explicitly unavailable.",
+      "files": ["files/project-AGENTS.md", "files/project-opencode.jsonc", "files/api-specialist.md", "files/docs-reviewer.md", "files/internal-skill.md"],
+      "expectations": [
+        "Changes exactly AGENTS.md, opencode.jsonc, and the api-specialist agent body; creates no other project files.",
+        "Adds the verified skill source once while preserving original source order, JSONC comments, plugin, inline agents, and model configuration.",
+        "Preserves all agent frontmatter and original body text, and leaves docs-reviewer and the internal skill byte-identical.",
+        "Adds one compact policy and one reminder that load the operational skill while retaining explicit-request-only delegation and no mandatory topology.",
+        "Applies the already-approved changes without a redundant approval request, reports actual file verification, and marks native runtime verification unavailable."
+      ]
+    },
+    {
+      "id": 3,
+      "name": "idempotent-customized-rerun",
+      "prompt": "Rerun Ensemble setup on the supplied already-integrated fixture. Keep our customization inside the policy and agent reminder blocks, our explicit-approval-before-delegation rule, and all native profile settings. The operational skill source is already configured. Analyze whether any changes are actually necessary and apply only necessary minimal corrections; no permission/model/mode changes are authorized. Native catalogs are unavailable, so do not claim runtime checks or run a team. If the intended integration is already present, report no changes.",
+      "expected_output": "No target-file changes or duplicate paths/blocks/reminders; user customization and original profile fields are preserved. The report distinguishes filesystem verification from runtime availability.",
+      "files": ["files/integrated-AGENTS.md", "files/project-opencode.jsonc", "files/api-specialist.md", "files/integrated-agent-note.md", "files/docs-reviewer.md", "files/internal-skill.md"],
+      "expectations": [
+        "Leaves every target file byte-identical on the already-integrated rerun.",
+        "Keeps one operational skill source, one policy block, and one existing agent reminder without adding profiles or duplicate guidance.",
+        "Recognizes and preserves developer customization inside managed markers and explicit-request-only delegation.",
+        "Reports no necessary changes with filesystem evidence and does not claim unavailable native runtime verification."
+      ]
+    }
+  ]
+}

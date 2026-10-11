@@ -1,27 +1,37 @@
 import type { PluginClient } from "./types"
 import { runCommand } from "./process"
+import { createV2Continuity, type V2ContinuityOptions } from "./v2-continuity"
 
 /** V2 plugin context subset Ensemble needs (structural, mock-friendly). */
 export interface V2Context {
+  location?: { directory: string; project?: { id: string } }
   session: {
     create(input: Record<string, unknown>): Promise<{ id: string }>
     prompt(input: Record<string, unknown>): Promise<unknown>
-    switchAgent(input: Record<string, unknown>): Promise<unknown>
+    switchAgent(input: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<unknown>
     switchModel(input: Record<string, unknown>): Promise<unknown>
     interrupt(input: Record<string, unknown>): Promise<unknown>
     get(input: Record<string, unknown>): Promise<unknown>
     context(input: Record<string, unknown>): Promise<unknown[]>
     active(): Promise<Record<string, { type: string }>>
     synthetic(input: Record<string, unknown>): Promise<unknown>
+    fork?(input: Record<string, unknown>): Promise<{ id: string }>
+    move?(input: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<unknown>
+    compact?(input: Record<string, unknown>): Promise<{ id: string }>
+    wait?(input: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<unknown>
+    remove?(input: Record<string, unknown>): Promise<unknown>
+    update?(input: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<unknown>
   }
+  agent?: { get(input: { agentID: string }): Promise<unknown> }
   worktree: {
     create(input: Record<string, unknown>): Promise<{ directory: string }>
     remove(input: Record<string, unknown>): Promise<unknown>
-    list(): Promise<Array<{ directory: string }>>
-    refresh(): Promise<unknown>
+    list(input?: Record<string, unknown>): Promise<Array<{ directory: string }>>
+    refresh(input?: Record<string, unknown>): Promise<unknown>
   }
-  permission: {
-    rules(input: Record<string, unknown>): Promise<unknown>
+  permission?: {
+    rules?(input: Record<string, unknown>): Promise<unknown>
+    hook?(name: "evaluate", callback: (event: { sessionID: string; action: string; effect: string }) => void): Promise<unknown>
   }
 }
 
@@ -29,7 +39,7 @@ export interface V2Context {
 const DIR_WORKSPACE_PREFIX = "v2dir:"
 
 /** Injectable shell lookups (default to git; overridden in tests). */
-export interface V2ClientDeps {
+export interface V2ClientDeps extends V2ContinuityOptions {
   /** Current branch checked out in a directory, or null when unknown. */
   gitBranch?: (directory: string) => Promise<string | null>
   /** Worktree directory currently on a branch, or null when none. */
@@ -58,7 +68,7 @@ function joinParts(parts: Array<{ type: "text"; text: string }>): string {
 }
 
 /**
- * Adapt a V2 plugin context to the shared PluginClient interface so all 14
+ * Adapt a V2 plugin context to the shared PluginClient interface so all 15
  * team tools run unchanged on V2 (DRY: one adapter, zero logic forks).
  *
  * Mapping notes (all spike-verified live against v2.0.3 unless marked OQ):
@@ -88,7 +98,10 @@ function joinParts(parts: Array<{ type: "text"; text: string }>): string {
  */
 export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginClient {
   const gitBranch = deps.gitBranch ?? gitBranchDefault
+  const worktreeDirectories = new Map<string, string>()
+  const project = ctx.location?.project ? { projectID: ctx.location.project.id } : {}
   return {
+    continuity: createV2Continuity(ctx, deps),
     session: {
       create: async (options) => {
         const input: Record<string, unknown> = { title: options.title }
@@ -101,6 +114,7 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
           effect: rule.action,
         }))
         if (permissions) input["permissions"] = permissions
+        if (permissions) input["metadata"] = { "ensemble.permissions": permissions }
         if (options.workspaceID ?? options.directory) {
           if (options.workspaceID?.startsWith(DIR_WORKSPACE_PREFIX)) {
             input["location"] = {
@@ -114,7 +128,7 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
           }
         }
         const created = await ctx.session.create(input)
-        if (permissions) {
+        if (permissions && ctx.permission?.rules) {
           // Session.create permissions lose to agent rules (last match wins
           // and agent rules apply later), which strips team tools from
           // read-only agents. Re-assert here: rules() evaluates after the
@@ -138,11 +152,11 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
         if (options.model) {
           await ctx.session.switchModel({
             sessionID: options.sessionID,
-            model: { providerID: options.model.providerID, id: options.model.modelID },
+            model: { providerID: options.model.providerID, id: options.model.modelID, ...(options.variant ? { variant: options.variant } : {}) },
           })
         }
         const text = joinParts(options.parts)
-        return ctx.session.prompt({ sessionID: options.sessionID, text, delivery: "queue" })
+        return ctx.session.prompt({ sessionID: options.sessionID, text, delivery: "queue", ...(options.metadata ? { metadata: options.metadata } : {}) })
       },
       abort: async (options) => ctx.session.interrupt({ sessionID: options.sessionID }),
       status: async () => {
@@ -177,16 +191,17 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
     worktree: {
       create: async (options) => {
         const name = (options.worktreeCreateInput as { name?: string } | undefined)?.name ?? "ensemble-worktree"
-        const created = await ctx.worktree.create({ name })
+        const created = await ctx.worktree.create({ name, ...project, ...(ctx.location ? { from: ctx.location.directory } : {}) })
         const branch = (await gitBranch(created.directory)) ?? name
+        worktreeDirectories.set(branch, created.directory)
         return { data: { name, branch, directory: created.directory } }
       },
       remove: async (options) => {
         const directory = (options.worktreeRemoveInput as { directory: string }).directory
-        return ctx.worktree.remove({ directory, force: false })
+        return ctx.worktree.remove({ ...project, directory, force: false })
       },
       list: async () => {
-        const entries = await ctx.worktree.list()
+        const entries = await ctx.worktree.list(project)
         return {
           data: entries.map((entry) => ({
             name: entry.directory.split("/").pop() ?? entry.directory,
@@ -195,12 +210,12 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
           })),
         }
       },
-      reset: async () => ctx.worktree.refresh(),
+      reset: async () => ctx.worktree.refresh(project),
     },
     workspace: {
       create: async (options) => {
         const branch = (options as { branch?: string }).branch ?? ""
-        const directory = await deps.gitDir?.(branch)
+        const directory = await deps.gitDir?.(branch) ?? worktreeDirectories.get(branch)
         if (!directory) throw new Error(`V2 workspace bridge: no worktree found on branch "${branch}"`)
         return {
           data: {

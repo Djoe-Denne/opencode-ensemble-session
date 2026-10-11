@@ -2,6 +2,18 @@
 
 Good teammate prompts are short, scoped, and verifiable. Include the task, boundaries, and task-specific verification needs. Do not paste a tool list or full reporting format into the prompt; the plugin already injects role context, allowed tools, worktree context, commit/report instructions, and blocker handling.
 
+These are optional mission templates, not required roles. Choose an available native profile separately from the current mission. Native profile files hold durable expertise and permissions; spawn prompts hold changing ownership and success criteria.
+
+## Any Bounded Mission
+
+```text
+Goal: <specific question or behavior>
+Own: <subsystem or files>; coordinate shared contracts with <member if relevant>.
+Deliver: <finding, change, tests, or document>
+Verify: <project command or evidence required>
+Context: <relevant current constraints, not a replay of inherited history>
+```
+
 ## Scout Prompt
 
 Use for read-only codebase mapping.
@@ -24,7 +36,6 @@ team_spawn({
   name: "scout",
   agent: "explore",
   worktree: false,
-  model: "openai/gpt-5-mini",
   prompt: "<scout prompt>",
 })
 ```
@@ -87,8 +98,8 @@ team_spawn({
   name: "reviewer",
   agent: "explore",
   worktree: false,
-  model: "openai/gpt-5-mini",
   prompt: "<reviewer prompt>",
+  context: { mode: "fresh" },
 })
 ```
 
@@ -99,10 +110,31 @@ Before spawning, the lead should be able to answer:
 ```text
 Team goal: <one sentence>
 Independent slices: <list>
+Profiles and context: <available profile plus fresh/fork/checkpoint/compact_fork per mission>
 Shared files to avoid: <list or none>
 Risky work needing plan approval: <list>
 Verification commands: <commands>
 Merge order: <order based on dependencies>
 ```
 
-If the lead cannot fill this in, start with a single scout instead of a full team.
+If the lead cannot fill this in, clarify the task directly or use one focused research mission before deciding whether a team is useful.
+
+## Inherited Mission Delta
+
+Use when a team member already has relevant native history. `taskID` must be an actual returned, claimable task ID, and `mapper` must exist in this team.
+
+```ts
+team_spawn({
+  name: "contract-tests",
+  agent: "build",
+  claim_task: taskID,
+  context: { mode: "fork", from: "mapper" },
+  prompt: "Implement the public-contract regression tests established in the inherited research. Own contract test files only. Coordinate interface questions with the API owner and run the project's contract-test command.",
+})
+```
+
+Do not paste the source transcript into the prompt. Choose an explicit model only when desired or required; otherwise inspect the project's model policy and allow the native/configured selection.
+
+## Same-Session Continuation
+
+When the current mission needs another specialty, the member can call `team_handoff({ agent: "available-profile" })` and continue in that session. The target profile should be defined in native configuration. Report any follow-up worker needs to the lead; handoff retains membership and does not transfer leadership or create file isolation.

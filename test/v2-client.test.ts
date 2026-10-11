@@ -218,6 +218,16 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
     })
   })
 
+  test("worktree creation supplies the native project identity and resolves its workspace without an injected gitDir", async () => {
+    const { ctx, calls } = mockCtx()
+    const client = createV2Client({ ...ctx, location: { directory: "/project", project: { id: "project-id" } } }, {
+      gitBranch: async () => "ensemble-branch",
+    })
+    await client.worktree.create({ worktreeCreateInput: { name: "ensemble-member" } })
+    expect(calls[0]?.input).toMatchObject({ projectID: "project-id", from: "/project", name: "ensemble-member" })
+    expect((await client.workspace.create({ branch: "ensemble-branch" })).data?.directory).toBe("/wt/ensemble-proj-team-alice")
+  })
+
   test("worktree.create falls back to the requested name when git lookup fails", async () => {
     const { ctx } = mockCtx()
     const client = createV2Client(ctx as never, { gitBranch: mockGit({}) })

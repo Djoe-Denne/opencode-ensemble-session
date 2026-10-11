@@ -11,7 +11,7 @@ Why it fails:
 - More agents add merge, review, and communication overhead. Parallelism helps only when the work can be separated.
 
 Better approach:
-- Start with one scout. Spawn builders only after boundaries are clear.
+- Handle the question directly or use one focused research mission. Add workers only after useful boundaries are clear.
 
 ## Anti-Pattern: Vague Delegation
 
@@ -77,7 +77,7 @@ Why it fails:
 - Read-only roles create extra branches and blur ownership.
 
 Better approach:
-- Use `agent: "explore"` and `worktree: false` for scouts, reviewers, researchers, and auditors.
+- Use a native read-only profile, such as `explore`, with `worktree: false`. Configure permissions explicitly for custom profiles; a role label does not prevent writes.
 
 ## Anti-Pattern: Hiding Plan Approval In The Prompt
 
@@ -89,3 +89,39 @@ Why it fails:
 
 Better approach:
 - Pass `plan_approval: true` for risky work and approve or reject through `team_message`.
+
+## Anti-Pattern: Turning a Recipe into a Required Pipeline
+
+What it looks like:
+- Every request creates an explorer, an architect, and three implementers regardless of scope.
+- Agent Markdown files duplicate the skill and require specific downstream role names.
+
+Better approach:
+- Keep coordination know-how in the skill, project policy in `AGENTS.md`, and expertise in optional profiles. Choose team size and transitions from the actual mission; a single agent is a valid outcome.
+
+## Anti-Pattern: Replacing Native History with a Pasted Summary
+
+What it looks like:
+- A requested inherited worker is created fresh with a manually copied transcript or summary.
+- Fork errors are bypassed by removing `context` or disabling worktree isolation.
+
+Better approach:
+- Use native fork/checkpoint/compact_fork and report capability or Git-state failures explicitly. An independently scoped fresh mission is a separate deliberate decision, not a silent fallback.
+
+## Anti-Pattern: Treating Handoff as Promotion or Isolation
+
+What it looks like:
+- A member switches to a profile named `orchestrator` and attempts lead-only spawning.
+- A shared-directory researcher switches to a writer and assumes it gained a worktree or a different model.
+
+Better approach:
+- Handoff keeps team identity, directory, and selected model. Ask the lead to create isolated follow-up workers or change a teammate's model when that is the intended operation.
+
+## Anti-Pattern: Always Overriding the Model
+
+What it looks like:
+- Every fork injects a model just because an example did so, defeating intentional source-model inheritance.
+- Handoff is expected to apply the target profile's default model automatically.
+
+Better approach:
+- Inspect task/project model policy. Use explicit overrides deliberately; otherwise retain the native/configured selection. Handoff and model selection are separate operations.

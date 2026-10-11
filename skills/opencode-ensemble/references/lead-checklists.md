@@ -1,6 +1,6 @@
 # Lead Checklists
 
-Use these gates to prevent common coordination failures.
+Use the relevant checks for the chosen mission; they do not prescribe a team topology.
 
 ## Pre-Spawn Checklist
 
@@ -8,12 +8,13 @@ Use these gates to prevent common coordination failures.
 - The task is large enough to justify coordination overhead.
 - Each teammate has one clear owner area.
 - No two builders are expected to edit the same files.
-- Read-only work uses `agent: "explore"` and `worktree: false`.
-- Risky implementation work uses `plan_approval: true`.
+- Read-only work uses a native read-only profile and `worktree: false`; custom names do not imply permissions.
+- Use `plan_approval: true` where the mission or project policy calls for reviewed plans.
 - Task dependencies are represented with `depends_on`.
+- Context strategy and model policy match the mission; an independent review starts fresh.
 - Verification commands are known before work starts.
 
-If more than two items are unknown, spawn one scout first.
+Resolve unknowns directly or through a focused research mission before committing to a larger team.
 
 ## Spawning Checklist
 
@@ -23,6 +24,10 @@ If more than two items are unknown, spawn one scout first.
 - Keep teammate prompts focused and under one clear responsibility.
 - Tell teammates what to report, not just what to do.
 - Do not describe lead-only tools in teammate prompts.
+- A claimed task is unblocked, and its producer's files are available on the intended base; dependency completion alone does not transfer changes.
+- For inherited spawns, confirm a team-scoped source, required native capabilities, and clean matching Git HEADs before a cross-directory move.
+- For checkpoint mode, use the exclusive native boundary; for compact_fork, use a distinct idle source.
+- For handoff, confirm that retaining the current directory and model is intended; only the calling session changes profile.
 
 ## While Running Checklist
 

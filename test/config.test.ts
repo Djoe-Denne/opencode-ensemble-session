@@ -26,6 +26,7 @@ describe("config", () => {
     delete process.env.OPENCODE_ENSEMBLE_TIMEOUT
     delete process.env.OPENCODE_ENSEMBLE_RATE_LIMIT
     delete process.env.STALL_THRESHOLD_MS
+    delete process.env.OPENCODE_ENSEMBLE_MAX_MEMBERS
   })
 
   test("DEFAULT_CONFIG has correct values", () => {
@@ -35,11 +36,60 @@ describe("config", () => {
     expect(DEFAULT_CONFIG.stallTokenThreshold).toBe(200)
     expect(DEFAULT_CONFIG.timeoutMs).toBe(1_800_000)
     expect(DEFAULT_CONFIG.rateLimitCapacity).toBe(10)
+    expect(DEFAULT_CONFIG.maxActiveMembers).toBe(0)
+    expect(DEFAULT_CONFIG.autoDispatch).toBe(false)
+  })
+
+  test("task pool config parses and env override wins", () => {
+    const configDir = path.join(tmpDir, ".opencode")
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(path.join(configDir, "ensemble.json"), JSON.stringify({ maxActiveMembers: 4, autoDispatch: true }))
+
+    const fromFile = loadConfig(tmpDir)
+    expect(fromFile.maxActiveMembers).toBe(4)
+    expect(fromFile.autoDispatch).toBe(true)
+
+    process.env.OPENCODE_ENSEMBLE_MAX_MEMBERS = "2"
+    expect(loadConfig(tmpDir).maxActiveMembers).toBe(2)
+
+    process.env.OPENCODE_ENSEMBLE_MAX_MEMBERS = "0"
+    expect(loadConfig(tmpDir).maxActiveMembers).toBe(0)
+
+    process.env.OPENCODE_ENSEMBLE_MAX_MEMBERS = "not-a-number"
+    expect(loadConfig(tmpDir).maxActiveMembers).toBe(4) // invalid env preserves file value
   })
 
   test("returns defaults when no config files exist", () => {
     const config = loadConfig(tmpDir)
     expect(config).toEqual(DEFAULT_CONFIG)
+  })
+
+  test("loads routing catalogue and beta from plugin configuration", () => {
+    const dir = path.join(tmpDir, ".opencode")
+    mkdirSync(dir, { recursive: true })
+    const modelRouting = { beta: 0, models: [{ id: "provider/model", intelligenceScore: 40, averageCostPerTask: 0, available: true, reasoningEffort: "high" }] }
+    writeFileSync(path.join(dir, "ensemble.json"), JSON.stringify({ modelRouting }))
+    expect(loadConfig(tmpDir).modelRouting).toEqual(modelRouting)
+  })
+
+  test("project routing beta override preserves the global catalogue", () => {
+    const globalDir = path.join(process.env.HOME!, ".config", "opencode")
+    const projectDir = path.join(tmpDir, ".opencode")
+    mkdirSync(globalDir, { recursive: true })
+    mkdirSync(projectDir, { recursive: true })
+    const models = [{ id: "provider/model", intelligenceScore: 40, averageCostPerTask: 0, available: true }]
+    writeFileSync(path.join(globalDir, "ensemble.json"), JSON.stringify({ modelRouting: { beta: 0.35, models } }))
+    writeFileSync(path.join(projectDir, "ensemble.json"), JSON.stringify({ modelRouting: { beta: 0.7 } }))
+    expect(loadConfig(tmpDir).modelRouting).toEqual({ beta: 0.7, models })
+  })
+
+  test("invalid routing configuration cannot discard unrelated plugin settings", () => {
+    const dir = path.join(tmpDir, ".opencode")
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, "ensemble.json"), JSON.stringify({ timeoutMs: 123, modelRouting: { beta: -1, models: [] } }))
+    const config = loadConfig(tmpDir)
+    expect(config.timeoutMs).toBe(123)
+    expect(config.modelRouting).toEqual(DEFAULT_CONFIG.modelRouting)
   })
 
   test("project config overrides defaults", () => {

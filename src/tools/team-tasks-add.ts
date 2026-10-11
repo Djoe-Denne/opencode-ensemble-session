@@ -1,11 +1,17 @@
 import type { ToolDeps } from "../types"
 import { requireTeamMember } from "./shared"
 import { generateId } from "../util"
+import { pumpTeam } from "../dispatch"
+import { validateTaskRoutingScores } from "../model-router"
 
 interface TaskInput {
   content: string
   priority: string
   depends_on?: string[]
+  /** Optional agent type affinity for pool dispatch (docs/task-pool.md). */
+  agent?: string
+  complexity?: number
+  risk?: number
 }
 
 /**
@@ -19,12 +25,21 @@ export async function executeTeamTasksAdd(
 ): Promise<string> {
   const teamInfo = requireTeamMember(deps, sessionId)
 
+  const unknown = [...new Set(args.tasks.flatMap(task => task.depends_on ?? []))].filter(id =>
+    !deps.db.query("SELECT id FROM team_task WHERE id = ? AND team_id = ?").get(id, teamInfo.teamId),
+  )
+  if (unknown.length) throw new Error(`Unknown depends_on task IDs in this team: ${unknown.join(", ")}`)
+  args.tasks.forEach(task => {
+    validateTaskRoutingScores({ complexity: task.complexity, risk: task.risk })
+  })
+
   const ids: string[] = []
   const now = Date.now()
 
   for (const task of args.tasks) {
     const id = generateId("task")
     const depsJson = task.depends_on?.length ? JSON.stringify(task.depends_on) : null
+    const agent = task.agent?.trim() || null
 
     // Determine initial status — blocked if has unresolved dependencies
     let status = "pending"
@@ -38,11 +53,15 @@ export async function executeTeamTasksAdd(
     }
 
     deps.db.run(
-      "INSERT INTO team_task (id, team_id, content, status, priority, depends_on, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      [id, teamInfo.teamId, task.content, status, task.priority, depsJson, now, now]
+      "INSERT INTO team_task (id, team_id, content, status, priority, depends_on, agent, complexity, risk, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [id, teamInfo.teamId, task.content, status, task.priority, depsJson, agent, task.complexity ?? null, task.risk ?? null, now, now]
     )
     ids.push(id)
   }
+
+  // Pull-based pool: newly added work may exceed idle capacity — feed idle
+  // members, then scale up within the cap (opt-in — docs/task-pool.md).
+  pumpTeam(deps, teamInfo.teamId)
 
   return `Added ${ids.length} task${ids.length !== 1 ? "s" : ""}: ${ids.join(", ")}`
 }

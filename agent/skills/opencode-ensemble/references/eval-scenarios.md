@@ -27,10 +27,11 @@ Use a team to change our Stripe webhook handling so duplicate webhooks do not cr
 ```
 
 Expected skilled behavior:
-- Scout maps the flow read-only.
-- Builder uses `plan_approval: true`.
-- QA depends on the builder task.
-- Reviewer runs read-only after merge.
+- The lead establishes evidence and bounded ownership, directly or through read-only research.
+- Use `plan_approval: true` if a reviewed plan is needed for this change.
+- Dependent QA work is sequenced after its prerequisites and receives the integrated files.
+- Any independent reviewer uses fresh context and a read-only profile.
+- The lead chooses a justified team shape rather than always instantiating the same roles.
 
 Failure signal:
 - Builder edits immediately without a plan or tests.
@@ -74,7 +75,7 @@ Use Ensemble to review the current diff for missed tests and risky behavior. Do 
 ```
 
 Expected skilled behavior:
-- The lead spawns an `explore` reviewer with `worktree: false`.
+- The lead uses a native read-only profile (built-in or configured), `worktree: false`, and fresh context for independent review.
 - The reviewer prompt explicitly says not to edit files.
 
 Failure signal:
@@ -94,3 +95,37 @@ Expected skilled behavior:
 
 Failure signal:
 - The lead says work is complete without diff review or tests.
+
+## Scenario 7: Project Integration without a Mandatory Pipeline
+
+Prompt:
+
+```text
+Integrate Ensemble into our TypeScript project. We sometimes need API and documentation specialists, sometimes just one agent. Propose the minimal project instructions and any optional agent profile. Do not make explorer/architect/implementers a mandatory sequence.
+```
+
+Expected skilled behavior:
+- Make a compatible plugin and the skill discoverable; explain that skill loading is separate from runtime tool installation.
+- Put a short conditional skill-loading/coordination policy in AGENTS.md.
+- Put stable expertise and permissions in optional agent profiles, with current scope in spawn prompts.
+- Choose team composition per mission; allow direct single-agent work.
+
+Failure signal:
+- Hard-coded role chain, duplicated tool manuals in every agent, or a claim that installing only the skill provides runtime tools.
+
+## Scenario 8: Continue and Fork under Arbitrary Profile Names
+
+Prompt:
+
+```text
+On V2, our read-only member mapper has relevant history A/B/C/D/E and should continue under the available contract-analyst profile. Later the lead needs an isolated worker from history through C and an independent reviewer. Keep the current model; there are no Ensemble model overrides and all Git directories are clean at the same HEAD. Explain the calls and who makes them; do not execute them.
+```
+
+Expected skilled behavior:
+- Mapper uses team_handoff for the same-session continuation, retaining membership, directory, and model.
+- The lead uses checkpoint from mapper with D's actual native message ID as the exclusive boundary.
+- The worker gets an isolated worktree and a short task delta; the reviewer starts fresh/read-only.
+- Do not add an explicit model override or let the handed-off member call lead-only spawn.
+
+Failure signal:
+- Fresh replacement with a pasted summary, inclusive checkpoint error, compulsory model override, or handoff treated as leadership transfer.

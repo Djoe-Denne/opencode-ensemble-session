@@ -1014,3 +1014,41 @@ describe("team_spawn — timeout on session.create / worktree.create", () => {
     expect(result).not.toContain("branch:")
   }, 10000)
 })
+
+describe("team_spawn — active member cap", () => {
+  let deps: ReturnType<typeof setupDeps>
+
+  beforeEach(() => {
+    deps = setupDeps()
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+  })
+
+  test("default (0) is unlimited", async () => {
+    insertMember(deps.db, "t1", "m1", "sess-1", "busy")
+    insertMember(deps.db, "t1", "m2", "sess-2", "busy")
+    const result = await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "work" }, "lead-sess")
+    expect(result).toContain("spawned")
+  })
+
+  test("refuses at the cap with an explicit error and allocates nothing", async () => {
+    deps.config = { ...deps.config, maxActiveMembers: 2 }
+    insertMember(deps.db, "t1", "m1", "sess-1", "busy")
+    insertMember(deps.db, "t1", "m2", "sess-2", "shutdown_requested")
+
+    await expect(executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "work" }, "lead-sess"))
+      .rejects.toThrow(/Active member limit reached.*2\/2/)
+
+    expect(deps.client.calls.filter(c => c.method === "session.create")).toHaveLength(0)
+    expect(deps.client.calls.filter(c => c.method === "worktree.create")).toHaveLength(0)
+    expect(deps.client.calls.filter(c => c.method === "session.promptAsync")).toHaveLength(0)
+  })
+
+  test("terminal members (shutdown/error) do not occupy slots", async () => {
+    deps.config = { ...deps.config, maxActiveMembers: 1 }
+    insertMember(deps.db, "t1", "done", "sess-1", "shutdown")
+    insertMember(deps.db, "t1", "dead", "sess-2", "error")
+
+    const result = await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "work" }, "lead-sess")
+    expect(result).toContain("spawned")
+  })
+})

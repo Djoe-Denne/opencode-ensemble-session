@@ -10,6 +10,7 @@ import type { ToolDeps } from "../src/types"
 const TOOL_NAMES = [
   "team_create",
   "team_spawn",
+  "team_handoff",
   "team_message",
   "team_broadcast",
   "team_tasks_list",
@@ -80,7 +81,7 @@ async function run(defs: V2ToolDef[], name: string, input: unknown, sessionID: s
 }
 
 describe("v2-tools (issue #36, DRY: same execute fns as V1)", () => {
-  test("all 14 tools register with descriptions and input schemas", async () => {
+  test("all 15 tools register with descriptions and input schemas", async () => {
     const { defs, domain } = mockToolDomain()
     await registerV2Tools(domain, mockDeps())
     expect(defs.map((d) => d.name).sort()).toEqual([...TOOL_NAMES].sort())
@@ -88,6 +89,37 @@ describe("v2-tools (issue #36, DRY: same execute fns as V1)", () => {
       expect(def.description.length).toBeGreaterThan(0)
       expect(def.input).toMatchObject({ type: "object" })
     }
+  })
+
+  test("spawn exposes one structured opt-in context strategy", async () => {
+    const { defs, domain } = mockToolDomain()
+    await registerV2Tools(domain, mockDeps())
+    const spawn = defs.find(d => d.name === "team_spawn")!
+    expect((spawn.input.properties as Record<string, unknown>).context).toMatchObject({
+      type: "object", required: ["mode"], additionalProperties: false,
+      properties: { mode: { enum: ["fresh", "fork", "checkpoint", "compact_fork"] } },
+    })
+  })
+
+  test("routing dimensions have integer bounds on both tool schemas and tasks retain zero scores", async () => {
+    const { defs, domain } = mockToolDomain()
+    const deps = mockDeps()
+    await registerV2Tools(domain, deps)
+    const spawn = defs.find(d => d.name === "team_spawn")!
+    expect(spawn.input.properties).toMatchObject({
+      complexity: { type: "integer", minimum: 0, maximum: 100 },
+      risk: { type: "integer", minimum: 0, maximum: 100 },
+      variant: { type: "string" },
+    })
+    const add = defs.find(d => d.name === "team_tasks_add")!
+    expect(add.input.properties).toMatchObject({ tasks: { items: { properties: {
+      complexity: { type: "integer", minimum: 0, maximum: 100 },
+      risk: { type: "integer", minimum: 0, maximum: 100 },
+    } } } })
+    await run(defs, "team_create", { name: "scored" }, "lead")
+    await run(defs, "team_tasks_add", { tasks: [{ content: "zero", complexity: 0, risk: 0 }] }, "lead")
+    expect(deps.db.query("SELECT complexity, risk FROM team_task").get()).toMatchObject({ complexity: 0, risk: 0 })
+    await expect(run(defs, "team_tasks_add", { tasks: [{ content: "bad", risk: 101 }] }, "lead")).rejects.toThrow("risk")
   })
 
   test("create → tasks_add (no priority) → list defaults priority to medium", async () => {
