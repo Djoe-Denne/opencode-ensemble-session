@@ -1,6 +1,10 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { setupDeps, insertTeam, insertMember } from "../helpers"
 import { executeTeamSpawn } from "../../src/tools/team-spawn"
+import { worktreeSlug } from "../../src/worktree-guard"
 import { executeTeamTasksAdd } from "../../src/tools/team-tasks-add"
 import type { ToolDeps } from "../../src/types"
 
@@ -438,7 +442,7 @@ describe("team_spawn", () => {
     // Worktree.create should have been called
     const wtCalls = deps.client.calls.filter(c => c.method === "worktree.create")
     expect(wtCalls).toHaveLength(1)
-    expect((wtCalls[0]!.args[0] as Record<string, unknown>).worktreeCreateInput).toEqual({ name: "ensemble-test-project-my-team#t1-alice" })
+    expect((wtCalls[0]!.args[0] as Record<string, unknown>).worktreeCreateInput).toEqual({ name: worktreeSlug("/tmp/test-project", "t1", "alice") })
 
     // DB should have worktree columns populated
     const row = deps.db.query("SELECT worktree_dir, worktree_branch FROM team_member WHERE name = ?").get("alice") as Record<string, string | null>
@@ -465,7 +469,12 @@ describe("team_spawn", () => {
     const names = deps.client.calls
       .filter(c => c.method === "worktree.create")
       .map(c => ((c.args[0] as { worktreeCreateInput: { name: string } }).worktreeCreateInput).name)
-    expect(names).toEqual(["ensemble-test-project-my-team#t1-alice", "ensemble-other-project-my-team#t2-alice"])
+    expect(names).toEqual([
+      worktreeSlug("/tmp/test-project", "t1", "alice"),
+      worktreeSlug("/tmp/other-project", "t2", "alice"),
+    ])
+    expect(names[0]).not.toContain("#")
+    expect(names[1]).not.toContain("other-project")
   })
 
   test("skips worktree when worktree: false", async () => {
@@ -489,27 +498,17 @@ describe("team_spawn", () => {
     expect(result).not.toContain("branch:")
   })
 
-  test("falls back to shared directory if worktree creation fails", async () => {
+  test("fails closed when worktree creation fails", async () => {
     deps.client.worktree.create = async () => { throw new Error("worktree failed") }
 
-    const result = await executeTeamSpawn(deps, {
+    await expect(executeTeamSpawn(deps, {
       name: "alice",
       agent: "build",
       prompt: "Fix the tests",
-    }, "lead-sess")
+    }, "lead-sess")).rejects.toThrow(/admission failed/i)
 
-    // Should still succeed — just without worktree
-    expect(result).toContain("alice")
-    expect(result).toContain("spawned")
-
-    // DB should have null worktree columns
-    const row = deps.db.query("SELECT worktree_dir, worktree_branch FROM team_member WHERE name = ?").get("alice") as Record<string, string | null>
-    expect(row.worktree_dir).toBeNull()
-    expect(row.worktree_branch).toBeNull()
-
-    // Toast warning should have been fired
-    const toasts = deps.client.calls.filter(c => c.method === "tui.showToast")
-    expect(toasts.length).toBeGreaterThan(0)
+    expect(deps.client.calls.filter(call => call.method === "session.promptAsync")).toHaveLength(0)
+    expect(deps.db.query("SELECT name FROM team_member WHERE name = ?").get("alice")).toBeNull()
   })
 
   test("rolls back member asynchronously if promptAsync fails (fire-and-forget)", async () => {
@@ -567,21 +566,15 @@ describe("team_spawn", () => {
     expect(text).not.toContain("cd to:")
   })
 
-  test("context message includes cd instruction when workspace.create fails (fallback)", async () => {
+  test("fails admission when workspace.create fails for a writer", async () => {
     deps.client.workspace.create = async () => { throw new Error("workspace failed") }
 
-    await executeTeamSpawn(deps, {
+    await expect(executeTeamSpawn(deps, {
       name: "alice",
       agent: "build",
       prompt: "Fix the tests",
-    }, "lead-sess")
-
-    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
-    const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
-
-    // Workspace binding failed — fallback to prompt-based CWD
-    expect(text).toContain("/tmp/worktree-")
-    expect(text).toContain("cd to:")
+    }, "lead-sess")).rejects.toThrow(/Workspace admission failed/)
+    expect(deps.client.calls.filter(call => call.method === "session.promptAsync")).toHaveLength(0)
   })
 
   test("context message does not include worktree directory when worktree: false", async () => {
@@ -646,22 +639,15 @@ describe("team_spawn", () => {
     expect(row.workspace_id).toBeTruthy()
   })
 
-  test("workspace.create failure is non-fatal — spawn still succeeds", async () => {
+  test("workspace.create failure fails writer admission before session.create", async () => {
     deps.client.workspace.create = async () => { throw new Error("workspace failed") }
 
-    const result = await executeTeamSpawn(deps, {
+    await expect(executeTeamSpawn(deps, {
       name: "alice",
       agent: "build",
       prompt: "Fix the tests",
-    }, "lead-sess")
-
-    expect(result).toContain("alice")
-    expect(result).toContain("spawned")
-
-    // session.create should NOT have workspaceID (fallback)
-    const createCall = deps.client.calls.find(c => c.method === "session.create")
-    const createArgs = createCall!.args[0] as { workspaceID?: string }
-    expect(createArgs.workspaceID).toBeUndefined()
+    }, "lead-sess")).rejects.toThrow(/Workspace admission failed/)
+    expect(deps.client.calls.filter(call => call.method === "session.create")).toHaveLength(0)
   })
 
   test("skips workspace.create when worktree: false", async () => {
@@ -829,7 +815,7 @@ describe("team_spawn — agent mode enforcement", () => {
     const createCall = deps.client.calls.find(c => c.method === "session.create")
     const opts = createCall!.args[0] as { permission?: Array<{ permission: string; pattern: string; action: string }> }
     expect(opts.permission).toEqual([
-      { permission: "edit", pattern: "/tmp/worktree-ensemble-test-project-my-team#t1-builder/**", action: "allow" },
+      { permission: "edit", pattern: `/tmp/worktree-${worktreeSlug("/tmp/test-project", "t1", "builder")}/**`, action: "allow" },
       { permission: "bash", pattern: "*", action: "allow" },
       ...TEAM_TOOL_PERMISSIONS,
     ])
@@ -997,21 +983,16 @@ describe("team_spawn — timeout on session.create / worktree.create", () => {
     }, "lead-sess")).rejects.toThrow(/timed out/i)
   }, 10000)
 
-  test("falls back to shared directory if worktree.create hangs beyond SPAWN_TIMEOUT_MS", async () => {
-    // Mock worktree.create to never resolve
+  test("fails admission if worktree.create hangs beyond SPAWN_TIMEOUT_MS", async () => {
     deps.client.worktree.create = () => new Promise(() => { /* never resolves */ })
 
-    const result = await executeTeamSpawn(deps, {
+    await expect(executeTeamSpawn(deps, {
       name: "bob",
       agent: "build",
       prompt: "Fix tests",
       worktree: true,
-    }, "lead-sess")
-
-    // Should succeed with fallback — no worktree branch in output
-    expect(result).toContain("bob")
-    expect(result).toContain("spawned")
-    expect(result).not.toContain("branch:")
+    }, "lead-sess")).rejects.toThrow(/timed out/i)
+    expect(deps.client.calls.filter(call => call.method === "session.promptAsync")).toHaveLength(0)
   }, 10000)
 })
 
@@ -1050,5 +1031,41 @@ describe("team_spawn — active member cap", () => {
 
     const result = await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "work" }, "lead-sess")
     expect(result).toContain("spawned")
+  })
+})
+
+describe("team_spawn profile warning", () => {
+  const directories: string[] = []
+  afterEach(() => directories.splice(0).forEach(path => rmSync(path, { recursive: true, force: true })))
+
+  function project(): ReturnType<typeof setupDeps> {
+    const deps = setupDeps()
+    deps.directory = mkdtempSync(join(tmpdir(), "ensemble-profile-spawn-"))
+    directories.push(deps.directory)
+    insertTeam(deps.db, "t1", "my-team", "lead-sess")
+    return deps
+  }
+
+  test("warns when a collaborator profile is missing Ensemble tools", async () => {
+    const deps = project()
+    mkdirSync(join(deps.directory, ".opencode", "agents"), { recursive: true })
+    writeFileSync(join(deps.directory, ".opencode", "agents", "qa.md"), "---\npermissions:\n  - { action: \"*\", resource: \"*\", effect: deny }\n---\n\nStop.\n")
+    const result = await executeTeamSpawn(deps, { name: "alice", agent: "qa", prompt: "Review", worktree: false }, "lead-sess")
+    expect(result).toContain("WARNING")
+    expect(result).toContain("missing-ensemble-tools")
+  })
+
+  test("does not warn when the agent file is absent", async () => {
+    const deps = project()
+    const result = await executeTeamSpawn(deps, { name: "alice", agent: "explore", prompt: "Look", worktree: false }, "lead-sess")
+    expect(result).not.toContain("missing-ensemble-tools")
+  })
+
+  test("warns and still spawns when the profile cannot be read", async () => {
+    const deps = project()
+    mkdirSync(join(deps.directory, ".opencode", "agents", "qa.md"), { recursive: true })
+    const result = await executeTeamSpawn(deps, { name: "alice", agent: "qa", prompt: "Review", worktree: false }, "lead-sess")
+    expect(result).toContain("spawned")
+    expect(result).toContain("profile-unreadable")
   })
 })

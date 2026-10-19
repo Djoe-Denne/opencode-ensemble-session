@@ -1,4 +1,10 @@
 import type { ToolDeps, PermissionRule, SpawnContext } from "../types"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { MEMBER_TOOLS } from "../v2-continuity"
+import { lintAgentProfile } from "../profile-lint"
+import { admitWorktree, isEnsembleWorktree, worktreeSlug } from "../worktree-guard"
+import { storePreservedBranch } from "../worktree-state"
 import { resolveSpawnContext, rollbackInheritedSpawn } from "../session-continuity"
 import { validateMemberName } from "../util"
 import { requireLead } from "./shared"
@@ -9,7 +15,7 @@ import { log } from "../log"
 import { assertMissionAdmission, routeMissionTask } from "../mission-policy"
 import type { EnsembleConfig } from "../config"
 import { routeNormalizedModel, validateTaskRoutingScores, type TaskRoutingScores } from "../model-router"
-import { getTeamResourceParts, teamWorktreeName, preserveBranch, preservedBranchName } from "./merge-helper"
+import { getTeamResourceParts, preserveBranch, preservedBranchName } from "./merge-helper"
 import { releaseMemberTasks } from "../tasks"
 
 /** Tracks consecutive spawn failures per team for circuit breaker. */
@@ -44,7 +50,7 @@ function getSpawnTimeout(): number {
 
 /** Returns true if the directory is already inside an OpenCode worktree. */
 function isWorktreeDirectory(dir: string): boolean {
-  return dir.includes("/opencode/worktree/")
+  return isEnsembleWorktree(dir)
 }
 
 /** Race a promise against a timeout. Throws if the timeout fires first. Cleans up timer on resolution. */
@@ -56,6 +62,21 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
       timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
     }),
   ])
+}
+
+/** Warn when a project collaborator profile hides Ensemble tools. Unreadable files do not fail the spawn. */
+function profileAdmissionWarning(directory: string, agent: string, finalResponse: boolean): string {
+  if (finalResponse) return ""
+  try {
+    const findings = lintAgentProfile(readFileSync(join(directory, ".opencode", "agents", `${agent}.md`), "utf8"))
+      .filter(finding => finding.id === "missing-ensemble-tools")
+    if (findings.length === 0) return ""
+    return ` WARNING: missing-ensemble-tools (${findings.map(finding => finding.message).join("; ")})`
+  } catch (error) {
+    const code = typeof error === "object" && error !== null && "code" in error ? error.code : undefined
+    if (code === "ENOENT") return ""
+    return " WARNING: profile-unreadable"
+  }
 }
 
 /**
@@ -141,6 +162,8 @@ export async function executeTeamSpawn(
   const memberCount = (deps.db.query("SELECT COUNT(*) as c FROM team_member WHERE team_id = ? AND name != ?")
     .get(teamInfo.teamId, args.name) as { c: number }).c
   const resolvedModel = policyRouting?.selected.id || args.model || routing?.selected.id || resolveModel(undefined, agent, memberCount, deps.config)
+  // Precedence: an approved cell's native variant is authoritative. An omitted
+  // variant stays omitted and does not inherit profile effort.
   const resolvedVariant = policyRouting ? policyRouting.selected.variant : routing
     ? routing.selected.reasoningEffort === "default" ? undefined : routing.selected.reasoningEffort
     : args.variant
@@ -155,7 +178,6 @@ export async function executeTeamSpawn(
   // Create worktree if enabled
   let worktreeDir: string | null = null
   let worktreeBranch: string | null = null
-  let worktreeWarning = ""
   let childSessionId: string | undefined
 
   if (inherited) {
@@ -178,8 +200,8 @@ export async function executeTeamSpawn(
   }
 
   if (useWorktree) {
-    const resource = getTeamResourceParts(deps.db, teamInfo.teamId)
-    const worktreeName = teamWorktreeName(resource.projectName, resource.teamName, resource.teamId, args.name)
+    const project = deps.db.query("SELECT project_id FROM team WHERE id = ?").get(teamInfo.teamId) as { project_id: string } | null
+    const worktreeName = worktreeSlug(project?.project_id ?? deps.directory, teamInfo.teamId, args.name)
     try {
       log(`spawn:worktree:start name=${args.name}`)
       const result = await withTimeout(
@@ -191,23 +213,13 @@ export async function executeTeamSpawn(
         worktreeBranch = result.data.branch
         if (inherited) deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ? WHERE team_id = ? AND name = ?", [worktreeDir, worktreeBranch, teamInfo.teamId, args.name])
       }
-      if (inherited && (!worktreeDir || !worktreeBranch)) throw new Error("worktree.create returned no isolated worktree")
+      if (!worktreeDir || !worktreeBranch) throw new Error(`Worktree admission failed for "${args.name}": directory and branch are required`)
       log(`spawn:worktree:done name=${args.name} dir=${worktreeDir}`)
     } catch (err) {
-      if (inherited) {
-        await rollbackInheritedSpawn(deps, teamInfo.teamId, args.name)
-        throw err
-      }
-      worktreeWarning = ` WARNING: Worktree creation failed for "${args.name}"; using shared directory.`
-      log(`spawn:worktree:failed name=${args.name} err=${err instanceof Error ? err.message : String(err)}`)
-      try {
-        await deps.client.tui.showToast({
-          title: "Team",
-          message: `Worktree creation failed for ${args.name}, using shared directory`,
-          variant: "warning",
-          duration: 4000,
-        })
-      } catch { /* TUI may not be available */ }
+      if (inherited) await rollbackInheritedSpawn(deps, teamInfo.teamId, args.name)
+      const message = err instanceof Error ? err.message : String(err)
+      log(`spawn:worktree:failed name=${args.name} err=${message}`)
+      throw new Error(`Worktree admission failed for "${args.name}": ${message}`)
     }
   }
 
@@ -226,8 +238,9 @@ export async function executeTeamSpawn(
       }
       log(`spawn:workspace:done name=${args.name} id=${workspaceId}`)
     } catch (err) {
-      log(`spawn:workspace:failed name=${args.name} err=${err instanceof Error ? err.message : String(err)}`)
-      // Non-fatal — prompt-based CWD instruction is the fallback
+      const message = err instanceof Error ? err.message : String(err)
+      log(`spawn:workspace:failed name=${args.name} err=${message}`)
+      throw new Error(`Workspace admission failed for "${args.name}": ${message}`)
     }
   }
 
@@ -238,18 +251,7 @@ export async function executeTeamSpawn(
   // 3 inspection tools (team_results/team_status/team_view — any member).
   // Caught live 2026-09-15: teammates could not read each
   // other's messages because team_results was missing from this list.
-  const TEAM_TOOLS = [
-    "team_message",
-    "team_broadcast",
-    "team_tasks_list",
-    "team_tasks_add",
-    "team_tasks_complete",
-    "team_claim",
-    "team_results",
-    "team_status",
-    "team_view",
-    ...(deps.client.continuity ? ["team_handoff"] : []),
-  ] as const
+  const grantedMemberTools = MEMBER_TOOLS.filter(tool => tool !== "team_handoff" || Boolean(deps.client.continuity))
   const permission: PermissionRule[] = []
 
   if (worktreeDir) {
@@ -269,7 +271,7 @@ export async function executeTeamSpawn(
   }
 
   permission.push(
-    ...TEAM_TOOLS.map(t => ({ permission: t, pattern: "*", action: "allow" as const })),
+    ...grantedMemberTools.map(tool => ({ permission: tool, pattern: "*", action: "allow" as const })),
   )
 
   // Code Mode is the invocation path for plugin tools on V2 — without this,
@@ -350,6 +352,10 @@ export async function executeTeamSpawn(
     [resolvedVariant ?? null, policyRouting ? JSON.stringify(policyRouting) : routing ? JSON.stringify(routing) : null, teamInfo.teamId, args.name])
   deps.db.run("UPDATE team_member SET report_mode = ?, report_started_at = ?, report_message_cursor = (SELECT COALESCE(MAX(rowid), 0) FROM team_message) WHERE team_id = ? AND name = ?",
     [args.report_mode ?? "team_message", now, teamInfo.teamId, args.name])
+  const admitted = admitWorktree({ agent, worktree: useWorktree ? undefined : false, directory: worktreeDir, branch: worktreeBranch })
+  if (admitted.state === "failed") throw new Error(`Worktree admission failed for "${args.name}": ${admitted.reason}`)
+  deps.db.run("UPDATE team_member SET worktree_state = ?, checkout_branch = ? WHERE team_id = ? AND name = ?",
+    [admitted.state, admitted.state === "ready" ? admitted.branch : null, teamInfo.teamId, args.name])
 
   // Row is inserted as 'busy' directly -- there is no ready->busy status-event
   // transition for a fresh spawn, so the watchdog's usual hook point never fires.
@@ -381,6 +387,7 @@ export async function executeTeamSpawn(
         const resource = getTeamResourceParts(deps.db, teamInfo.teamId)
         const preserved = preservedBranchName(resource.projectName, resource.teamName, resource.teamId, args.name)
         if (!await (deps.preserveBranch ?? preserveBranch)(worktreeBranch, preserved, deps.directory)) throw new Error("branch preservation failed")
+        storePreservedBranch(deps.db, teamInfo.teamId, args.name, worktreeBranch, preserved)
       }
       await deps.client.session.abort({ sessionID: allocatedSessionId })
       if (workspaceId) await deps.client.workspace.remove({ id: workspaceId })
@@ -446,6 +453,7 @@ export async function executeTeamSpawn(
   } else if (worktreeBranch) {
     context.push(`You are working on branch "${worktreeBranch}". Your changes are isolated from other teammates.`)
   }
+  if (worktreeBranch) context.push("Verify the deliverable exists on disk in this worktree before you report the task complete.")
 
   // Plan approval mode — teammate must send plan before writing
   if (usePlanApproval && !finalResponse) {
@@ -471,6 +479,9 @@ export async function executeTeamSpawn(
         "- team_message: send a message to the lead or another teammate",
         "- team_broadcast: send a message to all team members",
         "- team_tasks_list: view the shared team task board",
+        "- team_results: retrieve a teammate's full message",
+        "- team_status: view members and task counts",
+        "- team_view: focus a teammate session when navigation is requested",
       )
     } else {
       context.push(
@@ -585,6 +596,7 @@ export async function executeTeamSpawn(
           notifyLead(deps.client, deps.db, teamInfo.teamId, `Could not preserve "${args.name}" before rollback; session and worktree retained for recovery.`)
           return
         }
+        storePreservedBranch(deps.db, teamInfo.teamId, args.name, worktreeBranch, preserved)
       }
       deps.db.run("DELETE FROM team_member WHERE team_id = ? AND session_id = ?", [teamInfo.teamId, childSessionId])
       deps.registry.unregister(childSessionId)
@@ -628,5 +640,6 @@ export async function executeTeamSpawn(
   log(`spawn:done name=${args.name} sessionId=${childSessionId}`)
   const routingInfo = policyRouting ? `\nMission policy v${policyRouting.policyRevision}: ${policyRouting.group} → ${policyRouting.selected.id} (${policyRouting.selected.variant ?? "default"}).`
     : routing ? `\nModel routing: ${routing.reason}` : ""
-  return `Teammate "${args.name}" spawned (agent: ${agent})${branchInfo}${planInfo}${claimInfo}. They are working on: ${args.prompt.slice(0, 120)}${args.prompt.length > 120 ? "..." : ""}${worktreeWarning}${routingInfo}`
+  const isolation = useWorktree ? "" : ` worktree off (${isReadOnly ? "readonly-agent" : "flag"})`
+  return `Teammate "${args.name}" spawned (agent: ${agent})${branchInfo}${planInfo}${claimInfo}. They are working on: ${args.prompt.slice(0, 120)}${args.prompt.length > 120 ? "..." : ""}${routingInfo}${profileAdmissionWarning(deps.directory, agent, finalResponse)}${isolation}`
 }

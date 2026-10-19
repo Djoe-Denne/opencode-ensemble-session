@@ -13,15 +13,14 @@ describe("session continuity prerequisites (upstream #41)", () => {
     expect((await client.session.create({ permission: [] })).data?.id).toBe("ses_new")
   })
 
-  test("fresh spawn reports its existing shared-directory fallback", async () => {
+  test("fresh writer spawn fails closed instead of using a shared directory", async () => {
     const deps = setupDeps()
     insertTeam(deps.db, "pr41", "pr41", "lead")
     spawnFailures.clear()
     deps.client.worktree.create = async () => { throw new Error("missing strategy") }
     try {
-      const output = await executeTeamSpawn(deps, { name: "builder", prompt: "Build" }, "lead")
-      expect(output).toContain("WARNING")
-      expect(output).toContain("shared directory")
+      await expect(executeTeamSpawn(deps, { name: "builder", prompt: "Build" }, "lead")).rejects.toThrow(/admission failed/i)
+      expect(deps.client.calls.filter(call => call.method === "session.promptAsync")).toHaveLength(0)
     } finally { deps.db.close() }
   })
 

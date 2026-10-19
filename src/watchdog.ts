@@ -8,6 +8,7 @@ import { hasReportedCompletion } from "./messaging"
 import { getMemberPromptModel } from "./member-model"
 import { notifyLead } from "./notify"
 import { log } from "./log"
+import { liveCheckoutBranch, storePreservedBranch } from "./worktree-state"
 
 interface WatchdogOpts {
   db: Database
@@ -73,16 +74,20 @@ export class Watchdog {
   async cleanupStaleWorktrees(): Promise<void> {
     const cutoff = Date.now() - Watchdog.STALE_THRESHOLD_MS
     const stale = this.db.query(
-      `SELECT tm.team_id, tm.name, tm.worktree_dir, tm.workspace_id
+      `SELECT tm.team_id, tm.name, tm.status, tm.worktree_dir, tm.workspace_id, tm.worktree_branch, tm.checkout_branch, tm.preserved_branch
        FROM team_member tm
        JOIN team t ON tm.team_id = t.id
        WHERE t.status = 'active'
          AND tm.status IN ('shutdown', 'error')
          AND tm.worktree_dir IS NOT NULL
          AND tm.time_updated < ?`
-    ).all(cutoff) as Array<{ team_id: string; name: string; worktree_dir: string; workspace_id: string | null }>
+    ).all(cutoff) as Array<{ team_id: string; name: string; status: string; worktree_dir: string; workspace_id: string | null; worktree_branch: string | null; checkout_branch: string | null; preserved_branch: string | null }>
 
     for (const m of stale) {
+      if (m.status === "error" && liveCheckoutBranch(m) && !m.preserved_branch) {
+        log(`watchdog:stale-worktree:kept name=${m.name} reason=unpreserved`)
+        continue
+      }
       try {
         if (m.workspace_id) {
           await this.client.workspace.remove({ id: m.workspace_id })
@@ -246,28 +251,34 @@ export class Watchdog {
 
     const cutoff = Date.now() - this.ttlMs
     const stale = this.db.query(
-      `SELECT tm.team_id, tm.name, tm.session_id, tm.worktree_branch, t.name as team_name, p.name as project_name
+      `SELECT tm.team_id, tm.name, tm.session_id, tm.worktree_branch, tm.checkout_branch, t.name as team_name, p.name as project_name
        FROM team_member tm
        JOIN team t ON tm.team_id = t.id
        JOIN project p ON t.project_id = p.id
        WHERE t.status = 'active'
          AND tm.status = 'busy'
          AND tm.time_updated < ?`
-    ).all(cutoff) as Array<{ team_id: string; name: string; session_id: string; worktree_branch: string | null; team_name: string; project_name: string }>
+    ).all(cutoff) as Array<{ team_id: string; name: string; session_id: string; worktree_branch: string | null; checkout_branch: string | null; team_name: string; project_name: string }>
 
     for (const member of stale) {
       // Preserve branch BEFORE abort — session.abort() may destroy the worktree + branch
-      if (this.cwd && member.worktree_branch && !member.worktree_branch.startsWith("ensemble/preserved/")) {
+      const source = liveCheckoutBranch(member)
+      if (source && !this.cwd) {
+        log(`watchdog:branch:preserve-skipped name=${member.name} reason=no-directory`)
+        continue
+      }
+      if (this.cwd && source) {
         const safeBranch = preservedBranchName(member.project_name, member.team_name, member.team_id, member.name)
-        const ok = await preserveBranch(member.worktree_branch, safeBranch, this.cwd)
-        if (ok) {
-          this.db.run("UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
-            [safeBranch, member.team_id, member.name])
-          log(`watchdog:branch:preserved src=${member.worktree_branch} target=${safeBranch}`)
+        const ok = await preserveBranch(source, safeBranch, this.cwd)
+        if (!ok) {
+          log(`watchdog:branch:preserve-failed src=${source} target=${safeBranch}`)
+          continue
         }
+        storePreservedBranch(this.db, member.team_id, member.name, source, safeBranch)
+        log(`watchdog:branch:preserved src=${source} target=${safeBranch}`)
       }
 
-      // Mark as timed out
+      // Mark as timed out only after the checkout is safe to delete.
       this.db.run(
         "UPDATE team_member SET status = 'error', execution_status = 'timed_out', time_updated = ? WHERE team_id = ? AND name = ?",
         [Date.now(), member.team_id, member.name]
@@ -287,7 +298,6 @@ export class Watchdog {
         `Teammate "${member.name}" timed out after exceeding the busy time limit and was aborted. Their in-progress work has been released. Review their session, then re-spawn or reassign the task if needed.`,
       )
 
-      // Abort session (best effort)
       try {
         await this.client.session.abort({ sessionID: member.session_id })
       } catch { /* best effort */ }

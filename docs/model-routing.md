@@ -76,6 +76,11 @@ explanation and fallback; subsequent deliveries preserve the selected variant.
 A later lead `team_message.model` override clears routing provenance and the
 old effort. The fallback is an auditable suggestion, **not an automatic retry**.
 
+Profile frontmatter is not an input on this path either. Catalogue
+`reasoningEffort` values are stored and delivered as native variant ids; they
+are not translated into another label at `switchModel`. Canonical effort is an
+annotation described in `docs/mission-policy.md`.
+
 This V1 deliberately routes at spawn, not on every reused worker assignment.
 Later tasks on the same member retain its model/variant and manual overrides.
 Risk does not change review, plan approval, agent type or permissions.

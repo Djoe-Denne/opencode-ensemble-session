@@ -235,11 +235,10 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
     expect((await client.workspace.create({ branch: "ensemble-branch" })).data?.directory).toBe("/wt/ensemble-proj-team-alice")
   })
 
-  test("worktree.create falls back to the requested name when git lookup fails", async () => {
+  test("worktree.create refuses an empty git branch --show-current", async () => {
     const { ctx } = mockCtx()
     const client = createV2Client(ctx as never, { gitBranch: mockGit({}) })
-    const result = await client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })
-    expect(result.data?.branch).toBe("ensemble-x")
+    await expect(client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })).rejects.toThrow("show-current")
   })
 
   test("worktree.remove/list/reset map to V2 remove/list/refresh", async () => {

@@ -375,9 +375,10 @@ export async function setupEnsemble(
     }
   })
 
-  // OQ-V2-shell: the V2 shell hook carries no sessionID, so per-session
-  // ENSEMBLE_* env cannot be scoped. Registered as a placeholder until the
-  // API gains session scope — team tools and prompts carry identity instead.
+  // OQ-V2-shell: the V2 shell hook carries no sessionID. Cwd is visible, but
+  // a member must not be guessed from it because the lead shells in the
+  // canonical directory too. Model id, native variant and canonical effort
+  // travel in the teammate system prompt, not this hook.
   await ctx.shell.hook("create.before", () => undefined)
 
   const client = createV2Client(ctx, { ...continuityOptions, ...(rpc ? { rpcEmitter: rpc } : {}) })

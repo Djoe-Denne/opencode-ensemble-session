@@ -1,9 +1,10 @@
 import type { ToolDeps } from "../types"
 import { requireLead, checkWorktreeDirty, countBranchCommits } from "./shared"
 import type { IsDirtyFn, CommitCountFn } from "./shared"
-import { mergeBranch, deleteBranch, getOverlappingFiles } from "./merge-helper"
-import type { MergeBranchFn, DeleteBranchFn, OverlapCheckFn } from "./merge-helper"
+import { mergeBranch, deleteBranch, getOverlappingFiles, preserveBranch } from "./merge-helper"
+import type { MergeBranchFn, DeleteBranchFn, OverlapCheckFn, PreserveBranchFn } from "./merge-helper"
 import { log } from "../log"
+import { branchToMerge, liveCheckoutBranch } from "../worktree-state"
 
 /**
  * Execute the team_merge tool. Merges a shutdown teammate's preserved
@@ -18,22 +19,26 @@ export async function executeTeamMerge(
   overlapCheck: OverlapCheckFn = getOverlappingFiles,
   commitCount: CommitCountFn = countBranchCommits,
   isDirty: IsDirtyFn = checkWorktreeDirty,
+  preserve: PreserveBranchFn = deps.preserveBranch ?? preserveBranch,
 ): Promise<string> {
   const teamInfo = requireLead(deps, sessionId)
 
-  const member = deps.db.query("SELECT status, worktree_branch, worktree_dir FROM team_member WHERE team_id = ? AND name = ?")
-    .get(teamInfo.teamId, args.member) as { status: string; worktree_branch: string | null; worktree_dir: string | null } | null
+  const member = deps.db.query("SELECT status, worktree_branch, checkout_branch, preserved_branch, worktree_dir FROM team_member WHERE team_id = ? AND name = ?")
+    .get(teamInfo.teamId, args.member) as { status: string; worktree_branch: string | null; checkout_branch: string | null; preserved_branch: string | null; worktree_dir: string | null } | null
   if (!member) throw new Error(`Teammate "${args.member}" not found in team "${teamInfo.teamName}"`)
 
   if (member.status !== "shutdown" && member.status !== "error") {
     throw new Error(`Teammate "${args.member}" is still active (status: ${member.status}). Shut them down first with team_shutdown.`)
   }
 
-  if (!member.worktree_branch) {
+  const branch = branchToMerge(member)
+  if (!branch) {
     throw new Error(`No branch to merge for "${args.member}". They may not have a worktree, or their work was already merged.`)
   }
-
-  const branch = member.worktree_branch
+  const source = liveCheckoutBranch(member)
+  if (member.preserved_branch && source && !(await preserve(source, member.preserved_branch, deps.directory))) {
+    return `Cannot merge ${args.member}: could not refresh preserved ref ${member.preserved_branch} from ${source}. The checkout branch was left in place.`
+  }
   log(`merge:start member=${args.member} branch=${branch}`)
 
   // A branch with zero new commits produces a trivially "successful" no-op squash merge --
@@ -92,7 +97,7 @@ export async function executeTeamMerge(
   // Merge succeeded — delete the preserved branch and clear DB
   await delBranch(branch, deps.directory)
   deps.db.run(
-    "UPDATE team_member SET worktree_branch = NULL WHERE team_id = ? AND name = ?",
+    "UPDATE team_member SET worktree_branch = NULL, preserved_branch = NULL, checkout_branch = NULL, worktree_state = 'released' WHERE team_id = ? AND name = ?",
     [teamInfo.teamId, args.member],
   )
 

@@ -14,7 +14,9 @@ import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation
 import { notifyTeamEvent, notifyWorkingProgress, notifyLead } from "./notify"
 import { hasReportedCompletion } from "./messaging"
 import { recoverFinalResponse } from "./member-report"
-import { getMemberPromptModel } from "./member-model"
+import { getMemberPromptModel, parseModelId } from "./member-model"
+import { liveCheckoutBranch, storePreservedBranch } from "./worktree-state"
+import { preserveBranch } from "./tools/merge-helper"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
 import { log, initLog } from "./log"
 import { findTeamBySession } from "./types"
@@ -38,6 +40,8 @@ import { executeTeamResults } from "./tools/team-results"
 import { executeTeamStatus } from "./tools/team-status"
 import { executeTeamView } from "./tools/team-view"
 import { pumpTeam } from "./dispatch"
+import { annotatedEffort } from "./variant-effort"
+import { assertMemberShellCwd } from "./worktree-guard"
 import type { ToolDeps, } from "./types"
 import { TokenBucket } from "./rate-limit"
 import { Watchdog } from "./watchdog"
@@ -195,6 +199,16 @@ const plugin: Plugin = async (input) => {
           if (transition.to === "shutdown") {
             await recoverFinalResponse(db, client, transition.teamId, transition.memberName)
             notifyTeamEvent(client, "shutdown", { memberName: transition.memberName })
+            const row = db.query("SELECT checkout_branch, worktree_branch, preserved_branch FROM team_member WHERE team_id = ? AND name = ?")
+              .get(transition.teamId, transition.memberName) as { checkout_branch: string | null; worktree_branch: string | null; preserved_branch: string | null } | null
+            const source = row ? liveCheckoutBranch(row) : null
+            if (row?.preserved_branch && source) {
+              const ok = await preserveBranch(source, row.preserved_branch, deps.directory)
+              if (!ok) {
+                log(`shutdown:branch:refresh-failed member=${transition.memberName} src=${source} target=${row.preserved_branch}`)
+                notifyLead(client, db, transition.teamId, `Could not refresh the preserved ref for ${transition.memberName}. team_merge will retry the copy and will keep the checkout if that fails.`)
+              }
+            }
           } else if (transition.to === "ready" && transition.from === "busy") {
             const recovered = await recoverFinalResponse(db, client, transition.teamId, transition.memberName)
             notifyTeamEvent(client, "completed", { memberName: transition.memberName })
@@ -269,27 +283,55 @@ const plugin: Plugin = async (input) => {
                 duration: 3000,
               })
             } catch { /* TUI may not be available */ }
+            if (transition.failover && client.session.switchModel) {
+              const parsed = parseModelId(transition.failover.id)
+              if (parsed) {
+                try {
+                  await client.session.switchModel({
+                    sessionID,
+                    model: parsed,
+                    ...(transition.failover.variant ? { variant: transition.failover.variant } : {}),
+                  })
+                  const selection = getMemberPromptModel(db, transition.teamId, transition.memberName)
+                  client.session.promptAsync({
+                    sessionID,
+                    synthetic: true,
+                    ...(selection.model ? { model: selection.model } : {}),
+                    ...(selection.variant ? { variant: selection.variant } : {}),
+                    parts: [{ type: "text", text: `[System: Continuing on ${transition.failover.id} after a provider failure. Finish the current task on this model.]` }],
+                  }).catch(error => log(`provider:failover-wake-failed member=${transition.memberName} ${String(error)}`))
+                } catch (error) {
+                  log(`provider:failover-pin-failed member=${transition.memberName} ${String(error)}`)
+                }
+              }
+            }
           } else if (transition.to === "busy_while_shutdown") {
             // Session went busy after shutdown was requested — re-issue abort
             // Branch should already be preserved by the graceful shutdown path,
             // but verify and re-preserve if needed
             const member = deps.db.query(
-              "SELECT worktree_branch, name, team_id FROM team_member WHERE session_id = ?"
-            ).get(sessionID) as { worktree_branch: string | null; name: string; team_id: string } | null
-            if (member?.worktree_branch && !member.worktree_branch.startsWith("ensemble/preserved/")) {
+              "SELECT checkout_branch, worktree_branch, name, team_id FROM team_member WHERE session_id = ?"
+            ).get(sessionID) as { checkout_branch: string | null; worktree_branch: string | null; name: string; team_id: string } | null
+            const source = member ? liveCheckoutBranch(member) : null
+            let abortAllowed = true
+            if (member && source) {
               const { getTeamResourceParts, preserveBranch: preserve, preservedBranchName: branchName } = await import("./tools/merge-helper")
               const resource = getTeamResourceParts(deps.db, member.team_id)
               const safeBranch = branchName(resource.projectName, resource.teamName, resource.teamId, member.name)
-              const ok = await preserve(member.worktree_branch, safeBranch, deps.directory)
+              const ok = await preserve(source, safeBranch, deps.directory)
               if (ok) {
-                deps.db.run("UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
-                  [safeBranch, member.team_id, member.name])
-                log(`busy_while_shutdown:branch:preserved src=${member.worktree_branch} target=${safeBranch}`)
+                storePreservedBranch(deps.db, member.team_id, member.name, source, safeBranch)
+                log(`busy_while_shutdown:branch:preserved src=${source} target=${safeBranch}`)
+              } else {
+                abortAllowed = false
+                log(`busy_while_shutdown:branch:preserve-failed src=${source} target=${safeBranch}`)
               }
             }
-            try {
-              await client.session.abort({ sessionID })
-            } catch { /* best effort */ }
+            if (abortAllowed) {
+              try {
+                await client.session.abort({ sessionID })
+              } catch { /* best effort */ }
+            }
           }
 
           // Show working progress after every transition so the user sees who's still active
@@ -433,13 +475,23 @@ const plugin: Plugin = async (input) => {
       output.env.ENSEMBLE_ROLE = teamInfo.role
       if (teamInfo.memberName) {
         output.env.ENSEMBLE_MEMBER = teamInfo.memberName
-        const member = db.query("SELECT worktree_branch, worktree_dir FROM team_member WHERE team_id = ? AND name = ?")
-          .get(teamInfo.teamId, teamInfo.memberName) as { worktree_branch: string | null; worktree_dir: string | null } | null
+        const member = db.query("SELECT status, worktree_branch, worktree_dir, short_path, model, model_variant FROM team_member WHERE team_id = ? AND name = ?")
+          .get(teamInfo.teamId, teamInfo.memberName) as { status: string; worktree_branch: string | null; worktree_dir: string | null; short_path: string | null; model: string | null; model_variant: string | null } | null
         if (member?.worktree_branch) {
           output.env.ENSEMBLE_BRANCH = member.worktree_branch
         }
         if (member?.worktree_dir) {
           output.env.ENSEMBLE_WORKTREE_DIR = member.worktree_dir
+        }
+        const cwd = (input as { cwd?: string }).cwd
+        if (cwd && member?.worktree_dir) {
+          const expected = [member.worktree_dir, ...(member.short_path ? [member.short_path] : [])]
+          assertMemberShellCwd({ status: member.status, cwd, expected })
+        }
+        if (member?.model) {
+          output.env.ENSEMBLE_MODEL = member.model
+          output.env.ENSEMBLE_VARIANT = member.model_variant ?? "default"
+          output.env.ENSEMBLE_EFFORT = annotatedEffort({ variant: member.model_variant })
         }
       }
     },

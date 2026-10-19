@@ -56,9 +56,9 @@ export async function executeTeamStatus(
   lastKnownState.set(teamInfo.teamId, currentMarker)
 
   const members = deps.db.query(
-    "SELECT name, session_id, agent, status, execution_status, worktree_branch, worktree_dir, plan_approval, time_updated, last_nudged_at, retry_until, retry_attempt FROM team_member WHERE team_id = ? ORDER BY time_created ASC"
+    "SELECT name, session_id, agent, status, execution_status, worktree_branch, checkout_branch, preserved_branch, worktree_state, worktree_dir, plan_approval, time_updated, last_nudged_at, retry_until, retry_attempt FROM team_member WHERE team_id = ? ORDER BY time_created ASC"
   ).all(teamInfo.teamId) as Array<{
-    name: string; session_id: string; agent: string; status: string; execution_status: string; worktree_branch: string | null; worktree_dir: string | null; plan_approval: string; time_updated: number; last_nudged_at: number | null
+    name: string; session_id: string; agent: string; status: string; execution_status: string; worktree_branch: string | null; checkout_branch: string | null; preserved_branch: string | null; worktree_state: string; worktree_dir: string | null; plan_approval: string; time_updated: number; last_nudged_at: number | null
     retry_until: number | null; retry_attempt: number | null
   }>
 
@@ -68,6 +68,8 @@ export async function executeTeamStatus(
 
   const lines: string[] = []
   lines.push(`Team: ${teamInfo.teamName} (you are the ${teamInfo.role})`)
+  const undelivered = deps.db.query("SELECT COUNT(*) as c FROM team_message WHERE team_id = ? AND delivered = 0").get(teamInfo.teamId) as { c: number }
+  lines.push(`Undelivered messages: ${undelivered.c}`)
   const explicitPolicy = missionPolicySummary(deps.db, teamInfo.teamId)
   if (explicitPolicy) lines.push(explicitPolicy)
   const mission = deps.db.query("SELECT mission_mode, mission_state, classification_policy, classification_runtime FROM team WHERE id = ?").get(teamInfo.teamId) as { mission_mode: string; mission_state: string; classification_policy: string | null; classification_runtime: string | null }
@@ -90,6 +92,9 @@ export async function executeTeamStatus(
       const statusIcon = m.status === "busy" ? "working" : m.status === "ready" ? "idle" : m.status
       const duration = formatDuration(now - m.time_updated)
       const branch = m.worktree_branch ? `  branch: ${m.worktree_branch}` : ""
+      const checkout = m.checkout_branch ? `  checkout: ${m.checkout_branch}` : ""
+      const preserved = m.preserved_branch ? `  preserved: ${m.preserved_branch}` : ""
+      const worktreeState = `  state: ${m.worktree_state}`
       const plan = m.plan_approval !== "none" ? `, plan: ${m.plan_approval}` : ""
       // Additive display-staleness annotation (Fix 1) — surfaces a soft stall-nudge
       // without inventing a new status value. Annotates the existing status, doesn't
@@ -106,7 +111,7 @@ export async function executeTeamStatus(
         .get(teamInfo.teamId, m.name) as { last_msg: number | null } | null
       const msgInfo = lastMsg?.last_msg ? `last msg: ${formatDuration(now - lastMsg.last_msg)} ago` : "no messages yet"
 
-      lines.push(`  ${m.name}  [${statusIcon} ${duration}, ${msgInfo}${plan}${nudged}${retrying}]  agent: ${m.agent}${branch}`)
+      lines.push(`  ${m.name}  [${statusIcon} ${duration}, ${msgInfo}${plan}${nudged}${retrying}]  agent: ${m.agent}${branch}${checkout}${preserved}${worktreeState}`)
 
       // Current task
       const task = deps.db.query("SELECT content FROM team_task WHERE team_id = ? AND assignee = ? AND status = 'in_progress' LIMIT 1")

@@ -36,6 +36,7 @@ async function run(f: ReturnType<typeof fixture>, tasks = [{ content: "task", pr
 test("authorized fallback is systematic and records an incident instead of silently changing method", async () => {
   const f = fixture()
   f.deps.config.classification.fallbacks = [{ method: "general", model: "chosen/flash", variant: "medium" }]
+  f.deps.config.classification.limits = { retries: 0 }
   f.deps.classifier!.invoke = async () => { f.calls.push("jev_ask"); throw new Error("offline") }
   const id = await run(f)
   expect(f.calls).toEqual(["jev_ask", "chosen/flash"])
@@ -89,7 +90,7 @@ test("missing x86 assembly blocks without sending invented input to any classifi
 test("retries are bounded and budgets persist across task drains", async () => {
   const f = fixture()
   f.deps.config.classification.limits = { retries: 1, retryDelayMs: 1, maxAttempts: 2, maxCalls: 2 }
-  f.deps.classifier!.invoke = async () => { f.calls.push("jev_ask"); throw new Error("offline") }
+  f.deps.classifier!.invoke = async () => { f.calls.push("jev_ask"); throw new Error("Provider timeout") }
   const id = await run(f, [{ content: "first", priority: "medium" }, { content: "second", priority: "medium" }])
   expect(f.calls).toHaveLength(2)
   const row = f.deps.db.query("SELECT classification_runtime, mission_state FROM team WHERE id = ?").get(id) as { classification_runtime: string; mission_state: string }
@@ -207,6 +208,60 @@ test("SQLite policy, classification provenance and budget counters survive a dat
     await classifyBoardTasks(f.deps, id)
     expect(f.calls).toHaveLength(1)
   } finally { f.deps.db.close(); original.close(); rmSync(directory, { recursive: true, force: true }) }
+})
+
+test("a transient timeout is retried once by default and then succeeds", async () => {
+  const f = fixture()
+  f.deps.classifier!.invoke = async () => {
+    f.calls.push("jev_ask")
+    if (f.calls.length === 1) throw new Error("Classifier timeout")
+    return { answers: { complexity: { type: "score", score: 0.4 }, risk: { type: "score", score: 0.2 } } }
+  }
+  const id = await run(f)
+  expect(f.calls).toEqual(["jev_ask", "jev_ask"])
+  expect(getMissionClassification(f.deps.db, id)?.limits?.retries).toBe(1)
+  expect(f.deps.db.query("SELECT classification_status FROM team_task").get()).toMatchObject({ classification_status: "completed" })
+})
+
+test("an already frozen policy keeps retries 0 until an explicit update", async () => {
+  const f = fixture()
+  await executeTeamCreate(f.deps, { name: "mission" }, "lead")
+  const id = (f.deps.db.query("SELECT id FROM team").get() as { id: string }).id
+  const policy = getMissionClassification(f.deps.db, id)
+  f.deps.db.run("UPDATE team SET classification_policy = ? WHERE id = ?", [JSON.stringify({ ...policy, limits: { ...policy?.limits, retries: 0 } }), id])
+  f.deps.classifier!.invoke = async () => { f.calls.push("jev_ask"); throw new Error("Classifier timeout") }
+  await executeTeamTasksAdd(f.deps, { tasks: [{ content: "task", priority: "medium" }] }, "lead")
+  await classifyBoardTasks(f.deps, id)
+  expect(f.calls).toEqual(["jev_ask"])
+  expect(getMissionClassification(f.deps.db, id)?.limits?.retries).toBe(0)
+})
+
+test("an empty helper is never invoked and a terminal tool violation is not retried", async () => {
+  const missing = fixture()
+  missing.deps.config.classification.helperModel = ""
+  await executeTeamCreate(missing.deps, { name: "mission" }, "lead")
+  const missingId = (missing.deps.db.query("SELECT id FROM team").get() as { id: string }).id
+  missing.deps.db.run("INSERT INTO team_task (id, team_id, content, status, priority, classification_status, time_created, time_updated) VALUES ('pending-task', ?, 'task', 'pending', 'medium', 'pending', ?, ?)", [missingId, Date.now(), Date.now()])
+  await classifyBoardTasks(missing.deps, missingId)
+  expect(missing.calls).toHaveLength(0)
+  expect(missing.deps.db.query("SELECT classification_status, classification_error FROM team_task").get()).toMatchObject({ classification_status: "blocked", classification_error: expect.stringContaining("helperModel") })
+  const violated = fixture()
+  violated.deps.config.classification.limits = { retries: 1, retryDelayMs: 1 }
+  violated.deps.classifier!.invoke = async () => { violated.calls.push("jev_ask"); throw new Error("Classifier cannot change the approved tool input") }
+  await run(violated)
+  expect(violated.calls).toEqual(["jev_ask"])
+})
+
+test("a legacy team without a mission refuses unscored tasks while the required helper is unset", async () => {
+  const f = fixture()
+  f.deps.config.classification.helperModel = ""
+  await executeTeamCreate(f.deps, { name: "mission" }, "lead")
+  await expect(executeTeamTasksAdd(f.deps, { tasks: [{ content: "unscored", priority: "medium" }] }, "lead")).rejects.toThrow("Configure helperModel")
+  expect(f.deps.db.query("SELECT id, classification_status FROM team_task").all()).toHaveLength(0)
+  expect(f.calls).toHaveLength(0)
+  await executeTeamTasksAdd(f.deps, { tasks: [{ content: "scored", priority: "medium", complexity: 10, risk: 20 }] }, "lead")
+  expect(f.deps.db.query("SELECT classification_status FROM team_task").get()).toMatchObject({ classification_status: "not_required" })
+  expect(f.calls).toHaveLength(0)
 })
 
 test("duration and serialized-volume budgets refuse new calls before spending a reservation", async () => {

@@ -147,6 +147,34 @@ describe("buildTeammateSystemPrompt", () => {
     expect(resultA).toContain('"alice"')
     expect(resultB).toContain('"bob"')
   })
+
+  test("states the persisted model, native variant and canonical effort", () => {
+    const db = setupDb()
+    insertTeam(db, "t1", "bravo", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-alice")
+    db.run("UPDATE team_member SET model = 'openai/gpt-6.1-sol', model_variant = 'xhigh' WHERE name = 'alice'")
+    const prompt = buildTeammateSystemPrompt(db, "t1", "alice")
+    expect(prompt).toContain("openai/gpt-6.1-sol")
+    expect(prompt).toContain("variant xhigh")
+    expect(prompt).toContain("effort xhigh")
+    const compacted = buildTeamCompactionContext(db, "t1", "member", "alice")
+    expect(compacted).toContain("openai/gpt-6.1-sol")
+    expect(compacted).toContain("variant xhigh")
+    db.run("UPDATE team_member SET model_variant = NULL WHERE name = 'alice'")
+    expect(buildTeammateSystemPrompt(db, "t1", "alice")).toContain("variant default, effort default")
+  })
+
+  test("tells a team_message member to call member tools through execute and stays silent for final_response", () => {
+    const db = setupDb()
+    insertTeam(db, "t1", "bravo", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-alice")
+    insertMember(db, "t1", "restricted", "sess-restricted")
+    db.run("UPDATE team_member SET report_mode = 'final_response' WHERE name = 'restricted'")
+    expect(buildTeammateSystemPrompt(db, "t1", "alice")).toContain("called through the execute tool")
+    const restrictive = buildTeammateSystemPrompt(db, "t1", "restricted")
+    expect(restrictive).not.toContain("called through the execute tool")
+    expect(restrictive).not.toContain("team_tasks_complete")
+  })
 })
 
 describe("buildTeamCompactionContext", () => {

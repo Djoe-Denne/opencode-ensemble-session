@@ -1,5 +1,20 @@
 import type { Database } from "./db"
 
+/**
+ * Classify rows that already exist when migration 21 runs.
+ * Safe to re-run: it only copies branch names and sets worktree_state.
+ */
+export const WORKTREE_STATE_BACKFILL_SQL = `
+UPDATE team_member SET preserved_branch = worktree_branch WHERE worktree_branch LIKE 'ensemble/preserved/%';
+UPDATE team_member SET checkout_branch = worktree_branch WHERE worktree_branch IS NOT NULL AND worktree_branch NOT LIKE 'ensemble/preserved/%';
+UPDATE team_member SET worktree_state = CASE
+  WHEN agent IN ('plan', 'explore') THEN 'off'
+  WHEN preserved_branch IS NOT NULL THEN 'preserved'
+  WHEN worktree_dir IS NOT NULL AND checkout_branch IS NOT NULL THEN 'ready'
+  WHEN worktree_dir IS NULL AND checkout_branch IS NULL AND preserved_branch IS NULL THEN 'off'
+  ELSE 'failed'
+END;`
+
 /** Migration SQL statements, applied in order. Version = index + 1. */
 export const MIGRATIONS: string[] = [
   // Migration 1: Initial schema — 4 tables
@@ -268,6 +283,36 @@ export const MIGRATIONS: string[] = [
      task_ids TEXT NOT NULL, content TEXT NOT NULL, report_generation INTEGER NOT NULL, time_created INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0,
      UNIQUE(session_id, native_message_id)
    );`,
+  // Migrations 17–20: intentional no-ops. The installed plugin already consumed
+  // user_version 15–20 with a different history. A checkout database at 16 must
+  // advance through these slots; a database already at 20 runs only migration 21.
+  // Do not copy the installed SQL into these slots, and do not apply migration 21
+  // to the live ~/.config/opencode/ensemble.db from this session.
+  `SELECT 1;`,
+  `SELECT 1;`,
+  `SELECT 1;`,
+  `SELECT 1;`,
+  // Migration 21: additive worktree state and provider-attempt journal.
+  `ALTER TABLE team_member ADD COLUMN worktree_state TEXT NOT NULL DEFAULT 'failed' CHECK(worktree_state IN ('off', 'failed', 'ready', 'preserved', 'released'));
+   ALTER TABLE team_member ADD COLUMN checkout_branch TEXT;
+   ALTER TABLE team_member ADD COLUMN preserved_branch TEXT;
+   ALTER TABLE team_member ADD COLUMN short_path TEXT;
+   ALTER TABLE team_member ADD COLUMN toolchain_link TEXT;
+   ${WORKTREE_STATE_BACKFILL_SQL}
+   CREATE TABLE member_provider_attempt (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     team_id TEXT NOT NULL,
+     member_name TEXT NOT NULL,
+     task_id TEXT,
+     kind TEXT NOT NULL CHECK(kind IN ('retry', 'failover', 'stop')),
+     provider TEXT NOT NULL,
+     model TEXT NOT NULL,
+     variant TEXT,
+     detail TEXT NOT NULL,
+     time_created INTEGER NOT NULL
+   );
+   ALTER TABLE member_result ADD COLUMN origin TEXT;
+   ALTER TABLE member_result ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0;`,
 ]
 
 /**

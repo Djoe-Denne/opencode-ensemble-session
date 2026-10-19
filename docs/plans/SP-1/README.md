@@ -346,4 +346,37 @@ Typecheck passed; **1319 tests passed, 0 failed**, across 74 files; build bundle
 Only this documentation was changed afterward to record the result. The gate
 validates the integrated partial artifacts and corrections, not the installed
 plugin, a new native campaign, SP-4's not-yet-integrated artifacts or G0. SP-1
-itself remains **incomplete and not accepted** pending OQ-103.
+itself remained **incomplete** pending OQ-103 at that gate. The later runtime
+follow-up is recorded below and still does not expose the raw hook payload.
+
+## Runtime tool and Code Mode follow-up
+
+On 2026-10-19 at 18:12–18:14 UTC, the lead used a scratch profile and four
+scratch sessions in `%TEMP%/opencode-sp1-runtime-probe`. The profile selected
+`openai/gpt-6.1-sol` variant `low` and combined the host's default rules with
+the architect pattern: deny `edit *`, allow `edit docs/plans/**`, and deny
+`shell`. No project file or global profile was changed. The governed prompts
+used that scratch model only.
+
+- The public `session.shell` endpoint returned 204 and created
+  `docs/plans/sp1-shell.txt` despite the shell denial. No permission request was
+  recorded. This endpoint is not evidence of the edit hook.
+- A real model turn called the tool `patch` for `docs/plans/sp1-direct.txt`.
+  The tool completed and the file contained `ok`. No permission request event
+  was visible.
+- The same `patch` tool aimed at `outside.txt` failed with exactly
+  `Permission denied: edit`. The file was not created. The public failure does
+  not include the evaluated resource list.
+- Code Mode's `execute` tool wrote `docs/plans/sp1-code-mode.txt` through
+  JavaScript `fs.writeFileSync`. A second execute prompt aimed outside
+  `docs/plans` did not create a file: the script invoked another tool with an
+  invalid payload, so this is not an observed edit denial.
+- The public event stream showed tool start, success, and failure. It did not
+  include a `permission.evaluate` payload with `resources`, agent, and effect.
+  The historical 3-success/2-denial mix was not reproduced: these were different
+  resources with one allow and one deny.
+
+OQ-103 is therefore partially observed. Real edit enforcement and one Code Mode
+write are established. The raw hook arguments remain unexposed by the host's
+public events, and Code Mode filesystem writes are not yet shown to pass
+through the same `edit` decision.

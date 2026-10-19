@@ -49,6 +49,10 @@ interface MemberRow {
   retry_attempt: number | null
   retry_provider: string | null
   retry_message: string | null
+  worktree_state: string
+  checkout_branch: string | null
+  preserved_branch: string | null
+  short_path: string | null
 }
 
 interface TaskRow {
@@ -111,7 +115,7 @@ export interface EnsembleDashboardState {
 function buildState(db: Database): EnsembleDashboardState {
   const projects = db.query("SELECT id, name, path, status, time_created, time_updated FROM project ORDER BY time_updated DESC").all() as ProjectRow[]
   const teams = db.query("SELECT id, name, project_id, lead_session_id, status, lead_agent, time_created, time_updated FROM team ORDER BY time_created DESC").all() as TeamRow[]
-  const memberStmt = db.query("SELECT name, agent, status, execution_status, session_id, worktree_branch, prompt, model, plan_approval, time_created, time_updated, last_nudged_at, retry_until, retry_attempt, retry_provider, retry_message FROM team_member WHERE team_id = ?")
+  const memberStmt = db.query("SELECT name, agent, status, execution_status, session_id, worktree_branch, checkout_branch, preserved_branch, worktree_state, short_path, prompt, model, plan_approval, time_created, time_updated, last_nudged_at, retry_until, retry_attempt, retry_provider, retry_message FROM team_member WHERE team_id = ?")
   const taskStmt = db.query("SELECT id, content, status, priority, assignee, depends_on, time_created, time_updated FROM team_task WHERE team_id = ?")
   const msgStmt = db.query("SELECT id, from_name, to_name, content, delivered, read, time_created FROM team_message WHERE team_id = ? ORDER BY time_created DESC LIMIT 50")
 
@@ -123,6 +127,10 @@ function buildState(db: Database): EnsembleDashboardState {
       executionStatus: m.execution_status,
       sessionId: m.session_id,
       worktreeBranch: m.worktree_branch,
+      worktreeState: m.worktree_state,
+      checkoutBranch: m.checkout_branch,
+      preservedBranch: m.preserved_branch,
+      shortPath: m.short_path,
       prompt: m.prompt,
       model: m.model,
       planApproval: m.plan_approval,

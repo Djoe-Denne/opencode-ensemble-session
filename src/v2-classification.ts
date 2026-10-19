@@ -1,5 +1,5 @@
 import type { V2Context } from "./v2-client"
-import type { ClassifierTool } from "./classification-protocol"
+import { CLASSIFICATION_PROTOCOL, type ClassifierTool } from "./classification-protocol"
 import { parseModelId } from "./member-model"
 
 /** Public tool events used as execution evidence, not model-authored text. */
@@ -124,6 +124,10 @@ export async function invokeNativeClassifier(ctx: V2ClassificationContext, reque
   let finishPipeline: () => void = () => {}
   const pipelineFinished = new Promise<void>(resolve => { finishPipeline = resolve })
   const deny = (message: string): never => { violation = message; throw new Error(message) }
+  const acceptResult = (value: unknown): void => {
+    if (executionSeen && canonical(result) !== canonical(value)) violation = "Classifier dispatcher envelope disagrees with the native tool result"
+    else { executionSeen = true; result = value }
+  }
   try {
     request.onCreated?.(sessionID)
     const actions = new Set(["execute", tool.options?.permission ?? tool.id])
@@ -165,13 +169,14 @@ export async function invokeNativeClassifier(ctx: V2ClassificationContext, reque
       }
       if (event.sessionID !== sessionID) return
       if (event.tool === tool.id && event.status === "error") toolError = event.error?.message ?? "Native classifier execution failed"
-      if (event.tool === tool.id && event.status === "completed" && invocationSeen) {
-        executionSeen = true
-        result = event.result
+      if (!toolError && event.tool === tool.id && event.status === "completed" && invocationSeen) acceptResult(event.result)
+      if (!toolError && event.tool === "execute" && event.status === "completed" && dispatcherSeen) {
+        const envelope = classificationEnvelope(event.result, tool.id)
+        if (envelope) acceptResult(envelope.output)
       }
       // Code Mode must finish its enclosing dispatcher too. After that boundary
       // the helper's narrative is irrelevant; cleanup stops further generation.
-      if (violation || toolError || (executionSeen && (!dispatcherSeen || event.tool === "execute"))) finishPipeline()
+      if (violation || toolError || (dispatcherSeen && event.tool === "execute") || (executionSeen && !dispatcherSeen)) finishPipeline()
     }), signal, disposeLateRegistration))
     phase = "model"
     await bounded(ctx.session.switchModel({ sessionID, model: { providerID: model.providerID, id: model.modelID, ...(request.variant ? { variant: request.variant } : {}) } }), signal)
@@ -187,7 +192,9 @@ export async function invokeNativeClassifier(ctx: V2ClassificationContext, reque
     await bounded(Promise.race([pipelineFinished, ctx.session.wait({ sessionID }, { signal })]), signal)
     if (violation) throw new Error(violation)
     if (toolError) throw new Error(`Classifier tool ${tool.id} failed: ${toolError.slice(0, 2000)}`)
-    if (!executionSeen) throw new Error(`Classifier returned without successful tool execution evidence: ${tool.id}`)
+    if (!executionSeen) throw new Error(dispatcherSeen
+      ? `Classifier returned without successful tool execution evidence: injected dispatcher was not executed: ${tool.id}`
+      : `Classifier returned without successful tool execution evidence: ${tool.id}`)
     return result
   } catch (error) {
     throw await classifierFailure(ctx, sessionID, phase, events, error)
@@ -205,8 +212,15 @@ function classifierDispatcher(toolId: string, input: Record<string, unknown>): s
     "const target = keys.reduce((current, key) => current?.[key], tools);",
     'if (typeof target !== "function") throw new Error("Classifier catalogue path is not callable");',
     // Code Mode functions are path proxies: .call would name another tool.
-    `return await target(${JSON.stringify(input)});`,
+    `const output = await target(${JSON.stringify(input)});`,
+    `return { protocol: ${JSON.stringify(CLASSIFICATION_PROTOCOL)}, toolId: ${JSON.stringify(toolId)}, output };`,
   ].join("\n")
+}
+
+function classificationEnvelope(result: unknown, toolId: string): { output: unknown } | undefined {
+  const raw = record(result)
+  if (!raw || raw.protocol !== CLASSIFICATION_PROTOCOL || raw.toolId !== toolId || !Object.hasOwn(raw, "output")) return undefined
+  return { output: raw.output }
 }
 
 function codeModeError(result: unknown): string | undefined {

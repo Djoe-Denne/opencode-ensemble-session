@@ -5,6 +5,7 @@ import { MemberRegistry, DescendantTracker } from "../src/state"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation, shouldNudgeIdleMember, handleSessionErrorEvent } from "../src/hooks"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "../src/system-prompt"
 import { findTeamBySession } from "../src/types"
+import { annotatedEffort } from "../src/variant-effort"
 import { sendMessage } from "../src/messaging"
 import { mockClient } from "./helpers"
 
@@ -276,6 +277,22 @@ describe("handleSessionStatusEvent", () => {
     expect(row.retry_provider).toBe("anthropic")
     // action.message wins over the generic status.message when present.
     expect(row.retry_message).toBe("Anthropic is currently overloaded")
+  })
+
+  test("three rate-limit observations do not change the admitted model", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "sess-1", "busy", "running")
+    db.run("UPDATE team_member SET model = 'openai/gpt-6.1-sol', model_variant = 'xhigh' WHERE name = 'alice'")
+    registry.register("t1", "alice", "sess-1")
+    for (const attempt of [1, 2, 3]) {
+      handleSessionStatusEvent(db, registry, "sess-1", "retry", {
+        attempt,
+        message: "Rate limit reached",
+        next: Date.now() + 1000,
+      })
+    }
+    const row = db.query("SELECT model, model_variant, status FROM team_member WHERE name = 'alice'").get() as { model: string; model_variant: string; status: string }
+    expect(row).toEqual({ model: "openai/gpt-6.1-sol", model_variant: "xhigh", status: "busy" })
   })
 
   test("Fix 2: falls back to status.message when action is absent, and never hardcodes throttle language", () => {
@@ -687,6 +704,27 @@ describe("shell.env logic", () => {
 
     expect(env.ENSEMBLE_BRANCH).toBe("ensemble-my-team-alice")
     expect(env.ENSEMBLE_WORKTREE_DIR).toBe("/tmp/wt-alice")
+  })
+
+  test("exports persisted model, native variant and canonical effort for V1", () => {
+    insertTeam(db, "t1", "my-team", "lead-sess")
+    insertMember(db, "t1", "alice", "alice-sess", "busy", "running")
+    db.run("UPDATE team_member SET model = 'openai/gpt-6.1-sol', model_variant = 'xhigh' WHERE name = 'alice'")
+    registry.register("t1", "alice", "alice-sess")
+
+    const teamInfo = findTeamBySession(db, registry, "alice-sess")
+    const member = db.query("SELECT model, model_variant FROM team_member WHERE team_id = ? AND name = ?")
+      .get(teamInfo!.teamId, teamInfo!.memberName!) as { model: string | null; model_variant: string | null } | null
+    const env: Record<string, string> = {}
+    if (member?.model) {
+      env.ENSEMBLE_MODEL = member.model
+      env.ENSEMBLE_VARIANT = member.model_variant ?? "default"
+      env.ENSEMBLE_EFFORT = annotatedEffort({ variant: member.model_variant })
+    }
+
+    expect(env.ENSEMBLE_MODEL).toBe("openai/gpt-6.1-sol")
+    expect(env.ENSEMBLE_VARIANT).toBe("xhigh")
+    expect(env.ENSEMBLE_EFFORT).toBe("xhigh")
   })
 
   test("no env vars for non-team session", () => {

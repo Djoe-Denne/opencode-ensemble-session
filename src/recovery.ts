@@ -4,9 +4,11 @@ import type { MemberRegistry } from "./state"
 import { getUndeliveredMessages, markDelivered, hasReportedCompletion } from "./messaging"
 import { releaseMemberTasks } from "./tasks"
 import { getMemberPromptModel } from "./member-model"
-import { preserveBranch, preservedBranchName, teamResourceSegment } from "./tools/merge-helper"
+import { getTeamResourceParts, preserveBranch, preservedBranchName, teamResourceSegment } from "./tools/merge-helper"
 import { log } from "./log"
+import { archiveTeam } from "./team-archive"
 import { runCommand } from "./process"
+import { liveCheckoutBranch, storePreservedBranch } from "./worktree-state"
 
 /**
  * Whether a session still exists in OpenCode. `client.session.get` throws for a
@@ -72,7 +74,15 @@ export async function recoverOrphanedTeams(
   for (const team of active) {
     if (await isSessionAlive(client, team.lead_session_id)) continue
 
-    db.run("UPDATE team SET status = 'archived', time_updated = ? WHERE id = ?", [Date.now(), team.id])
+    const resource = getTeamResourceParts(db, team.id)
+    await archiveTeam({
+      db,
+      teamId: team.id,
+      directory: cwd ?? "",
+      preserve: preserveBranch,
+      abort: sessionId => client.session.abort({ sessionID: sessionId }),
+      preservedName: memberName => preservedBranchName(resource.projectName, resource.teamName, resource.teamId, memberName),
+    })
     registry?.unregisterTeam(team.id)
     archived++
     log(`recovery:team:orphaned team_id=${team.id} lead_session=${team.lead_session_id}`)
@@ -102,56 +112,55 @@ export async function recoverOrphanedTeams(
 export async function recoverStaleMembers(db: Database, client?: PluginClient, cwd?: string, abortTimeoutMs = 5000): Promise<{ interrupted: number }> {
   // Find stale members with branch info so we can preserve before aborting
   const stale = db.query(
-    `SELECT tm.session_id, tm.worktree_branch, tm.name, tm.team_id, t.name as team_name, p.name as project_name
+    `SELECT tm.session_id, tm.worktree_branch, tm.checkout_branch, tm.name, tm.team_id, t.name as team_name, p.name as project_name
       FROM team_member tm
       JOIN team t ON tm.team_id = t.id
       JOIN project p ON t.project_id = p.id
       WHERE tm.status = 'busy' AND t.status = 'active'
         AND (? IS NULL OR t.project_id = ? OR t.project_id = 'default')`
-  ).all(cwd ?? null, cwd ?? null) as Array<{ session_id: string; worktree_branch: string | null; name: string; team_id: string; team_name: string; project_name: string }>
+  ).all(cwd ?? null, cwd ?? null) as Array<{ session_id: string; worktree_branch: string | null; checkout_branch: string | null; name: string; team_id: string; team_name: string; project_name: string }>
 
-  const result = db.run(
-    `UPDATE team_member SET status = 'error', execution_status = 'idle', time_updated = ?
-      WHERE status = 'busy'
-        AND team_id IN (SELECT id FROM team WHERE status = 'active' AND (? IS NULL OR project_id = ? OR project_id = 'default'))`,
-    [Date.now(), cwd ?? null, cwd ?? null]
-  )
-
-  // Release each stale member's in_progress tasks back to the pool so their
-  // unfinished work is reclaimable after a crash (issue #27).
+  // Preserve a live checkout before marking the member failed. A failed copy
+  // leaves the member busy so a later stale-worktree sweep cannot delete it.
+  let interrupted = 0
   for (const member of stale) {
+    const source = liveCheckoutBranch(member)
+    if (source && !cwd) {
+      log(`recovery:branch:preserve-skipped name=${member.name} reason=no-directory`)
+      continue
+    }
+    if (source && cwd) {
+      const safeBranch = preservedBranchName(member.project_name, member.team_name, member.team_id, member.name)
+      const ok = await preserveBranch(source, safeBranch, cwd)
+      if (!ok) {
+        log(`recovery:branch:preserve-failed src=${source} target=${safeBranch}`)
+        continue
+      }
+      storePreservedBranch(db, member.team_id, member.name, source, safeBranch)
+      log(`recovery:branch:preserved src=${source} target=${safeBranch}`)
+    }
+    db.run(
+      "UPDATE team_member SET status = 'error', execution_status = 'idle', time_updated = ? WHERE team_id = ? AND name = ? AND status = 'busy'",
+      [Date.now(), member.team_id, member.name],
+    )
     const released = releaseMemberTasks(db, member.team_id, member.name)
     if (released > 0) log(`recovery:tasks:released name=${member.name} count=${released}`)
-  }
-
-  // Preserve branches then abort orphaned sessions
-  if (client) {
-    for (const member of stale) {
-      // Preserve branch BEFORE abort — session.abort() may destroy the worktree + branch
-      if (cwd && member.worktree_branch && !member.worktree_branch.startsWith("ensemble/preserved/")) {
-        const safeBranch = preservedBranchName(member.project_name, member.team_name, member.team_id, member.name)
-        const ok = await preserveBranch(member.worktree_branch, safeBranch, cwd)
-        if (ok) {
-          db.run("UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
-            [safeBranch, member.team_id, member.name])
-          log(`recovery:branch:preserved src=${member.worktree_branch} target=${safeBranch}`)
-        }
+    interrupted += 1
+    if (!client) continue
+    try {
+      await Promise.race([
+        client.session.abort({ sessionID: member.session_id }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("session.abort timed out")), abortTimeoutMs)),
+      ])
+    } catch (err) {
+      if (err instanceof Error && err.message === "session.abort timed out") {
+        log(`recovery:stale-members:abort-timeout session=${member.session_id}`)
       }
-      try {
-        await Promise.race([
-          client.session.abort({ sessionID: member.session_id }),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("session.abort timed out")), abortTimeoutMs)),
-        ])
-      } catch (err) {
-        if (err instanceof Error && err.message === "session.abort timed out") {
-          log(`recovery:stale-members:abort-timeout session=${member.session_id}`)
-        }
-        /* best effort */
-      }
+      /* best effort */
     }
   }
 
-  return { interrupted: result.changes }
+  return { interrupted }
 }
 
 /**

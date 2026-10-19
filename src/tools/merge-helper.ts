@@ -64,12 +64,13 @@ export function teamWorktreeName(projectName: string, teamName: string, teamId: 
 }
 
 /**
- * Copy a git branch to a new ref. Used to preserve worktree branches
- * before session.abort() which may delete the worktree and its branch.
- * Returns true if the branch was successfully copied.
+ * Copy a live checkout branch onto its safety ref.
+ * An existing safety ref is moved to the source tip so a later commit is not stranded.
+ * The source branch itself is not moved or checked out.
+ * Returns true when the safety ref points at the source.
  */
 export async function preserveBranch(sourceBranch: string, targetBranch: string, cwd: string): Promise<boolean> {
-  const result = await runCommand(["git", "branch", targetBranch, sourceBranch], { cwd })
+  const result = await runCommand(["git", "branch", "-f", targetBranch, sourceBranch], { cwd })
   if (result.exitCode !== 0) {
     log(`merge-helper:preserve:failed src=${sourceBranch} target=${targetBranch} err=${result.stderr.trim()}`)
     return false

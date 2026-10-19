@@ -29,6 +29,7 @@ Read [inventory](references/inventory.md) for the bounded discovery procedure. C
 - Existing native agent Markdown definitions and their intended use, modes, permissions, and expertise. Account for inline/global definitions and duplicate IDs; a file alone is not proof of the effective profile.
 - Whether a compatible Ensemble plugin and the `opencode-ensemble` skill are configured and actually discoverable. Distinguish configured, found on disk, and verified in the active catalog.
 - Any existing integration policy or managed blocks from a previous run.
+- When agent Markdown is present, run `bun scripts/lint-agent-profiles.ts <agents-dir>`. Show the JSON report. Propose a permission diff as a separate change and do not apply it without approval. See [profile lint](references/profile-lint.md) and [teammate profile](references/teammate-profile.md).
 
 Prefer native resolved catalogs when available through public tools. Otherwise mark runtime status **unverified** and use filesystem evidence. Do not invent a plugin version, capability, agent API, or successful installation check.
 

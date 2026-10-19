@@ -5,6 +5,7 @@ import { getTeamResourceParts, preserveBranch, preservedBranchName } from "./mer
 import type { PreserveBranchFn } from "./merge-helper"
 import { releaseMemberTasks } from "../tasks"
 import { log } from "../log"
+import { branchToMerge, liveCheckoutBranch, storePreservedBranch } from "../worktree-state"
 
 /**
  * Execute the team_shutdown tool. Requests a teammate to shut down.
@@ -22,8 +23,8 @@ export async function executeTeamShutdown(
 ): Promise<string> {
   const teamInfo = requireLead(deps, sessionId)
 
-  const member = deps.db.query("SELECT session_id, status, worktree_branch, worktree_dir, report_mode FROM team_member WHERE team_id = ? AND name = ?")
-    .get(teamInfo.teamId, args.member) as { session_id: string; status: string; worktree_branch: string | null; worktree_dir: string | null; report_mode: string } | null
+  const member = deps.db.query("SELECT session_id, status, worktree_branch, checkout_branch, worktree_dir, report_mode FROM team_member WHERE team_id = ? AND name = ?")
+    .get(teamInfo.teamId, args.member) as { session_id: string; status: string; worktree_branch: string | null; checkout_branch: string | null; worktree_dir: string | null; report_mode: string } | null
   if (!member) throw new Error(`Teammate "${args.member}" not found in team "${teamInfo.teamName}"`)
   if (member.status === "shutdown") throw new Error(`Teammate "${args.member}" is already shut down`)
 
@@ -31,7 +32,7 @@ export async function executeTeamShutdown(
 
   // Second call on an already-requested member → force abort
   if (member.status === "shutdown_requested") {
-    await preserveAndAbort(deps, teamInfo.teamId, args.member, member.session_id, member.worktree_branch, preserve)
+    await preserveAndAbort(deps, teamInfo.teamId, args.member, member.session_id, preserve)
     const status = await getBranchStatus(deps, teamInfo.teamId, args.member, member.worktree_dir, isDirty, commitCount)
     return `Force shut down "${args.member}".${status}`
   }
@@ -47,7 +48,7 @@ export async function executeTeamShutdown(
   }
 
   if (isIdle || force) {
-    await preserveAndAbort(deps, teamInfo.teamId, args.member, member.session_id, member.worktree_branch, preserve)
+    await preserveAndAbort(deps, teamInfo.teamId, args.member, member.session_id, preserve)
     const status = await getBranchStatus(deps, teamInfo.teamId, args.member, member.worktree_dir, isDirty, commitCount)
     return `Teammate "${args.member}" has been shut down.${status}`
   }
@@ -55,17 +56,14 @@ export async function executeTeamShutdown(
   // Busy + not force → graceful: preserve branch first, then send shutdown message
   // Branch must be preserved NOW — if the session crashes during shutdown_requested,
   // the worktree and branch could be lost before force-abort ever runs.
-  if (member.worktree_branch) {
+  const source = liveCheckoutBranch(member)
+  if (source) {
     const resource = getTeamResourceParts(deps.db, teamInfo.teamId)
     const safeBranch = preservedBranchName(resource.projectName, resource.teamName, resource.teamId, args.member)
-    const ok = await preserve(member.worktree_branch, safeBranch, deps.directory)
-    if (ok) {
-      deps.db.run(
-        "UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
-        [safeBranch, teamInfo.teamId, args.member],
-      )
-      log(`shutdown:branch:preserved-graceful src=${member.worktree_branch} target=${safeBranch}`)
-    }
+    const ok = await preserve(source, safeBranch, deps.directory)
+    if (!ok) throw new Error(`Refusing to shut down ${args.member}: could not preserve ${source}`)
+    storePreservedBranch(deps.db, teamInfo.teamId, args.member, source, safeBranch)
+    log(`shutdown:branch:preserved-graceful src=${source} target=${safeBranch}`)
   }
 
   try {
@@ -100,23 +98,23 @@ async function preserveAndAbort(
   teamId: string,
   memberName: string,
   sessionId: string,
-  worktreeBranch: string | null,
   preserve: PreserveBranchFn,
 ): Promise<void> {
-  // Preserve the branch BEFORE aborting — session.abort() may delete the worktree + branch
-  if (worktreeBranch && !worktreeBranch.startsWith("ensemble/preserved/")) {
+  // Preserve the branch BEFORE aborting — session.abort() may delete the worktree + branch.
+  // A failed copy blocks the abort. The live checkout name stays in worktree_branch.
+  const row = deps.db.query("SELECT checkout_branch, worktree_branch FROM team_member WHERE team_id = ? AND name = ?")
+    .get(teamId, memberName) as { checkout_branch: string | null; worktree_branch: string | null } | null
+  const source = row ? liveCheckoutBranch(row) : null
+  if (source) {
     const resource = getTeamResourceParts(deps.db, teamId)
     const safeBranch = preservedBranchName(resource.projectName, resource.teamName, resource.teamId, memberName)
-    const ok = await preserve(worktreeBranch, safeBranch, deps.directory)
-    if (ok) {
-      deps.db.run(
-        "UPDATE team_member SET worktree_branch = ? WHERE team_id = ? AND name = ?",
-        [safeBranch, teamId, memberName],
-      )
-      log(`shutdown:branch:preserved src=${worktreeBranch} target=${safeBranch}`)
-    } else {
-      log(`shutdown:branch:preserve-failed src=${worktreeBranch} target=${safeBranch}`)
+    const ok = await preserve(source, safeBranch, deps.directory)
+    if (!ok) {
+      log(`shutdown:branch:preserve-failed src=${source} target=${safeBranch}`)
+      throw new Error(`Refusing to abort ${memberName}: could not preserve ${source}`)
     }
+    storePreservedBranch(deps.db, teamId, memberName, source, safeBranch)
+    log(`shutdown:branch:preserved src=${source} target=${safeBranch}`)
   }
 
   // Now safe to abort — the branch is preserved
@@ -146,11 +144,10 @@ async function getBranchStatus(
   isDirty: IsDirtyFn,
   commitCount: CommitCountFn,
 ): Promise<string> {
-  const row = deps.db.query("SELECT worktree_branch FROM team_member WHERE team_id = ? AND name = ?")
-    .get(teamId, memberName) as { worktree_branch: string | null } | null
-  if (!row?.worktree_branch) return ""
-
-  const branch = row.worktree_branch
+  const row = deps.db.query("SELECT worktree_branch, preserved_branch FROM team_member WHERE team_id = ? AND name = ?")
+    .get(teamId, memberName) as { worktree_branch: string | null; preserved_branch: string | null } | null
+  const branch = row ? branchToMerge(row) : null
+  if (!branch) return ""
   const parts: string[] = []
 
   const commits = await commitCount(branch, deps.directory)

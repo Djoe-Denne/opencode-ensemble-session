@@ -5,6 +5,8 @@ import type { PluginClient } from "./types"
 import { notifyLead } from "./notify"
 import { releaseMemberTasks } from "./tasks"
 import { findTeamBySession } from "./types"
+import { log } from "./log"
+import { observeProviderRetry } from "./provider-journal"
 
 const TEAM_TOOL_PREFIX = "team_"
 
@@ -40,6 +42,8 @@ export interface StatusTransition {
   teamId: string
   from: string
   to: string
+  /** Set when this retry pins one approved model from another provider. */
+  failover?: { id: string; variant?: string }
 }
 
 /**
@@ -100,6 +104,10 @@ export function handleSessionStatusEvent(
       // Reset reported_to_lead so re-activated teammates can receive messages again (issue #3).
       // INVARIANT: every promptAsync delivery path must check hasReportedCompletion() to prevent loops.
       db.run(
+        "UPDATE member_result SET superseded = 1 WHERE team_id = ? AND member_name = ? AND superseded = 0",
+        [entry.teamId, entry.memberName],
+      )
+      db.run(
         "UPDATE team_member SET status = 'busy', execution_status = 'running', reported_to_lead = 0, last_nudged_at = NULL, report_generation = report_generation + 1, report_started_at = ?, report_message_cursor = (SELECT COALESCE(MAX(rowid), 0) FROM team_message), time_updated = ? WHERE team_id = ? AND name = ?",
         [Date.now(), Date.now(), entry.teamId, entry.memberName]
       )
@@ -127,6 +135,15 @@ export function handleSessionStatusEvent(
     // — status/execution_status are untouched, and there is no "provider
     // throttled" language baked in here: the SDK's retry status is generic,
     // so we surface whatever action.message/status.message actually says.
+    const decision = observeProviderRetry(db, {
+      teamId: entry.teamId,
+      memberName: entry.memberName,
+      message: retryPayload?.action?.message ?? retryPayload?.message ?? "",
+      attempt: typeof retryPayload?.attempt === "number" ? retryPayload.attempt : 1,
+    })
+    if (decision.kind !== "retry") {
+      log(`provider:ceiling team=${entry.teamId} member=${entry.memberName} kind=${decision.kind}`)
+    }
     if (retryPayload) {
       // Coerce before binding: older server versions may emit a partial retry
       // payload, and an undefined bind throws synchronously inside this event
@@ -145,7 +162,13 @@ export function handleSessionStatusEvent(
         ]
       )
     }
-    return { memberName: entry.memberName, teamId: entry.teamId, from: member.status, to: "retry" }
+    return {
+      memberName: entry.memberName,
+      teamId: entry.teamId,
+      from: member.status,
+      to: "retry",
+      ...(decision.kind === "failover" ? { failover: decision.model } : {}),
+    }
   }
   return undefined
 }

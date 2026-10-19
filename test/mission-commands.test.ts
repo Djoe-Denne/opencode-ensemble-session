@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseMissionCommand, registerMissionCommands, type MissionCommandDefinition, type MissionCommandInvocation } from "../src/mission-commands"
@@ -87,6 +87,25 @@ describe("native mission command", () => {
     expect(f.deps.db.query("SELECT revision FROM mission_policy").get()).toEqual({ revision: 1 })
   })
 
+  test("shows native variant, canonical effort and a non-blocking calibration warning", async () => {
+    const f = commandFixture()
+    await registerMissionCommands(f.host, f.deps, f.models)
+    await f.invoke("Fix cache")
+    const missionDir = join(f.deps.directory, ".opencode", "missions")
+    const teamDir = readdirSync(missionDir)[0]
+    if (!teamDir) throw new Error("missing mission directory")
+    const policyPath = join(missionDir, teamDir, "model-policy.json")
+    const policy = JSON.parse(readFileSync(policyPath, "utf8")) as { groups: Record<string, Array<{ id: string; variant?: string }>> }
+    policy.groups.light = [{ id: "fixture/light", variant: "xhigh" }]
+    policy.groups.strong = [{ id: "fixture/strong", variant: "low" }]
+    writeFileSync(policyPath, `${JSON.stringify(policy)}\n`)
+    await f.invoke("config")
+    const presented = JSON.stringify(f.prompts.at(-1))
+    expect(presented).toContain("fixture/light (xhigh, xhigh)")
+    expect(presented).toContain("Calibration warning")
+    expect(presented).toContain("does not block start")
+  })
+
   test("refuses unavailable variants and never lets another session approve the mission", async () => {
     const f = commandFixture()
     await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/light" }])
@@ -116,6 +135,28 @@ describe("native mission command", () => {
     release(await f.models())
     await expect(starting).rejects.toThrow("changed")
     expect(f.deps.db.query("SELECT approved_hash FROM mission_policy").get()).toEqual({ approved_hash: null })
+  })
+
+  test("config shows an unset helper block and start does not approve it", async () => {
+    const f = commandFixture()
+    f.deps.classifier = { list: async () => [{ id: "jev_ask", input: { type: "object", properties: { state: {}, questions: {} }, required: ["state", "questions"] } }], invoke: async () => { throw new Error("classifier must not run") } }
+    await registerMissionCommands(f.host, f.deps, f.models)
+    await f.invoke("Classify this mission")
+    await f.invoke("config")
+    const preview = JSON.stringify(f.prompts.at(-1))
+    expect(preview).toContain("Configure helperModel")
+    expect(preview).toContain("Classification blocked")
+    expect(preview).toContain("team_message")
+    await expect(f.invoke("start")).rejects.toThrow("Configure helperModel")
+    expect(f.deps.db.query("SELECT approved_hash FROM mission_policy").get()).toEqual({ approved_hash: null })
+    expect(JSON.stringify(f.prompts.at(-1))).not.toContain("Mission policy approved")
+    const ready = commandFixture()
+    ready.deps.classifier = f.deps.classifier
+    ready.deps.config.classification = { ...ready.deps.config.classification, helperModel: "fixture/light" }
+    await registerMissionCommands(ready.host, ready.deps, ready.models)
+    await ready.invoke("Classify with a helper")
+    await ready.invoke("start")
+    expect(ready.deps.db.query("SELECT revision FROM mission_policy").get()).toEqual({ revision: 1 })
   })
 
   test("repeated start does not create a revision or wake the supervisor twice", async () => {

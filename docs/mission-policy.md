@@ -107,6 +107,26 @@ For these missions:
   the same approval gate. Publishing tasks before `start` does not execute them.
 - Both complexity and risk are required; missing dimensions do not become zero.
 - A spawn cannot replace the recorded task scores or select an unrelated model.
+
+## Reasoning effort precedence
+
+An approved mission executes only the cell returned by `routeMissionModel`. The pair `(id, variant)` is the native identity passed to `switchModel`. Profile frontmatter `model:`, `modelsByAgent`, the pool and `defaultModel` are not read. `team_spawn.model` / `.variant` and `team_message.model` cannot replace that cell.
+
+An omitted `variant` means the host default. The plugin does not invent a default variant id and does not copy a profile effort into the call. A canonical effort (`default`, `low`, `medium`, `high`, `xhigh`, `max`) is an annotation for display, calibration warnings and the teammate system prompt. Alias labels such as `extra high` or `Grok 4.7 Extra High` explain a refusal; they are sent to the host only when that exact string is a native `variant.id`.
+
+A higher risk or complexity band that uses a lower canonical effort produces a calibration warning in the proposal. The warning does not block `start`. Historical approved policies without an `effort` field stay valid. The comparison in `assertMissionMemberModel` uses the native id only.
+
+Legacy teams without `mission_policy` keep the catalogue order in `docs/model-routing.md`. That path also ignores profile frontmatter and does not translate efforts at delivery.
+
+V1 shells export `ENSEMBLE_MODEL`, `ENSEMBLE_VARIANT` and `ENSEMBLE_EFFORT` from the persisted member row. The V2 shell hook has no session id, so the same identity travels in the system prompt instead.
+
+## Approval identity and schema hold
+
+`start` on a file whose hash already matches the latest `mission_policy_revision` row restores `approved_hash` and does not insert another revision. A different hash still creates the next revision. Tasks already admitted keep their stored route.
+
+Writer spawn no longer continues in the shared directory when `worktree.create` or `workspace.create` fails. `plan`, `explore`, and `worktree: false` stay off and say why. New worktree names are `ensemble-<hash8 of project id>-<short team id>-<member>`.
+
+Checkout migrations 17–20 are intentional no-ops (`SELECT 1`). The installed plugin already used `user_version` 15–20 for a different history, so those slots cannot be copied here. Migration 21 adds `worktree_state`, `checkout_branch`, `preserved_branch`, `short_path`, `toolchain_link`, `member_provider_attempt`, and `member_result.origin` / `superseded`. It is registered in `MIGRATIONS` and runs on a checkout database. Do not load this checkout against the live `~/.config/opencode/ensemble.db`: that database is already at `user_version` 20, and opening it would execute migration 21.
 - A reused worker is routed again when it claims its next task.
 - A direct worker claim awaits the public native model switch before returning
   the task. If pinning fails, the claim is released and the worker is quarantined;

@@ -1,3 +1,5 @@
+import { isEnsembleWorktree } from "./worktree-guard"
+
 const NAME_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
 
 let counter = 0
@@ -45,7 +47,7 @@ export function validateProjectName(name: string): string | undefined {
  * Worktree instances should skip recovery to avoid deadlocking the server.
  */
 export function isWorktreeInstance(directory: string): boolean {
-  return directory.includes("/worktree/") && directory.includes("/ensemble-")
+  return isEnsembleWorktree(directory)
 }
 
 /**

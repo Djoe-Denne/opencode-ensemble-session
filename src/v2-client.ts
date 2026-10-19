@@ -84,7 +84,7 @@ function joinParts(parts: Array<{ type: "text"; text: string }>): string {
  * - tui.*: no-op. Toasts and session-select move to the CLI (`./tui`) plugin
  *   in a later phase — the server plugin must not depend on a TUI.
  * - worktree.create: V2 reports only the directory, so the branch is read
- *   back via git (falls back to the requested name). OQ-V2-branch.
+ *   back via git. An empty `git branch --show-current` is a failure.
  * - worktree.list: V2 entries carry directory only; name is the basename
  *   (recovery filters on the `ensemble-` prefix — a non-matching dir is
  *   skipped, never wrongly deleted). reset has no production callers and
@@ -149,6 +149,9 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
         // V2 binds model at create/admission; the shared create signature has
         // no model slot, so apply it here (spawn is the only model passer).
         // Caught live: without this, teammates inherit the server default.
+        // Precedence: the persisted native variant is sent unchanged. An omitted
+        // variant means host default and must not inherit a profile effort.
+        // Canonical effort is an annotation, not a switchModel input.
         if (options.model) {
           await ctx.session.switchModel({
             sessionID: options.sessionID,
@@ -201,7 +204,8 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
       create: async (options) => {
         const name = (options.worktreeCreateInput as { name?: string } | undefined)?.name ?? "ensemble-worktree"
         const created = await ctx.worktree.create({ name, ...project, ...(ctx.location ? { from: ctx.location.directory } : {}) })
-        const branch = (await gitBranch(created.directory)) ?? name
+        const branch = await gitBranch(created.directory)
+        if (!branch) throw new Error(`Refusing worktree ${created.directory}: git branch --show-current is empty`)
         worktreeDirectories.set(branch, created.directory)
         return { data: { name, branch, directory: created.directory } }
       },
@@ -213,7 +217,7 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
         const entries = await ctx.worktree.list(project)
         return {
           data: entries.map((entry) => ({
-            name: entry.directory.split("/").pop() ?? entry.directory,
+            name: entry.directory.split(/[\\/]/u).filter(segment => segment.length > 0).pop() ?? entry.directory,
             branch: "",
             directory: entry.directory,
           })),

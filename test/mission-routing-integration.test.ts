@@ -44,6 +44,17 @@ describe("approved mission routing integration", () => {
     expect(JSON.parse(task.model_routing)).toMatchObject({ group: "strong", complexity: 10, risk: 90, policyRevision: 1, selected: { id: "fixture/strong", variant: "high" } })
   })
 
+  test("an omitted spawn variant sends the approved cell and a different variant is refused", async () => {
+    const { deps, teamId } = await approvedMission()
+    addTask(deps, teamId, "risky", 10, 90)
+    await expect(executeTeamSpawn(deps, { name: "other-variant", prompt: "Different variant", claim_task: "risky", variant: "low", worktree: false }, "lead")).rejects.toThrow("cannot override")
+    await executeTeamSpawn(deps, { name: "author", prompt: "Fix risky cache", claim_task: "risky", worktree: false }, "lead")
+    expect(deps.client.calls.find(call => call.method === "session.promptAsync")?.args[0]).toMatchObject({ model: { providerID: "fixture", modelID: "strong" }, variant: "high" })
+    type SpawnArgs = Parameters<typeof executeTeamSpawn>[1]
+    const profileIsAbsent: "profile" extends keyof SpawnArgs ? false : true = true
+    expect(profileIsAbsent).toBe(true)
+  })
+
   test("explicit model and score overrides cannot bypass the task's approved cell", async () => {
     const { deps, teamId } = await approvedMission()
     addTask(deps, teamId, "risky", 10, 90)

@@ -48,6 +48,14 @@ export interface EnsembleConfig {
   classification?: MissionClassificationConfig
   /** Default explicit policy for command-prepared missions; null seeds a draft from the catalogue. */
   missionPolicy?: MissionModelPolicy | null
+  /** Maximum worktree root length before a Windows subst letter is required. */
+  worktreePathBudget?: number
+  /** Comma-separated subst letters, first free letter wins. */
+  windowsSubstLetters?: string
+  /** Link canonical node_modules into a new worktree. Never runs bun install. */
+  linkNodeModules?: boolean
+  /** Run submodule update --init. Default off. */
+  initSubmodules?: boolean
 }
 
 /** Default configuration values. */
@@ -74,6 +82,10 @@ export const DEFAULT_CONFIG: Required<EnsembleConfig> = {
   missionPolicy: null,
   classification: { mode: "auto", helperModel: "", helperVariant: "", toolId: "", timeoutMs: 30_000,
     missionMode: "supervised", generalModel: "", generalVariant: "", specialized: false, x86ToolId: "", fallbacks: [], limits: {} },
+  worktreePathBudget: 80,
+  windowsSubstLetters: "S,T,U",
+  linkNodeModules: true,
+  initSubmodules: false,
 }
 
 type ConfigFile = Omit<Partial<EnsembleConfig>, "modelRouting" | "classification"> & { modelRouting?: Partial<ModelRoutingConfig>; classification?: Partial<MissionClassificationConfig> }
@@ -106,6 +118,10 @@ function readConfigFile(filePath: string): ConfigFile {
     if (typeof raw.maxActiveMembers === "number") result.maxActiveMembers = raw.maxActiveMembers
     if (typeof raw.autoDispatch === "boolean") result.autoDispatch = raw.autoDispatch
     if (typeof raw.autoScale === "boolean") result.autoScale = raw.autoScale
+    if (typeof raw.worktreePathBudget === "number") result.worktreePathBudget = raw.worktreePathBudget
+    if (typeof raw.windowsSubstLetters === "string") result.windowsSubstLetters = raw.windowsSubstLetters
+    if (typeof raw.linkNodeModules === "boolean") result.linkNodeModules = raw.linkNodeModules
+    if (typeof raw.initSubmodules === "boolean") result.initSubmodules = raw.initSubmodules
     // Validate after merging, outside this reader's compatibility fallback: an
     // invalid explicit mission policy must never silently become a looser one.
     if (raw.missionPolicy !== undefined) result.missionPolicy = raw.missionPolicy as MissionModelPolicy | null

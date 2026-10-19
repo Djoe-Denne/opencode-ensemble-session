@@ -155,9 +155,22 @@ export function getMissionClassification(db: Database, teamId: string, allowUnsu
   return policy
 }
 
+/**
+ * Decide whether a frozen policy may be approved.
+ * Manual and explicitly disabled classification are ready. JEV and x86 need
+ * `helperModel`; general needs `generalModel`. No model is chosen here.
+ */
+export function classificationReadiness(policy: MissionClassificationPolicy | undefined): { ready: boolean; reason: string } {
+  if (!policy || policy.mode === "off" || policy.method === "manual") return { ready: true, reason: "" }
+  const missingHelper = (policy.method === "jev" || policy.method === "x86") && !policy.helperModel
+  const missingGeneral = policy.method === "general" && !policy.generalModel
+  if (!missingHelper && !missingGeneral) return { ready: true, reason: "" }
+  return { ready: false, reason: policy.reason || "Configure the classification model before start; no model is selected implicitly." }
+}
+
 /** Conservative limits independent of worker concurrency and review settings. */
 export const CLASSIFICATION_LIMITS: Required<ClassificationLimits> = {
-  retries: 0, retryDelayMs: 100, maxAttempts: 3, maxCalls: 1000,
+  retries: 1, retryDelayMs: 100, maxAttempts: 3, maxCalls: 1000,
   maxDurationMs: 30 * 60_000, maxInputBytes: 10_000_000, concurrency: 1,
   circuitThreshold: 3, circuitCooldownMs: 60_000, maxCircuitRechecks: 1,
 }

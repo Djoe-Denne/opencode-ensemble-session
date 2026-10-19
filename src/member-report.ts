@@ -46,7 +46,7 @@ export async function recoverFinalResponse(db: Database, client: PluginClient, t
       if (current.reported_to_lead) return false
       const tasks = db.query("SELECT id FROM team_task WHERE team_id = ? AND assignee = ? AND status = 'in_progress'").all(teamId, memberName) as Array<{ id: string }>
       const id = generateId("result")
-      const inserted = db.run("INSERT OR IGNORE INTO member_result (id, team_id, member_name, session_id, native_message_id, task_ids, content, report_generation, time_created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      const inserted = db.run("INSERT OR IGNORE INTO member_result (id, team_id, member_name, session_id, native_message_id, task_ids, content, report_generation, time_created, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'final_response')",
         [id, teamId, memberName, member.session_id, info.id as string, JSON.stringify(tasks.map(task => task.id)), content, member.report_generation, Date.now()])
       if (!inserted.changes) return false
       sendMessage(db, { teamId, from: "system", to: "lead", content: `Native response available for review from ${memberName}. Candidate ${id}; session ${member.session_id}; message ${info.id}; tasks: ${tasks.map(task => task.id).join(", ") || "standalone"}. This is NOT task validation or integration. Read the full candidate with team_results, review and persist/integrate it before completing its tasks.` })

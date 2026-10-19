@@ -1,7 +1,11 @@
-/** An exact native provider/model identity and optional native variant. */
+import { CANONICAL_EFFORTS, canonicalizeVariantLabel, type CanonicalEffort } from "./variant-effort"
+
+/** An exact native provider/model identity, optional native variant, and optional effort annotation. */
 export interface MissionPolicyModel {
   id: string
   variant?: string
+  /** Display annotation only. Absent on historical approved policies. Never sent as a variant. */
+  effort?: CanonicalEffort
 }
 
 /** A complete, versioned risk-row/complexity-column model routing policy. */
@@ -96,7 +100,7 @@ function validateBands(value: unknown, path: string): asserts value is number[] 
 }
 
 function validateModel(value: unknown, path: string, providers: Set<string>): asserts value is MissionPolicyModel {
-  assertObject(value, path, ["id"], ["variant"])
+  assertObject(value, path, ["id"], ["variant", "effort"])
   assertText(value.id, `${path}.id`)
   const separator = value.id.indexOf("/")
   if (separator < 1 || separator === value.id.length - 1 || /[\s#]/u.test(value.id)) {
@@ -107,6 +111,17 @@ function validateModel(value: unknown, path: string, providers: Set<string>): as
     invalid(`${path}.id`, `uses unauthorized provider ${JSON.stringify(provider)}`)
   }
   if (value.variant !== undefined) assertText(value.variant, `${path}.variant`)
+  if (value.effort !== undefined) {
+    if (!(CANONICAL_EFFORTS as readonly string[]).includes(value.effort as string)) {
+      invalid(`${path}.effort`, "must be default, low, medium, high, xhigh or max")
+    }
+    if (typeof value.variant === "string") {
+      const labeled = canonicalizeVariantLabel(value.variant)
+      if (labeled && labeled !== value.effort) {
+        invalid(`${path}.effort`, `must match the canonical effort ${labeled} of variant ${JSON.stringify(value.variant)}`)
+      }
+    }
+  }
 }
 
 /** Validate an unknown mission policy, throwing a descriptive error on invalid input. */

@@ -80,10 +80,16 @@ export async function runClassification(deps: ToolDeps, teamId: string, policy: 
           deps.db.run("UPDATE team SET mission_state = 'critical' WHERE id = ?", [teamId])
           throw lastError // Never allocate another helper when cleanup safety is uncertain.
         }
+        if (!transientClassificationFailure(lastError.message)) break
       }
     }
   }
   throw lastError
+}
+
+function transientClassificationFailure(message: string): boolean {
+  if (/Classifier cannot (?:execute unrelated|change the approved|invoke its tool more than once|dispatch its tool)|disagrees with the native|unrelated action/i.test(message)) return false
+  return /timeout|provider|execution evidence|injected dispatcher/i.test(message)
 }
 
 interface Method { method: "jev" | "general" | "x86"; model: string; variant?: string; toolId?: string }

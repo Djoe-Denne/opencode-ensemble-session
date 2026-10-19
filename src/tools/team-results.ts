@@ -20,9 +20,9 @@ export async function executeTeamResults(
   sessionId: string,
 ): Promise<string> {
   const team = requireTeamMember(deps, sessionId)
-  const candidates = team.role === "lead" ? deps.db.query(`SELECT id, member_name, session_id, native_message_id, task_ids, content FROM member_result
-    WHERE team_id = ? AND ${args.candidate_id ? "id = ?" : "read = 0"}${args.from ? " AND member_name = ?" : ""} ORDER BY time_created ASC`)
-    .all(team.teamId, ...(args.candidate_id ? [args.candidate_id] : []), ...(args.from ? [args.from] : [])) as Array<{ id: string; member_name: string; session_id: string; native_message_id: string; task_ids: string; content: string }> : []
+  const candidates = team.role === "lead" ? deps.db.query(`SELECT id, member_name, session_id, native_message_id, task_ids, content, origin FROM member_result
+    WHERE team_id = ? AND ${args.candidate_id ? "id = ?" : "read = 0 AND superseded = 0"}${args.from ? " AND member_name = ?" : ""} ORDER BY time_created ASC`)
+    .all(team.teamId, ...(args.candidate_id ? [args.candidate_id] : []), ...(args.from ? [args.from] : [])) as Array<{ id: string; member_name: string; session_id: string; native_message_id: string; task_ids: string; content: string; origin: string | null }> : []
   if (args.candidate_id && !candidates.length) throw new Error("Candidate not found in this lead's team")
 
   const rows = args.from
@@ -46,7 +46,7 @@ export async function executeTeamResults(
   for (const candidate of candidates) deps.db.run("UPDATE member_result SET read = 1 WHERE id = ?", [candidate.id])
 
   // Format output — parse structured task results when present
-  return [...candidates.map(candidate => `[Candidate ${candidate.id} from ${candidate.member_name}; NOT validated or integrated]\nSession: ${candidate.session_id}; native message: ${candidate.native_message_id}; tasks: ${candidate.task_ids}\n${candidate.content}`), ...rows.map((r) => {
+  return [...candidates.map(candidate => `[Candidate ${candidate.id} from ${candidate.member_name}; origin ${candidate.origin ?? "unspecified"}; NOT validated or integrated]\nSession: ${candidate.session_id}; native message: ${candidate.native_message_id}; tasks: ${candidate.task_ids}\n${candidate.content}`), ...rows.map((r) => {
     const parsed = parseTaskResult(r.content)
     if (parsed) return formatTaskResult(r.from_name, parsed)
     return `[Message from ${r.from_name}]:\n${r.content}`

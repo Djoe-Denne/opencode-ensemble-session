@@ -6,7 +6,9 @@ import { findTeamBySession } from "./types"
 import { checkToolIsolation } from "./hooks"
 import { pumpTeam } from "./dispatch"
 import { classifyBoardTasks } from "./board-classification"
+import { classificationReadiness, getMissionClassification } from "./mission-classification"
 import { log } from "./log"
+import { calibrationWarnings, describeMissionModel } from "./variant-effort"
 
 /** A generic mission command; project workflows remain in project instructions. */
 export interface MissionCommand {
@@ -97,6 +99,21 @@ async function deliverProposal(host: MissionCommandHost, deps: ToolDeps, proposa
   }
 }
 
+function classificationProposal(deps: ToolDeps, teamId: string): string[] {
+  const policy = getMissionClassification(deps.db, teamId)
+  if (!policy) return []
+  const readiness = classificationReadiness(policy)
+  const retries = policy.limits?.retries
+  const maxAttempts = policy.limits?.maxAttempts
+  return [
+    `Classification: method ${policy.method}; helper ${policy.helperModel || "unset"}; general ${policy.generalModel || "unset"}; fallbacks ${policy.fallbacks?.length ?? 0}; retries ${retries ?? "unset"}; maxAttempts ${maxAttempts ?? "unset"}; timeoutMs ${policy.timeoutMs}.`,
+    ...(readiness.ready ? [] : [
+      `Classification blocked: ${readiness.reason}`,
+      "Lift this block with team_message classification, setting helperModel or generalModel, or by setting classification mode to off. Run /ensemble-mission config again before start.",
+    ]),
+  ]
+}
+
 function formatProposal(deps: ToolDeps, proposal: MissionPolicySnapshot): string {
   const { policy } = proposal
   const band = (bounds: number[], index: number): string => `${bounds[index]}–${(bounds[index + 1] ?? 101) - 1}`
@@ -105,20 +122,22 @@ function formatProposal(deps: ToolDeps, proposal: MissionPolicySnapshot): string
     `|---|${policy.complexityBands.slice(0, -1).map(() => "---").join("|")}|`,
     ...policy.matrix.map((groups, index) => `| ${band(policy.riskBands, index)} | ${groups.join(" | ")} |`),
   ]
-  const groups = Object.entries(policy.groups).map(([name, models]) => `${name}: ${models.map(model => `${model.id} (${model.variant ?? "default"})`).join(" → ")}`)
+  const groups = Object.entries(policy.groups).map(([name, models]) => `${name}: ${models.map(model => describeMissionModel(model)).join(" → ")}`)
+  const calibration = calibrationWarnings(policy)
   const tasks = deps.db.query("SELECT id, content FROM team_task WHERE team_id = ? AND status IN ('pending', 'blocked') ORDER BY time_created, id LIMIT 50").all(proposal.teamId) as Array<{ id: string; content: string }>
   const taskPreview = tasks.map(task => {
     try {
       const route = previewMissionTask(deps.db, proposal, task.id)
-      return `${task.id}: ${task.content.slice(0, 160)} | complexity ${route.complexity}, risk ${route.risk} | ${route.group} | ${route.selected.id} (${route.selected.variant ?? "default"})`
+      return `${task.id}: ${task.content.slice(0, 160)} | complexity ${route.complexity}, risk ${route.risk} | ${route.group} | ${describeMissionModel(route.selected)}`
     } catch (error) { return `${task.id}: BLOCKED — ${error instanceof Error ? error.message : String(error)}` }
   })
   return [
     "Mission policy proposal — execution is paused, not approved.", `Objective: ${proposal.objective}`,
     `Draft: ${proposal.policyPath}`, `Proposal hash: ${proposal.hash}`, `Allowed providers: ${policy.providers.join(", ")}`,
     "Risk and complexity remain independent integers 0–100. The first candidate is primary; alternatives are not automatic retries.",
-    ...cells, ...groups,
+    ...cells, ...groups, ...calibration,
     "Assessment criteria:", `Complexity: ${policy.assessment.complexity.join(" → ")}`, `Risk: ${policy.assessment.risk.join(" → ")}`,
+    ...classificationProposal(deps, proposal.teamId),
     ...(taskPreview.length ? ["Task preview (same resolver as admission; at most 50 queued tasks):", ...taskPreview] : []),
     "Current draft JSON:", "```json", JSON.stringify(policy, null, 2), "```",
   ].join("\n")

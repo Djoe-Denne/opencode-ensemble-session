@@ -61,6 +61,10 @@ identity, task scope, and reporting instructions supplied by the plugin.
 
 This is a body-only addition. Preserve the profile ID, frontmatter, model, permissions, mode, expertise, and existing system instructions. It grants neither tools nor lead rights. Most member profiles can rely on `AGENTS.md` and the plugin's injected instructions without any reminder.
 
+## Teammate permission block
+
+Approval is mandatory before this block is written. It is a distinct change from the coordination reminder above. Use the collaborator or restrictive skeleton in [teammate-profile.md](teammate-profile.md). Run `bun scripts/lint-agent-profiles.ts` on the agent directory and show the report. Do not apply the diff unless the developer approves that exact permission change.
+
 If a developer specifically wants a changed mode/model/permission, make that a distinct proposed change with its rationale. For example, a subagent-only profile cannot simply be assumed suitable for a session handoff. A profile called reviewer is not automatically read-only; a read-only body and write-capable native permissions are an inconsistency to discuss, not silently repair.
 
 ## Approval and Repeat Runs

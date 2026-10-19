@@ -34,7 +34,7 @@ export function getMemberModel(db: Database, teamId: string, memberName: string)
 export function getMemberPromptModel(db: Database, teamId: string, memberName: string): { model?: ParsedModel; variant?: string } {
   const row = db.query("SELECT model, model_variant, model_routing FROM team_member WHERE team_id = ? AND name = ?")
     .get(teamId, memberName) as { model: string | null; model_variant: string | null; model_routing: string | null } | null
-  assertMissionMemberModel(db, teamId, row)
+  assertMissionMemberModel(db, teamId, row, memberName)
   const model = row?.model ? parseModelId(row.model) : undefined
   if (!model) return {}
   return { model, ...(row?.model_variant ? { variant: row.model_variant } : {}) }

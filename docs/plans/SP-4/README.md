@@ -94,8 +94,29 @@ None exposed a `model` with a variant. Every exposed `request` had empty
 `settings`, `headers`, and `body`. Thus no existing profile bearing demonstrable
 effort was available in this location's public view. No profile was fabricated,
 modified, or selected to manufacture the missing proof. Inheritance from a
-profile with an explicit effort remains **unobserved**; this campaign cannot
-answer that separate case.
+profile with an explicit effort remains **unobserved** by that first campaign.
+
+## Profile effort follow-up
+
+On 2026-10-19 at 18:09–18:10 UTC, the lead created a scratch profile only in
+`%TEMP%/opencode-sp4-profile-probe`, outside this repository and outside the
+global OpenCode configuration. Its public readback was `openai/gpt-6.1-sol`
+with variant `xhigh`. The canonical project still listed its original 13 agents
+and did not gain `sp4-effort`. No prompt was sent. The scratch session is
+`ses_eaaa51494ffeWTkUEB6fA8XDgh`.
+
+- Creating the session with that agent stored no `model`. The profile effort
+  was not copied at creation.
+- `switchAgent` to `sp4-effort` did not apply `xhigh`. After an explicit switch
+  had stored `xhigh`, switching the agent again left `xhigh` unchanged.
+- `switchModel` with the same model and no `variant` property then stored
+  `variant: "default"`. The profile definition still read back as `xhigh`.
+
+Omitting `variant` therefore clears the session effort and does not fall back
+to the active profile's effort. This is session state, not an executed provider
+request. The profile's own deny-all frontmatter was not the effective ruleset:
+the host still exposed its default allow rules, so this profile was not used
+for any tool execution.
 
 ## Retention and raw evidence
 

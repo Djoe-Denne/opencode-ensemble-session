@@ -2,6 +2,8 @@ import type { ToolDeps } from "../types"
 import { generateId, generateProjectName, validateProjectName, validateTeamName } from "../util"
 import { findTeamBySession } from "../types"
 import { isSessionAlive } from "../recovery"
+import { archiveTeam } from "../team-archive"
+import { getTeamResourceParts, preserveBranch, preservedBranchName } from "./merge-helper"
 import { resolveMissionClassification, type MissionClassificationConfig } from "../mission-classification"
 
 /**
@@ -33,7 +35,15 @@ export async function executeTeamCreate(
     if (await isSessionAlive(deps.client, existing.lead_session_id)) {
       throw new Error(`Team "${args.name}" already exists`)
     }
-    deps.db.run("UPDATE team SET status = 'archived', time_updated = ? WHERE id = ?", [Date.now(), existing.id])
+    const resource = getTeamResourceParts(deps.db, existing.id)
+    await archiveTeam({
+      db: deps.db,
+      teamId: existing.id,
+      directory: deps.directory,
+      preserve: deps.preserveBranch ?? preserveBranch,
+      abort: sessionId => deps.client.session.abort({ sessionID: sessionId }),
+      preservedName: memberName => preservedBranchName(resource.projectName, resource.teamName, resource.teamId, memberName),
+    })
     deps.registry.unregisterTeam(existing.id)
   }
 

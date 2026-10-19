@@ -359,6 +359,10 @@ It must contain exactly:
 Nothing else. No system architecture. No team history. No lead's
 instructions beyond the task. Keep it under 500 tokens.
 
+`report_mode: "final_response"` is the exception. That spawn prompt does not
+list team tools. The lead reviews the native candidate and closes tasks.
+The default collaborator contract remains `team_message`.
+
 The lead's AGENTS.md and system prompt handle everything else.
 Teammates do not need to know how agent teams work internally.
 

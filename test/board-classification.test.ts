@@ -93,7 +93,9 @@ describe("mission classification and board admission", () => {
     const f = fixture()
     f.deps.config.classification.helperModel = ""
     const id = await team(f)
-    await executeTeamTasksAdd(f.deps, { tasks: [{ content: "blocked", priority: "medium" }] }, "lead")
+    await expect(executeTeamTasksAdd(f.deps, { tasks: [{ content: "blocked", priority: "medium" }] }, "lead")).rejects.toThrow("Configure helperModel")
+    expect(f.deps.db.query("SELECT id FROM team_task").all()).toHaveLength(0)
+    f.deps.db.run("INSERT INTO team_task (id, team_id, content, status, priority, classification_status, time_created, time_updated) VALUES ('blocked-task', ?, 'blocked', 'pending', 'medium', 'pending', ?, ?)", [id, Date.now(), Date.now()])
     await classifyBoardTasks(f.deps, id)
     expect(await executeTeamTasksList(f.deps, "lead")).toContain("classification:blocked")
     insertMember(f.deps.db, id, "worker", "worker-session")

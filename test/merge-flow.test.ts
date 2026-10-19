@@ -5,7 +5,10 @@ import { executeTeamMerge } from "../src/tools/team-merge"
 import { executeTeamCleanup } from "../src/tools/team-cleanup"
 import { executeTeamSpawn } from "../src/tools/team-spawn"
 import { executeTeamCreate } from "../src/tools/team-create"
-import { getTeamResourceParts, preservedBranchName } from "../src/tools/merge-helper"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { getTeamResourceParts, preserveBranch, preservedBranchName } from "../src/tools/merge-helper"
 import type { MergeBranchFn, DeleteBranchFn, PreserveBranchFn, OverlapCheckFn } from "../src/tools/merge-helper"
 import { spawnFailures } from "../src/tools/team-spawn"
 
@@ -66,27 +69,27 @@ describe("branch preservation", () => {
     const preserved = preservedFor(deps, "preserve-test", "alice")
     expect(preserveTarget).toBe(preserved)
 
-    // DB was updated to the preserved branch name
-    const after = deps.db.query("SELECT worktree_branch, status FROM team_member WHERE name = 'alice'")
-      .get() as { worktree_branch: string | null; status: string }
-    expect(after.worktree_branch).toBe(preserved)
+    const after = deps.db.query("SELECT worktree_branch, checkout_branch, preserved_branch, status FROM team_member WHERE name = 'alice'")
+      .get() as { worktree_branch: string | null; checkout_branch: string | null; preserved_branch: string | null; status: string }
+    expect(after.worktree_branch).toBe(originalBranch)
+    expect(after.checkout_branch).toBe(originalBranch)
+    expect(after.preserved_branch).toBe(preserved)
     expect(after.status).toBe("shutdown")
   })
 
-  test("shutdown still completes if preserve fails", async () => {
+  test("shutdown does not abort when preserve fails", async () => {
     await executeTeamCreate(deps, { name: "fail-preserve" }, lead)
     await executeTeamSpawn(deps, { name: "bob", agent: "build", prompt: "task" }, lead)
 
     const failPreserve: PreserveBranchFn = async () => false
+    deps.client.calls.length = 0
 
-    // Should not throw — preserve failure is logged but shutdown continues
-    const result = await executeTeamShutdown(deps, { member: "bob" }, lead, undefined, failPreserve)
-    expect(result).toContain("shut down")
+    await expect(executeTeamShutdown(deps, { member: "bob" }, lead, undefined, failPreserve)).rejects.toThrow("could not preserve")
 
-    // Member is shutdown but branch was NOT updated (preserve failed)
     const after = deps.db.query("SELECT status FROM team_member WHERE name = 'bob'")
       .get() as { status: string }
-    expect(after.status).toBe("shutdown")
+    expect(after.status).toBe("busy")
+    expect(deps.client.calls.filter(call => call.method === "session.abort")).toHaveLength(0)
   })
 
   test("shutdown without worktree branch skips preservation", async () => {
@@ -140,6 +143,30 @@ describe("branch preservation", () => {
 
     await executeTeamShutdown(deps, { member: "eve", force: true }, lead, undefined, trackPreserve)
     expect(preserveCalled).toBe(true)
+  })
+
+  test("preserveBranch moves an existing safety ref to the latest checkout tip", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ensemble-preserve-"))
+    try {
+      const git = async (...args: string[]) => {
+        const result = await Bun.spawn(["git", "-c", "user.email=test@example.com", "-c", "user.name=test", ...args], { cwd: directory, stdout: "pipe", stderr: "pipe" }).exited
+        expect(result).toBe(0)
+      }
+      await git("init")
+      await Bun.write(join(directory, "note.txt"), "one\n")
+      await git("add", "note.txt")
+      await git("commit", "-m", "one")
+      expect(await preserveBranch("HEAD", "ensemble/preserved/demo", directory)).toBe(true)
+      await Bun.write(join(directory, "note.txt"), "two\n")
+      await git("add", "note.txt")
+      await git("commit", "-m", "two")
+      expect(await preserveBranch("HEAD", "ensemble/preserved/demo", directory)).toBe(true)
+      const head = await new Response(Bun.spawn(["git", "rev-parse", "HEAD"], { cwd: directory, stdout: "pipe" }).stdout).text()
+      const preserved = await new Response(Bun.spawn(["git", "rev-parse", "ensemble/preserved/demo"], { cwd: directory, stdout: "pipe" }).stdout).text()
+      expect(preserved.trim()).toBe(head.trim())
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   test("preservedBranchName generates correct format", () => {
@@ -551,10 +578,10 @@ describe("full merge lifecycle", () => {
     await executeTeamShutdown(deps, { member: "bob" }, lead, undefined, noopPreserve)
 
     // Verify branches are preserved
-    const aliceBranch = (deps.db.query("SELECT worktree_branch FROM team_member WHERE name = 'alice'")
-      .get() as { worktree_branch: string }).worktree_branch
-    const bobBranch = (deps.db.query("SELECT worktree_branch FROM team_member WHERE name = 'bob'")
-      .get() as { worktree_branch: string }).worktree_branch
+    const aliceBranch = (deps.db.query("SELECT preserved_branch FROM team_member WHERE name = 'alice'")
+      .get() as { preserved_branch: string }).preserved_branch
+    const bobBranch = (deps.db.query("SELECT preserved_branch FROM team_member WHERE name = 'bob'")
+      .get() as { preserved_branch: string }).preserved_branch
     expect(aliceBranch).toBe(preservedFor(deps, "lifecycle", "alice"))
     expect(bobBranch).toBe(preservedFor(deps, "lifecycle", "bob"))
 

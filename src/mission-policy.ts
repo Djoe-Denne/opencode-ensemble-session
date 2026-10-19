@@ -5,8 +5,9 @@ import type { Database } from "./db"
 import type { ToolDeps } from "./types"
 import { findTeamBySession } from "./types"
 import { executeTeamCreate } from "./tools/team-create"
-import { getMissionClassification } from "./mission-classification"
+import { classificationReadiness, getMissionClassification } from "./mission-classification"
 import { routeMissionModel, validateMissionModelPolicy, type MissionModelPolicy, type MissionPolicyModel, type MissionPolicyRoute } from "./mission-model-policy"
+import { canonicalizeVariantLabel } from "./variant-effort"
 
 /** A persisted mission proposal, isolated from legacy teams. */
 export interface MissionProposal {
@@ -141,7 +142,13 @@ export function approveMission(deps: ToolDeps, teamId: string, sessionId: string
     ...(model.reasoningEffort && model.reasoningEffort !== "default" ? { variant: model.reasoningEffort } : {}) }))
   const assertModel = (model: MissionPolicyModel): void => {
     if (!snapshot.policy.providers.includes(model.id.slice(0, model.id.indexOf("/")))) throw new Error(`Model ${model.id} uses a provider not authorized for this mission`)
-    if (!available.some(candidate => candidate.id === model.id && candidate.variant === model.variant)) throw new Error(`Mission model/variant unavailable: ${model.id} (${model.variant ?? "default"})`)
+    const native = available.filter(candidate => candidate.id === model.id)
+    if (!native.some(candidate => candidate.variant === model.variant)) {
+      const ids = native.map(candidate => candidate.variant ?? "default")
+      const alias = model.variant ? canonicalizeVariantLabel(model.variant) : undefined
+      const aliasNote = alias ? ` Canonical effort for this label is ${alias}; that alias is not sent to the host unless the same string is a native variant id.` : ""
+      throw new Error(`Mission model/variant unavailable: ${model.id} (${model.variant ?? "default"}). Native variant ids: ${ids.join(", ") || "none"}.${aliasNote}`)
+    }
     if (deps.config.modelRouting.models.some(candidate => candidate.id === model.id && (candidate.reasoningEffort === "default" ? undefined : candidate.reasoningEffort) === model.variant && !candidate.available)) {
       throw new Error(`Mission model/variant disabled by the operator: ${model.id}`)
     }
@@ -154,7 +161,17 @@ export function approveMission(deps: ToolDeps, teamId: string, sessionId: string
     if (id) assertModel({ id, ...(variant ? { variant } : {}) })
     ;(classifier.fallbacks ?? []).forEach(fallback => { assertModel({ id: fallback.model, ...(fallback.variant ? { variant: fallback.variant } : {}) }) })
   }
+  const readiness = classificationReadiness(classifier)
+  if (!readiness.ready) throw new Error(readiness.reason)
   if (record.approved_hash === snapshot.hash) return { ...snapshot, approved: true }
+  const latest = deps.db.query("SELECT revision, policy_hash, policy_json FROM mission_policy_revision WHERE team_id = ? ORDER BY revision DESC LIMIT 1")
+    .get(teamId) as { revision: number; policy_hash: string; policy_json: string } | null
+  if (latest?.policy_hash === snapshot.hash) {
+    const restored = deps.db.run("UPDATE mission_policy SET approved_hash = ?, approved_json = ?, time_updated = MAX(time_updated + 1, ?) WHERE team_id = ? AND presented_hash = ? AND revision = ? AND time_updated = ?",
+      [snapshot.hash, latest.policy_json, Date.now(), teamId, snapshot.hash, record.revision, record.time_updated])
+    if (!restored.changes) throw new Error("Mission policy approval raced with another configuration; run config again")
+    return { ...snapshot, revision: latest.revision, approved: true }
+  }
   const previous = record.approved_json ? JSON.parse(record.approved_json) as MissionModelPolicy : undefined
   if (previous !== undefined) validateMissionModelPolicy(previous)
   const rubricChanged = previous !== undefined && JSON.stringify(previous.assessment) !== JSON.stringify(snapshot.policy.assessment)
@@ -254,7 +271,7 @@ export function saveMissionTaskRoute(db: Database, teamId: string, taskId: strin
 }
 
 /** Verify every governed delivery against its admitted, immutable policy revision. */
-export function assertMissionMemberModel(db: Database, teamId: string, stored: { model: string | null; model_variant: string | null; model_routing: string | null } | null): void {
+export function assertMissionMemberModel(db: Database, teamId: string, stored: { model: string | null; model_variant: string | null; model_routing: string | null } | null, memberName?: string): void {
   if (!hasMissionPolicy(db, teamId)) return
   try {
     if (!stored?.model || !stored.model_routing) throw new Error("missing model or routing record")
@@ -267,9 +284,15 @@ export function assertMissionMemberModel(db: Database, teamId: string, stored: {
     validateMissionModelPolicy(policy)
     if (createHash("sha256").update(JSON.stringify(policy)).digest("hex") !== revision.policy_hash) throw new Error("approved revision integrity mismatch")
     const expected = routeMissionModel(policy, { complexity: route.complexity, risk: route.risk })
-    if (stored.model !== expected.selected.id || (stored.model_variant ?? undefined) !== expected.selected.variant ||
-      route.group !== expected.group || route.selected?.id !== expected.selected.id || route.selected.variant !== expected.selected.variant) {
-      throw new Error("stored model or variant disagrees with its approved cell")
+    const routeAgrees = route.group === expected.group && route.selected?.id === expected.selected.id && route.selected.variant === expected.selected.variant
+    const modelAgrees = stored.model === expected.selected.id && (stored.model_variant ?? undefined) === expected.selected.variant
+    if (!routeAgrees || !modelAgrees) {
+      const alternative = expected.alternatives.some(model => model.id === stored.model && (model.variant ?? undefined) === (stored.model_variant ?? undefined))
+      const journal = alternative && memberName
+        ? db.query("SELECT id FROM member_provider_attempt WHERE team_id = ? AND member_name = ? AND kind = 'failover' AND model = ? AND ((variant IS NULL AND ? IS NULL) OR variant = ?) LIMIT 1")
+          .get(teamId, memberName, stored.model, stored.model_variant, stored.model_variant)
+        : null
+      if (!routeAgrees || !journal) throw new Error("stored model or variant disagrees with its approved cell")
     }
   } catch (error) { throw new Error(`Mission model provenance invalid: ${error instanceof Error ? error.message : String(error)}`) }
 }

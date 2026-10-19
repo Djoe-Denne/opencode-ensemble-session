@@ -3,7 +3,7 @@ import { requireTeamMember } from "./shared"
 import { generateId } from "../util"
 import { pumpTeam } from "../dispatch"
 import { validateTaskRoutingScores } from "../model-router"
-import { getMissionClassification } from "../mission-classification"
+import { classificationReadiness, getMissionClassification } from "../mission-classification"
 import { classifyBoardTasks } from "../board-classification"
 import { log } from "../log"
 
@@ -43,6 +43,12 @@ export async function executeTeamTasksAdd(
       JSON.stringify(task.classification_input) // Preflight the whole batch, including circular/non-JSON input.
     }
   })
+
+  const missionPolicy = deps.db.query("SELECT team_id FROM mission_policy WHERE team_id = ?").get(teamInfo.teamId) as { team_id: string } | null
+  const readiness = classificationReadiness(policy)
+  if (!missionPolicy && !readiness.ready && args.tasks.some(task => task.complexity === undefined || task.risk === undefined)) {
+    throw new Error(readiness.reason)
+  }
 
   const ids: string[] = []
   const now = Date.now()

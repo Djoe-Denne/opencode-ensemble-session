@@ -131,6 +131,39 @@ describe("native classification bridge", () => {
     await expect(invokeNativeClassifier(f.ctx, f.request)).rejects.toThrow("execution evidence")
     expect(f.calls.at(-1)?.method).toBe("remove")
   })
+  test("a rewritten Code Mode dispatcher envelope is proof when no nested tool hook exists", async () => {
+    const f = fixture()
+    f.ctx.session.wait = async () => {
+      f.hooks.get("execute.before")?.({ sessionID: "helper", tool: "execute", input: { code: "placeholder" } })
+      f.hooks.get("execute.after")?.({ sessionID: "helper", tool: "execute", status: "completed", result: { protocol: "ensemble-task-v1", toolId: "jev_ask", output: f.result } })
+      return new Promise(() => {})
+    }
+    expect(await invokeNativeClassifier(f.ctx, { ...f.request, timeoutMs: 30 })).toEqual(f.result)
+    expect(f.calls.at(-1)?.method).toBe("remove")
+  })
+  test("a completed dispatcher without a classification envelope is still missing execution evidence", async () => {
+    const f = fixture()
+    f.ctx.session.wait = async () => {
+      f.hooks.get("execute.before")?.({ sessionID: "helper", tool: "execute", input: { code: "placeholder" } })
+      f.hooks.get("execute.after")?.({ sessionID: "helper", tool: "execute", status: "completed", result: { output: "discovery only" } })
+      return new Promise(() => {})
+    }
+    const error = await invokeNativeClassifier(f.ctx, { ...f.request, timeoutMs: 30 }).then(() => new Error("Expected classifier failure"), (error: unknown) => error as Error)
+    expect(error.message).toContain("execution evidence")
+    expect(error.message).toContain("injected dispatcher was not executed")
+  })
+  test("a dispatcher envelope that disagrees with the native tool result is rejected", async () => {
+    const f = fixture()
+    f.ctx.session.wait = async () => {
+      f.hooks.get("execute.before")?.({ sessionID: "helper", tool: "execute", input: { code: "placeholder" } })
+      f.hooks.get("execute.before")?.({ sessionID: "helper", tool: "jev_ask", input: f.request.input })
+      f.hooks.get("execute.after")?.({ sessionID: "helper", tool: "jev_ask", status: "completed", result: f.result })
+      f.hooks.get("execute.after")?.({ sessionID: "helper", tool: "execute", status: "completed", result: { protocol: "ensemble-task-v1", toolId: "jev_ask", output: { other: true } } })
+      return new Promise(() => {})
+    }
+    await expect(invokeNativeClassifier(f.ctx, { ...f.request, timeoutMs: 30 })).rejects.toThrow("disagrees")
+    expect(f.calls.at(-1)?.method).toBe("remove")
+  })
   test("captures native failure and dispatcher errors before deleting a failed helper", async () => {
     const f = fixture()
     f.ctx.session.get = async () => { f.calls.push({ method: "read-outcome" }); return { outcome: "failed" } }

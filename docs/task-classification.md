@@ -46,9 +46,15 @@ to `team_create`. These are placeholders, **not recommended/activated models**:
   inherited settings without discarding unrelated configuration.
 
 The default is `auto`/`supervised`, with **no helper/general model chosen**,
-specialization disabled, and no authorized fallback. If JEV is detected but
-`helperModel` is unset, affected tasks block with a clear request to choose it.
-Missing host capabilities fail explicitly for imposed automatic methods.
+specialization disabled, and no authorized fallback. If the frozen method is
+JEV or x86 without `helperModel`, or general without `generalModel`,
+`/ensemble-mission config` shows that block and `/ensemble-mission start`
+refuses approval. The explicit choices are `team_message` classification or
+`mode: "off"`. `team_create` and mission prepare still open the draft. A legacy
+team with no mission-policy row refuses unscored `team_tasks_add` in that same
+unset state; tasks that already have both scores stay `not_required`. Policies
+already frozen in SQLite keep their stored limits. Missing host capabilities
+fail explicitly for imposed automatic methods.
 
 Only after an explicit user instruction may the lead change the frozen policy:
 
@@ -129,10 +135,13 @@ These modes govern classification admission/failover; they do not enable
   new admission with `critical`; cleanup safety failures are critical in either
   mode. Existing workers are never automatically aborted, reset or rerouted.
 
-Defaults for `limits`: `retries: 0`, `retryDelayMs: 100`, `maxAttempts: 3` per
+Defaults for `limits`: `retries: 1`, `retryDelayMs: 100`, `maxAttempts: 3` per
 task, `maxCalls: 1000`, `maxDurationMs: 1800000`, `maxInputBytes: 10000000`,
 `concurrency: 1`, `circuitThreshold: 3`, `circuitCooldownMs: 60000`, and
-`maxCircuitRechecks: 1`. Retries and the ordered fallback chain share the task
+`maxCircuitRechecks: 1`. Only a timeout, provider error, or missing execution
+proof is retried. A forbidden tool, modified input, envelope disagreement,
+cleanup failure, or admission failure is terminal. Retries and the ordered
+fallback chain share the task
 attempt cap. Every reserved attempt, including failed calls and rechecks,
 consumes the persistent mission count and serialized input-volume budgets.
 The duration budget is elapsed wall time from the first reservation.
@@ -162,7 +171,11 @@ hooks reject unrelated tools, modified payloads and duplicate invocations; only
 an observed completed execution counts as evidence. Model-authored answer text
 cannot substitute for an actual JEV call. A single Code Mode script is rewritten
 to discover the exact catalogue path and invoke the approved payload in the same
-execution. No second model turn is needed to progress from discovery to the call.
+execution. Its return value is a tagged envelope `{ protocol, toolId, output }`.
+That envelope proves execution when the nested tool hook is absent. If both
+exist and differ, the attempt is a violation. A completed `execute` without
+the envelope still fails; once the injected dispatcher was seen, the error
+says it was not executed. No second model turn is needed to progress from discovery to the call.
 The generated dispatcher validates and traverses that path without `eval` or
 `Function`; native tool hooks still verify the effective tool ID and input.
 For Code Mode tools, the helper receives only a transport instruction, not the

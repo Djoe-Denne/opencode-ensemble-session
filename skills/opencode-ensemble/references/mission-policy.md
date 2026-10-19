@@ -45,6 +45,7 @@ changes; aggregate mission budgets are not reset. Native model alternatives are
 recorded, not automatic provider retries.
 
 Do not replace this policy using `team_message.model` or classification controls.
+The approved cell's native `(id, variant)` is the execution identity. Canonical reasoning effort is an annotation only; see `docs/mission-policy.md`.
 Keep project-specific scoring floors, TDD requirements and verification contracts
 in project instructions. Direct `team_create` teams keep legacy operation.
 

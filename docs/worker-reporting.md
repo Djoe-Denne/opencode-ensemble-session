@@ -31,6 +31,22 @@ Spawn instructions, context/compaction reminders, shutdown and watchdog paths do
 not require them to call unavailable team tools. These workers are not reused by
 the automatic task pool: review and any subsequent assignment belong to the lead.
 
+## Profile contract
+
+Two classes, detected and never rewritten automatically:
+
+- Collaborator (`team_message`, the default): the profile allows `execute` and
+  the Ensemble member tools after a `*` deny, and the body reports through
+  `team_message`. The template is
+  `skills/ensemble-project-setup/references/teammate-profile.md`.
+- Restrictive (`<!-- ensemble-report: final_response -->` and spawn
+  `report_mode: "final_response"`): deny-all read/glob/skill is legitimate. The
+  linter does not require Ensemble tools. The lead closes tasks.
+
+The permission hook does not grant `edit` or `bash`. Those stay on the profile.
+`bun scripts/lint-agent-profiles.ts <agents-dir>` reports the gap. Applying a
+permission diff needs a separate approval.
+
 ## Native candidates
 
 On inactivity, Ensemble retrieves the latest assistant response, requiring a
