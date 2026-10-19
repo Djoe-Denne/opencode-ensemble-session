@@ -712,9 +712,9 @@ describe("shouldNudgeIdleMember", () => {
     expect(shouldNudgeIdleMember(db, "t1", "alice")).toBe(true)
   })
 
-  test("returns false when member has sent a message to the lead", () => {
+  test("returns false when member has sent a structured final report to the lead", () => {
     insertMember(db, "t1", "alice", "sess-alice", "ready", "idle")
-    sendMessage(db, { teamId: "t1", from: "alice", to: "lead", content: "here are my results" })
+    sendMessage(db, { teamId: "t1", from: "alice", to: "lead", content: "<task-result><status>completed</status><summary>Results</summary><details>Findings</details></task-result>" })
     expect(shouldNudgeIdleMember(db, "t1", "alice")).toBe(false)
   })
 

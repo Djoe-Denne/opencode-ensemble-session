@@ -80,6 +80,13 @@ function mockGit(map: Record<string, string | null>) {
 }
 
 describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
+  test("direct task claims can pin an exact native model/variant without enqueuing a new prompt", async () => {
+    const { calls, ctx } = mockCtx()
+    const client = createV2Client(ctx)
+    await client.session.switchModel?.({ sessionID: "worker", model: { providerID: "connection", modelID: "alias" }, variant: "high" })
+    expect(calls).toEqual([{ domain: "session", method: "switchModel", input: { sessionID: "worker", model: { providerID: "connection", id: "alias", variant: "high" } } }])
+  })
+
   test("session.create re-asserts permissions via rules() so agent denies cannot bury them", async () => {
     const { calls, ctx } = mockCtx()
     const client = createV2Client(ctx as never)

@@ -12,6 +12,8 @@ import { ProgressTracker } from "./progress"
 import { checkToolIsolation, shouldNudgeIdleMember } from "./hooks"
 import { pumpTeam } from "./dispatch"
 import { hasReportedCompletion } from "./messaging"
+import { recoverFinalResponse } from "./member-report"
+import { notifyLead } from "./notify"
 import { enrichToolError } from "./tool-arg-hint"
 import { rehydrateRegistry } from "./recovery"
 import { findTeamBySession } from "./types"
@@ -25,6 +27,13 @@ import { isWorktreeInstance } from "./util"
 import { vlog } from "./log"
 import { recoverSessionContinuity } from "./session-continuity"
 import { MEMBER_TOOLS } from "./v2-continuity"
+import { invokeNativeClassifier, invokeNativeGeneralClassifier, removeNativeClassificationHelper, type V2ClassificationContext } from "./v2-classification"
+import type { ClassifierTool } from "./classification-protocol"
+import { classifyBoardTasks } from "./board-classification"
+import type { MissionCommandHost } from "./mission-commands"
+import type { NativeMissionModel } from "./mission-native-models"
+import { nativeMissionModels } from "./mission-native-models"
+import { registerMissionCommands } from "./mission-commands"
 
 /** V2 setup context subset (structural, mock-friendly). */
 export interface V2SetupContext {
@@ -36,10 +45,14 @@ export interface V2SetupContext {
   worktree: V2Context["worktree"]
   permission: V2Context["permission"]
   agent?: V2Context["agent"]
+  /** Optional public APIs on older V2 hosts; no command emulation on V1. */
+  command?: MissionCommandHost["command"]
+  model?: { list(input?: { location?: { directory?: string } }): Promise<{ data: readonly NativeMissionModel[] }> }
   event: {
     subscribe(opts?: { signal?: AbortSignal }): AsyncIterable<V2EventLike>
   }
   tool: {
+    list?(): Promise<readonly ClassifierTool[]>
     hook(name: string, cb: (event: never) => unknown): Promise<{ dispose(): Promise<void> }>
     transform(cb: (editor: never) => void): Promise<{ dispose(): Promise<void> }>
   }
@@ -114,11 +127,25 @@ export async function setupEnsemble(
   // teams freeze silently after every server restart (seen live 2026-09-14).
   const rehydrated = rehydrateRegistry(db, registry)
   if (rehydrated > 0) vlog(`init:registry:rehydrated members=${rehydrated}`)
+  const reportClient = createV2Client(ctx, continuityOptions)
+  // Retry the wake, not the report insertion. The durable inbox is the outbox
+  // backstop if a process dies after persisting a candidate but before delivery.
+  const pendingLeadInboxes = db.query(`SELECT DISTINCT t.lead_session_id FROM team t JOIN team_message m ON m.team_id = t.id
+    WHERE t.status = 'active' AND m.to_name = 'lead' AND m.delivered = 0`).all() as Array<{ lead_session_id: string }>
 
   /** Send the idle-without-report nudge once per member. */
   const nudgeMember = (teamId: string, memberName: string, sessionId: string): void => {
-    const nudgeKey = `${teamId}:${memberName}`
+    const member = db.query("SELECT report_mode, report_generation, last_nudged_at FROM team_member WHERE team_id = ? AND name = ?").get(teamId, memberName) as { report_mode: string; report_generation: number; last_nudged_at: number | null } | null
+    if (!member || hasReportedCompletion(db, teamId, memberName)) return
+    const nudgeKey = `${teamId}:${memberName}:${member.report_generation}`
     if (nudgedMembers.has(nudgeKey)) return
+    if (member.report_mode === "final_response") {
+      if (member.last_nudged_at) return
+      db.run("UPDATE team_member SET last_nudged_at = ? WHERE team_id = ? AND name = ?", [Date.now(), teamId, memberName])
+      notifyLead(reportClient, db, teamId, `${memberName} is inactive but no completed final response could be recovered. No task was completed. Inspect the session; the worker was not asked to use unavailable tools.`)
+      return
+    }
+    if (member.last_nudged_at && member.last_nudged_at >= Date.now() - 60 * 60 * 1000) return
     if (!shouldNudgeIdleMember(db, teamId, memberName)) return
     if (hasReportedCompletion(db, teamId, memberName)) return
     nudgedMembers.add(nudgeKey)
@@ -134,7 +161,7 @@ export async function setupEnsemble(
     void deliverPrompt(
       ctx.session as unknown as V2SessionPort,
       sessionId,
-      "[System]: You completed your work but did not report results. Send your findings to the lead via team_message now.",
+      "[System]: Your session is inactive and you did not report a final result. Send findings or a failure/blocker to the lead via team_message as a <task-result> with status, summary and details. Inactivity alone does not mean success.",
     ).catch((err) => {
       vlog(`nudge:idle-without-report:failed name=${memberName} err=${err instanceof Error ? err.message : String(err)}`)
     })
@@ -143,14 +170,11 @@ export async function setupEnsemble(
   // Startup sweep: members already idle (e.g. finished while the plugin was
   // down) never emit a fresh transition, so nudge them now. Skip members
   // nudged within the hour — the guard survives reloads via the DB column.
-  const nudgeCutoff = Date.now() - 60 * 60 * 1000
   const silent = db.query(
     `SELECT tm.team_id, tm.name, tm.session_id FROM team_member tm
      JOIN team t ON tm.team_id = t.id
-     WHERE t.status = 'active' AND tm.status = 'ready'
-       AND (tm.last_nudged_at IS NULL OR tm.last_nudged_at < ?)`,
-  ).all(nudgeCutoff) as Array<{ team_id: string; name: string; session_id: string }>
-  for (const member of silent) nudgeMember(member.team_id, member.name, member.session_id)
+      WHERE t.status = 'active' AND (tm.status = 'ready' OR (tm.status = 'shutdown' AND tm.report_mode = 'final_response'))`,
+  ).all() as Array<{ team_id: string; name: string; session_id: string }>
   const rateLimiter = new TokenBucket({
     capacity: config.rateLimitCapacity,
     refillRate: 2,
@@ -160,6 +184,16 @@ export async function setupEnsemble(
 
   const dispatch = async (event: V2EventLike): Promise<void> => {
     const transition = dispatchV2Event(db, registry, tracker, event)
+    // Status and execution events may arrive in either order. An already-ready
+    // member still needs harvesting when its final response becomes durable.
+    if (!transition && event.data?.sessionID && ["session.execution.succeeded", "session.idle", "session.status"].includes(event.type)) {
+      const member = registry.getBySession(event.data.sessionID)
+      if (member) await recoverFinalResponse(db, reportClient, member.teamId, member.memberName)
+    }
+    if (transition?.to === "error") {
+      notifyLead(reportClient, db, transition.teamId, `Teammate ${transition.memberName} execution failed: ${event.data?.error?.message ?? "inspect the native session"}. No result was accepted and no task was completed.`)
+    }
+    if (transition?.to === "shutdown") await recoverFinalResponse(db, reportClient, transition.teamId, transition.memberName)
     // Idle-without-report nudge (parity with V1): a member that went idle
     // without ever messaging the lead gets ONE reminder to report via
     // team_message. Without this, weak models finish silently and the lead
@@ -167,7 +201,7 @@ export async function setupEnsemble(
     if (transition && transition.to === "ready" && transition.from === "busy") {
       const entry = registry.getByName(transition.teamId, transition.memberName)
       if (entry) {
-        nudgeMember(transition.teamId, transition.memberName, entry.sessionId)
+        if (!await recoverFinalResponse(db, reportClient, transition.teamId, transition.memberName)) nudgeMember(transition.teamId, transition.memberName, entry.sessionId)
         // Pull-based pool: feed the newly idle member, then scale up if work
         // remains and the cap allows (opt-in — docs/task-pool.md). deps is
         // captured lazily; events only flow after setup completes.
@@ -181,8 +215,8 @@ export async function setupEnsemble(
       if (transition.to === "ready" && transition.from === "busy") {
         await emitNoticeEvent(rpc, {
           title: "Team",
-          message: `${transition.memberName} finished`,
-          variant: "success",
+          message: `${transition.memberName} is inactive (task validation is separate)`,
+          variant: "info",
         }).catch(() => undefined)
       } else if (transition.to === "error") {
         await emitNoticeEvent(rpc, {
@@ -235,17 +269,6 @@ export async function setupEnsemble(
   } catch (err) {
     vlog(`init:rpc:failed err=${err instanceof Error ? err.message : String(err)}`)
   }
-
-  // Live event loop — fire-and-forget; dispose() aborts it.
-  void (async () => {
-    try {
-      for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-        await dispatch(event)
-      }
-    } catch {
-      // Aborted on dispose or stream error — nothing to report.
-    }
-  })()
 
   await ctx.tool.hook("execute.before", (raw) => {
     const input = raw as unknown as { tool: string; sessionID: string }
@@ -316,7 +339,8 @@ export async function setupEnsemble(
         : buildTeammateSystemPrompt(db, teamInfo.teamId, teamInfo.memberName ?? "unknown")
     vlog(`system-prompt:injected role=${teamInfo.role} len=${prompt.length}`)
     event.system.push({ type: "text", text: prompt })
-    if (teamInfo.role === "member") {
+    const finalResponse = teamInfo.role === "member" && (db.query("SELECT report_mode FROM team_member WHERE team_id = ? AND name = ?").get(teamInfo.teamId, teamInfo.memberName ?? "") as { report_mode: string } | null)?.report_mode === "final_response"
+    if (teamInfo.role === "member" && !finalResponse) {
       // V2 invokes plugin tools through Code Mode, not direct calls —
       // without this hint teammates attempt direct calls that the runtime
       // rejects with "No tool named team_message is currently available"
@@ -345,7 +369,10 @@ export async function setupEnsemble(
   await ctx.permission?.hook?.("evaluate", event => {
     if (event.action !== "execute" && !(MEMBER_TOOLS as readonly string[]).includes(event.action)) return
     const team = findTeamBySession(db, registry, event.sessionID)
-    if (team?.role === "member") event.effect = "allow"
+    if (team?.role === "member") {
+      const member = db.query("SELECT report_mode FROM team_member WHERE team_id = ? AND name = ?").get(team.teamId, team.memberName ?? "") as { report_mode: string } | null
+      if (member?.report_mode !== "final_response") event.effect = "allow"
+    }
   })
 
   // OQ-V2-shell: the V2 shell hook carries no sessionID, so per-session
@@ -364,7 +391,49 @@ export async function setupEnsemble(
     config,
     progressTracker,
   }
+  const listClassifiers = ctx.tool.list?.bind(ctx.tool)
+  if (listClassifiers && ctx.session.wait && ctx.session.remove && ctx.permission?.hook) {
+    deps.classifier = { list: listClassifiers, invoke: request => invokeNativeClassifier(ctx as unknown as V2ClassificationContext, { ...request, signal: controller.signal }), general: request => invokeNativeGeneralClassifier(ctx as unknown as V2ClassificationContext, { ...request, signal: controller.signal }), removeHelper: sessionID => removeNativeClassificationHelper(ctx as unknown as V2ClassificationContext, sessionID) }
+  }
   await registerV2Tools(ctx.tool, deps)
+  const listMissionModels = ctx.model?.list.bind(ctx.model)
+  const missionCommands = await registerMissionCommands(ctx, deps, listMissionModels ? async () =>
+    nativeMissionModels((await listMissionModels({ location: { directory: ctx.location.directory } })).data) : undefined)
+
+  // Install context/permissions/tools and dependencies before consuming events or
+  // waking sessions. Otherwise a startup report can run without its team context,
+  // or an immediate idle event can access deps before initialization.
+  void (async () => {
+    try {
+      for await (const event of ctx.event.subscribe({ signal: controller.signal })) await dispatch(event)
+    } catch {
+      // Aborted on dispose or stream error — nothing to report.
+    }
+  })()
+  for (const team of pendingLeadInboxes) reportClient.session.promptAsync({ sessionID: team.lead_session_id, synthetic: true,
+    parts: [{ type: "text", text: "[System: Undelivered team reports await review; use team_results.]" }] })
+    .catch(error => vlog(`report:startup-wake-failed ${String(error)}`))
+  for (const member of silent) {
+    if (!await recoverFinalResponse(db, reportClient, member.team_id, member.name)) nudgeMember(member.team_id, member.name, member.session_id)
+  }
+
+  // Resume pending work and arm a single wake at the next persisted lease expiry.
+  // No idle polling; helpers use native wait and their own bounded cleanup.
+  const classificationTimers = new Set<ReturnType<typeof setTimeout>>()
+  const resumeClassifications = (teamId: string): void => {
+    if (controller.signal.aborted) return
+    void classifyBoardTasks(deps, teamId).catch(error => { vlog(`classification:recovery-failed ${String(error)}`) }).then(() => {
+      if (controller.signal.aborted) return
+      const team = db.query("SELECT mission_state FROM team WHERE id = ?").get(teamId) as { mission_state: string } | null
+      if (!team || team.mission_state === "critical") return
+      const next = db.query("SELECT MIN(due) AS until FROM (SELECT classification_until AS due FROM team_task WHERE team_id = ? AND classification_status = 'running' UNION ALL SELECT lease_until AS due FROM classification_helper WHERE team_id = ? AND lease_until > ?)").get(teamId, teamId, Date.now()) as { until: number | null }
+      if (next.until === null) return
+      const timer = setTimeout(() => { classificationTimers.delete(timer); resumeClassifications(teamId) }, Math.max(1, Math.min(2_147_483_647, next.until - Date.now() + 1)))
+      classificationTimers.add(timer)
+    })
+  }
+  const recoverable = db.query("SELECT id FROM team WHERE project_id = ? AND status = 'active' AND (id IN (SELECT team_id FROM team_task WHERE classification_status IN ('pending', 'running')) OR id IN (SELECT team_id FROM classification_helper))").all(ctx.location.directory) as Array<{ id: string }>
+  recoverable.forEach(team => { resumeClassifications(team.id) })
 
   // Dashboard mirrors V1: main instance only, skipped when port is 0.
   let dashboard: DashboardServer | null = null
@@ -383,6 +452,8 @@ export async function setupEnsemble(
     dispatch,
     dispose: async () => {
       controller.abort()
+      await missionCommands?.dispose()
+      classificationTimers.forEach(clearTimeout)
       dashboard?.stop()
     },
   }

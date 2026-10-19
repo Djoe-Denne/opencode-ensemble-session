@@ -49,11 +49,18 @@ export function dispatchV2Event(
       if (!data.sessionID) return undefined
       return handleSessionStatusEvent(db, registry, data.sessionID, "busy")
     case "session.execution.succeeded":
-    case "session.execution.failed":
-      // Ended means idle even on failure — the idle-without-report nudge then
-      // prompts the teammate to report, which surfaces the failure to the lead.
       if (!data.sessionID) return undefined
       return handleSessionStatusEvent(db, registry, data.sessionID, "idle")
+    case "session.execution.failed": {
+      if (!data.sessionID) return undefined
+      const entry = registry.getBySession(data.sessionID)
+      if (!entry) return undefined
+      const member = db.query("SELECT status FROM team_member WHERE team_id = ? AND name = ? AND team_id IN (SELECT id FROM team WHERE status = 'active')")
+        .get(entry.teamId, entry.memberName) as { status: string } | null
+      if (!member || ["shutdown", "error"].includes(member.status)) return undefined
+      db.run("UPDATE team_member SET status = 'error', execution_status = 'failed', time_updated = ? WHERE team_id = ? AND name = ?", [Date.now(), entry.teamId, entry.memberName])
+      return { teamId: entry.teamId, memberName: entry.memberName, from: member.status, to: "error" }
+    }
     case "session.created":
       handleSessionCreatedEvent(tracker, data.sessionID ?? "", data.parentID)
       return undefined

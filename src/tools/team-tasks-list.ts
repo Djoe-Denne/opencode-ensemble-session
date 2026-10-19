@@ -16,7 +16,10 @@ export async function executeTeamTasksList(
 
   if (tasks.length === 0) return "No tasks on the board."
 
-  return tasks.map(t =>
-    `[${t.status}] ${t.content} (${t.id})${t.assignee ? ` → ${t.assignee}` : ""}${t.priority !== "medium" ? ` [${t.priority}]` : ""}${t.agent ? ` @${t.agent}` : ""}${t.complexity != null || t.risk != null ? ` [complexity:${t.complexity ?? 0} risk:${t.risk ?? 0}]` : ""}`
-  ).join("\n")
+  return tasks.map(t => {
+    const result = t.classification_status === "completed" && typeof t.classification_result === "string"
+      ? JSON.parse(t.classification_result) as { complexity: number; risk: number; method?: string; toolId?: string; model?: string } : undefined
+    const scores = result ? ` [classified 0–1: complexity:${result.complexity} risk:${result.risk} via:${result.method ?? result.toolId ?? result.model ?? "classifier"}]` : ""
+    return `[${t.status}] ${t.content} (${t.id})${t.assignee ? ` → ${t.assignee}` : ""}${t.priority !== "medium" ? ` [${t.priority}]` : ""}${t.agent ? ` @${t.agent}` : ""}${t.complexity != null || t.risk != null ? ` [complexity:${t.complexity ?? 0} risk:${t.risk ?? 0}]` : ""}${t.classification_status !== "not_required" ? ` [classification:${t.classification_status}${t.classification_error ? `: ${t.classification_error}` : ""}]` : ""}${scores}`
+  }).join("\n")
 }

@@ -8,6 +8,7 @@ import { hasReportedCompletion } from "../src/messaging"
 import { sendMessage } from "../src/messaging"
 
 type Deps = ReturnType<typeof setupDeps>
+const finalReport = "<task-result><status>completed</status><summary>Task done</summary><details>Findings delivered</details></task-result>"
 
 describe("issue #3: completion loop prevention", () => {
   let deps: Deps
@@ -25,7 +26,7 @@ describe("issue #3: completion loop prevention", () => {
     const memberSession = (deps.db.query("SELECT session_id FROM team_member WHERE name = ?").get(memberName) as { session_id: string }).session_id
 
     // Teammate messages lead
-    await executeTeamMessage(deps, { to: "lead", text: "here are my findings" }, memberSession)
+    await executeTeamMessage(deps, { to: "lead", text: finalReport }, memberSession)
 
     // Simulate busy→ready transition (teammate finished work)
     deps.db.run("UPDATE team_member SET status = 'busy' WHERE team_id = ? AND name = ?", [team.id, memberName])
@@ -43,7 +44,7 @@ describe("issue #3: completion loop prevention", () => {
     expect(hasReportedCompletion(deps.db, team.id, "alice")).toBe(false)
 
     // Alice messages lead — flag should NOT be set yet (she's still working)
-    await executeTeamMessage(deps, { to: "lead", text: "done with my task" }, aliceSession)
+    await executeTeamMessage(deps, { to: "lead", text: finalReport }, aliceSession)
     expect(hasReportedCompletion(deps.db, team.id, "alice")).toBe(false)
 
     // Alice goes idle (busy→ready) — NOW the flag should be set

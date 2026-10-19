@@ -24,6 +24,11 @@ export async function executeTeamTasksComplete(
   const task = deps.db.query("SELECT id, content, status, assignee FROM team_task WHERE id = ? AND team_id = ?")
     .get(args.task_id, teamInfo.teamId) as { id: string; content: string; status: string; assignee: string | null } | null
   if (!task) throw new Error(`Task "${args.task_id}" not found`)
+  const owner = task.assignee ? deps.db.query("SELECT report_mode FROM team_member WHERE team_id = ? AND name = ?")
+    .get(teamInfo.teamId, task.assignee) as { report_mode: string } | null : null
+  const candidates = deps.db.query("SELECT task_ids FROM member_result WHERE team_id = ?").all(teamInfo.teamId) as Array<{ task_ids: string }>
+  const hasCandidate = candidates.some(candidate => (JSON.parse(candidate.task_ids) as string[]).includes(args.task_id))
+  if ((owner?.report_mode === "final_response" || hasCandidate) && teamInfo.role !== "lead") throw new Error("Only the lead may validate and complete a native-response task after persisting/integrating its candidate")
   if (task.status === "completed") throw new Error(`Task "${args.task_id}" is already completed`)
   if (task.status === "cancelled") throw new Error(`Task "${args.task_id}" was cancelled`)
   if (task.status === "blocked") throw new Error(`Task "${args.task_id}" is blocked by unresolved dependencies`)

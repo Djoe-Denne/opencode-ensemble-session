@@ -13,6 +13,7 @@ import { isWorktreeInstance } from "./util"
 import { handleSessionStatusEvent, handleSessionCreatedEvent, checkToolIsolation, shouldNudgeIdleMember, handleSessionErrorEvent } from "./hooks"
 import { notifyTeamEvent, notifyWorkingProgress, notifyLead } from "./notify"
 import { hasReportedCompletion } from "./messaging"
+import { recoverFinalResponse } from "./member-report"
 import { getMemberPromptModel } from "./member-model"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
 import { log, initLog } from "./log"
@@ -44,6 +45,21 @@ import { Watchdog } from "./watchdog"
 const DEFAULT_RATE_LIMIT_REFILL = 2
 const DEFAULT_RATE_LIMIT_INTERVAL_MS = 1000
 const DEFAULT_WATCHDOG_CHECK_MS = 60 * 1000 // 60 seconds
+
+function missionClassificationSchema() {
+  const positive = () => tool.schema.number().int().positive().optional()
+  const nonnegative = () => tool.schema.number().int().nonnegative().optional()
+  return tool.schema.object({
+    mode: tool.schema.enum(["off", "auto", "jev", "general", "x86"]).optional(),
+    helperModel: tool.schema.string().optional(), helperVariant: tool.schema.string().optional(),
+    toolId: tool.schema.string().optional(), timeoutMs: positive(),
+    missionMode: tool.schema.enum(["supervised", "long_run"]).optional(),
+    generalModel: tool.schema.string().optional(), generalVariant: tool.schema.string().optional(),
+    specialized: tool.schema.boolean().optional(), x86ToolId: tool.schema.string().optional(),
+    fallbacks: tool.schema.array(tool.schema.object({ method: tool.schema.enum(["jev", "general"]), model: tool.schema.string(), variant: tool.schema.string().optional(), toolId: tool.schema.string().optional() })).max(8).optional(),
+    limits: tool.schema.object({ retries: nonnegative(), retryDelayMs: nonnegative(), maxAttempts: positive(), maxCalls: positive(), maxDurationMs: positive(), maxInputBytes: positive(), concurrency: positive(), circuitThreshold: positive(), circuitCooldownMs: positive(), maxCircuitRechecks: nonnegative() }).optional(),
+  })
+}
 
 /**
  * opencode-ensemble plugin entry point.
@@ -177,14 +193,16 @@ const plugin: Plugin = async (input) => {
         // Fire toast notifications for meaningful transitions
         if (transition) {
           if (transition.to === "shutdown") {
+            await recoverFinalResponse(db, client, transition.teamId, transition.memberName)
             notifyTeamEvent(client, "shutdown", { memberName: transition.memberName })
           } else if (transition.to === "ready" && transition.from === "busy") {
+            const recovered = await recoverFinalResponse(db, client, transition.teamId, transition.memberName)
             notifyTeamEvent(client, "completed", { memberName: transition.memberName })
 
             // Fast-idle detection: if agent went idle within 15s of spawn with zero messages,
             // the model likely failed silently (auth error, invalid model, etc.)
             const fastIdleKey = `fastidle:${transition.teamId}:${transition.memberName}`
-            if (!nudgedMembers.has(fastIdleKey)) {
+            if (!recovered && !nudgedMembers.has(fastIdleKey)) {
               const memberInfo = db.query(
                 "SELECT time_created, model FROM team_member WHERE team_id = ? AND name = ?"
               ).get(transition.teamId, transition.memberName) as { time_created: number; model: string | null } | null
@@ -201,11 +219,11 @@ const plugin: Plugin = async (input) => {
                     client,
                     db,
                     transition.teamId,
-                    `Warning: Teammate "${transition.memberName}" went idle immediately after spawning with no output${modelInfo}. This usually means the model failed to start (authentication error, invalid model, or provider issue). Check your API key and model configuration, then retry the spawn.`,
+                    `Warning: Teammate "${transition.memberName}" went inactive immediately after spawning without a recoverable final report${modelInfo}. Inspect the native session before diagnosing a startup failure or retrying. No task was validated.`,
                   )
                   client.tui.showToast({
                     title: "Team",
-                    message: `${transition.memberName} failed to produce output${modelInfo}`,
+                    message: `${transition.memberName} is inactive without a final report${modelInfo}`,
                     variant: "warning",
                     duration: 8000,
                   }).catch(() => { /* TUI may not be available */ })
@@ -215,14 +233,15 @@ const plugin: Plugin = async (input) => {
 
             // Nudge teammate if they went idle without reporting to the lead (once only)
             // Skip if they already reported completion (issue #3 — prevents re-waking completed teammates)
-            const nudgeKey = `${transition.teamId}:${transition.memberName}`
-            if (!nudgedMembers.has(nudgeKey) && shouldNudgeIdleMember(db, transition.teamId, transition.memberName) && !hasReportedCompletion(db, transition.teamId, transition.memberName)) {
+            const reportMember = db.query("SELECT report_generation FROM team_member WHERE team_id = ? AND name = ?").get(transition.teamId, transition.memberName) as { report_generation: number }
+            const nudgeKey = `${transition.teamId}:${transition.memberName}:${reportMember.report_generation}`
+            if (!recovered && !nudgedMembers.has(nudgeKey) && shouldNudgeIdleMember(db, transition.teamId, transition.memberName) && !hasReportedCompletion(db, transition.teamId, transition.memberName)) {
               nudgedMembers.add(nudgeKey)
               log(`nudge:idle-without-report name=${transition.memberName}`)
               const nudgeModel = getMemberPromptModel(db, transition.teamId, transition.memberName)
               client.session.promptAsync({
                 sessionID,
-                parts: [{ type: "text", text: "[System]: You completed your work but did not report results. Send your findings to the lead via team_message now." }],
+                parts: [{ type: "text", text: "[System]: Your session is inactive without a final report. Send findings or a failure/blocker via team_message as a <task-result> with status, summary and details. Inactivity alone does not mean success." }],
                 ...nudgeModel,
               }).catch((err) => {
                 log(`nudge:idle-without-report:failed name=${transition.memberName} team=${transition.teamId} err=${err instanceof Error ? err.message : String(err)}`)
@@ -432,6 +451,8 @@ const plugin: Plugin = async (input) => {
         args: {
           name: tool.schema.string().describe("Team name (lowercase alphanumeric with hyphens, 1-64 chars)"),
           project_name: tool.schema.string().optional().describe("Project display name for first use of this working directory. If omitted, a short random name is generated."),
+          classification: missionClassificationSchema().optional().describe("Explicit mission classification overrides; automatic classification requires a capable V2 host"),
+          mission_mode: tool.schema.enum(["supervised", "long_run"]).optional().describe("Mission resilience mode (default supervised)"),
         },
         async execute(args, ctx) {
           const result = await executeTeamCreate(deps, args, ctx.sessionID)
@@ -455,6 +476,7 @@ const plugin: Plugin = async (input) => {
           claim_task: tool.schema.string().optional().describe("Task ID to auto-claim for this teammate (optional)"),
           worktree: tool.schema.boolean().default(true).describe("Create a git worktree for file isolation (default: true, set false for read-only agents)"),
           plan_approval: tool.schema.boolean().default(false).describe("Require teammate to send a plan for approval before writing files (default: false)"),
+          report_mode: tool.schema.enum(["team_message", "final_response"]).optional().describe("final_response preserves native permissions and returns a candidate for lead review; default team_message"),
           context: tool.schema.object({
             mode: tool.schema.enum(["fresh", "fork", "checkpoint", "compact_fork"]),
             from: tool.schema.string().optional(),
@@ -487,6 +509,7 @@ const plugin: Plugin = async (input) => {
           reject: tool.schema.string().optional().describe("Reject a teammate's plan with reason (only when recipient has plan_approval='pending')"),
           force: tool.schema.boolean().optional().describe("Lead only. Re-activate a teammate who already reported task completion (normally their session won't be woken again). Use for legitimate follow-on work — e.g. the next round of a multi-round debate — not for courtesy replies."),
           model: tool.schema.string().optional().describe("Lead only: update the recipient teammate's model in-place, in 'provider/model' format (e.g. 'anthropic/claude-sonnet')."),
+          classification: missionClassificationSchema().optional().describe("Lead only, to=lead: explicitly update the frozen mission classifier"),
         },
         async execute(args, ctx) {
           const result = await executeTeamMessage(deps, args, ctx.sessionID)
@@ -538,7 +561,9 @@ const plugin: Plugin = async (input) => {
             depends_on: tool.schema.array(tool.schema.string()).optional().describe("Task IDs this depends on"),
             agent: tool.schema.string().optional().describe("Agent type affinity for auto-dispatch (e.g. build). Omit for any member."),
             complexity: tool.schema.number().int().min(0).max(100).optional().describe("Task complexity for deterministic model routing"),
-            risk: tool.schema.number().int().min(0).max(100).optional().describe("Task risk for model routing only (not review policy)"),
+          risk: tool.schema.number().int().min(0).max(100).optional().describe("Task risk for model routing only (not review policy)"),
+            task_type: tool.schema.string().optional().describe("Task kind for classification"),
+            classification_input: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional().describe("Task-specific classification data"),
           })).describe("Tasks to add"),
         },
         async execute(args, ctx) {
@@ -575,9 +600,10 @@ const plugin: Plugin = async (input) => {
       }),
 
       team_results: tool({
-        description: "Retrieve full message content from teammates. Returns unread messages and marks them as read. Use this after receiving a truncated message notification.",
+        description: "Retrieve unread teammate messages and full native candidates for lead review. Marks items read; candidate_id retrieves a retained candidate again without accepting it.",
         args: {
           from: tool.schema.string().optional().describe("Filter messages by sender name (optional, returns all if omitted)"),
+          candidate_id: tool.schema.string().optional().describe("Lead only: retrieve a retained native candidate by ID, including one already read"),
         },
         async execute(args, ctx) {
           const result = await executeTeamResults(deps, args, ctx.sessionID)

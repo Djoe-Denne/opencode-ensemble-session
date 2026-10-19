@@ -16,10 +16,14 @@ interface UnreadMessageRow {
  */
 export async function executeTeamResults(
   deps: ToolDeps,
-  args: { from?: string },
+  args: { from?: string; candidate_id?: string },
   sessionId: string,
 ): Promise<string> {
   const team = requireTeamMember(deps, sessionId)
+  const candidates = team.role === "lead" ? deps.db.query(`SELECT id, member_name, session_id, native_message_id, task_ids, content FROM member_result
+    WHERE team_id = ? AND ${args.candidate_id ? "id = ?" : "read = 0"}${args.from ? " AND member_name = ?" : ""} ORDER BY time_created ASC`)
+    .all(team.teamId, ...(args.candidate_id ? [args.candidate_id] : []), ...(args.from ? [args.from] : [])) as Array<{ id: string; member_name: string; session_id: string; native_message_id: string; task_ids: string; content: string }> : []
+  if (args.candidate_id && !candidates.length) throw new Error("Candidate not found in this lead's team")
 
   const rows = args.from
     ? (deps.db
@@ -33,17 +37,18 @@ export async function executeTeamResults(
         )
         .all(team.teamId) as UnreadMessageRow[])
 
-  if (rows.length === 0) return "No unread messages."
+  if (rows.length === 0 && candidates.length === 0) return "No unread messages."
 
   // Mark all returned messages as read
   const ids = rows.map((r) => r.id)
   const placeholders = ids.map(() => "?").join(", ")
-  deps.db.run(`UPDATE team_message SET read = 1 WHERE id IN (${placeholders})`, ids)
+  if (ids.length) deps.db.run(`UPDATE team_message SET read = 1 WHERE id IN (${placeholders})`, ids)
+  for (const candidate of candidates) deps.db.run("UPDATE member_result SET read = 1 WHERE id = ?", [candidate.id])
 
   // Format output — parse structured task results when present
-  return rows.map((r) => {
+  return [...candidates.map(candidate => `[Candidate ${candidate.id} from ${candidate.member_name}; NOT validated or integrated]\nSession: ${candidate.session_id}; native message: ${candidate.native_message_id}; tasks: ${candidate.task_ids}\n${candidate.content}`), ...rows.map((r) => {
     const parsed = parseTaskResult(r.content)
     if (parsed) return formatTaskResult(r.from_name, parsed)
     return `[Message from ${r.from_name}]:\n${r.content}`
-  }).join("\n\n")
+  })].join("\n\n")
 }

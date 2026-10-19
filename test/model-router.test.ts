@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { routeModel, selectModelForIntelligence, type RoutingModel } from "../src/model-router"
+import { routeModel, routeNormalizedModel, selectModelForIntelligence, type RoutingModel } from "../src/model-router"
 
 const models: RoutingModel[] = [
   { id: "a/small", intelligenceScore: 30, averageCostPerTask: 0.02, available: true },
@@ -9,6 +9,21 @@ const models: RoutingModel[] = [
 ]
 
 describe("routeModel", () => {
+  test("normalized classification retains fractional precision without a percentage round-trip", () => {
+    const c = 0.48123
+    const r = 0.97234
+    expect(routeNormalizedModel({ complexity: c, risk: r, models }).demand).toBe(c + 0.35 * r * (1 - c))
+    expect(routeNormalizedModel({ complexity: 0.5, risk: 0.25, models })).toEqual(routeModel({ complexity: 50, risk: 25, models }))
+    expect(routeNormalizedModel({ complexity: 1, risk: 0, models }).selected.id).toBe("d/strong")
+    expect(routeNormalizedModel({ complexity: 0, risk: 0, models }).selected.id).toBe("b/free")
+  })
+  test("normalized routing validates its own units, while the old public API still accepts percentages", () => {
+    for (const value of [-0.01, 1.01, NaN, Infinity, 50]) {
+      expect(() => routeNormalizedModel({ complexity: value, risk: 0, models })).toThrow("complexity")
+      expect(() => routeNormalizedModel({ complexity: 0, risk: value, models })).toThrow("risk")
+    }
+    expect(() => routeModel({ complexity: 50, risk: 25, models })).not.toThrow()
+  })
   test("zero complexity/risk chooses the cheapest sufficient model, not the weakest", () => {
     const route = routeModel({ complexity: 0, risk: 0, models })
     expect(route.selected.id).toBe("b/free")

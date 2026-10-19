@@ -17,7 +17,7 @@ function formatMessage(type: TeamEventType, data: Record<string, string>): strin
   switch (type) {
     case "spawn": return `Teammate ${data.memberName} spawned (${data.agent})`
     case "message": return `Message from ${data.from}`
-    case "completed": return `${data.memberName} finished work`
+    case "completed": return `${data.memberName} is inactive; task validation is separate`
     case "error": return `${data.memberName} encountered an error`
     case "shutdown": return `${data.memberName} shut down`
   }
@@ -67,8 +67,8 @@ export async function notifyWorkingProgress(
     if (busy.length === 0) {
       await client.tui.showToast({
         title: "Team",
-        message: "All teammates finished",
-        variant: "success",
+        message: "No teammates currently working; task validation is separate",
+        variant: "info",
         duration: 4000,
       })
     } else {

@@ -282,6 +282,25 @@ describe("Watchdog.checkStalled — last_nudged_at, deferred markReported, compl
     busySince.set(sessionId, Date.now() - 10_000)
   }
 
+  test("restricted workers are reported to the lead without an impossible team-tool nudge", async () => {
+    insertStalledMember("qa", "sess-qa")
+    deps.db.run("UPDATE team_member SET report_mode = 'final_response' WHERE name = 'qa'")
+    const watchdog = new Watchdog({ db: deps.db, client: deps.client, registry: deps.registry, ttlMs: 0, progressTracker: pt, stallThresholdMs: 5000 })
+    await watchdog.checkStalled()
+    expect(deps.client.calls.filter(call => call.method === "session.promptAsync" && (call.args[0] as { sessionID: string }).sessionID === "sess-qa")).toHaveLength(0)
+    expect(deps.db.query("SELECT COUNT(*) AS c FROM team_message WHERE to_name = 'lead'").get()).toEqual({ c: 1 })
+  })
+
+  test("chatty suppression does not reintroduce unavailable tools for restrictive workers", async () => {
+    insertStalledMember("qa", "sess-qa")
+    deps.db.run("UPDATE team_member SET report_mode = 'final_response' WHERE name = 'qa'")
+    pt.recordPeerMessage("sess-qa")
+    pt.recordPeerMessage("sess-qa")
+    const watchdog = new Watchdog({ db: deps.db, client: deps.client, registry: deps.registry, ttlMs: 0, progressTracker: pt, peerMessageLimit: 2, peerMessageWindowMs: 300_000 })
+    await watchdog.checkChatty()
+    expect(deps.client.calls.filter(call => call.method === "session.promptAsync" && (call.args[0] as { sessionID: string }).sessionID === "sess-qa")).toHaveLength(0)
+  })
+
   test("Fix 1: writes last_nudged_at on a successful nudge", async () => {
     insertStalledMember("alice", "sess-a")
     const watchdog = new Watchdog({

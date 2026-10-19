@@ -24,6 +24,8 @@ logs
 # caches
 .eslintcache
 .cache
+.grepai/
+.serena/
 *.tsbuildinfo
 
 # IntelliJ based IDEs
@@ -32,8 +34,9 @@ logs
 # Finder (MacOS) folder config
 .DS_Store
 
-# OpenCode local state
-.opencode/
+# OpenCode local state (agents stay versioned)
+.opencode/*
+!.opencode/agents
 .superpowers/
 .worktrees/
 dogfood-output/

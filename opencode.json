@@ -1,4 +1,22 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "skills": ["./skills"]
+  "skills": ["./skills"],
+  "mcp": {
+    "servers": {
+      "grepai": {
+        "type": "remote",
+        "url": "http://127.0.0.1:3066/mcp?tags=grepai",
+        "oauth": false,
+        "codemode": true,
+        "timeout": { "startup": 180000, "catalog": 180000 }
+      },
+      "serena": {
+        "type": "remote",
+        "url": "http://127.0.0.1:3066/mcp?tags=serena",
+        "oauth": false,
+        "codemode": true,
+        "timeout": { "startup": 180000, "catalog": 180000 }
+      }
+    }
+  }
 }

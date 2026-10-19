@@ -115,13 +115,23 @@ export function selectModelForIntelligence(input: { models: readonly RoutingMode
 /** Route solely by supplied scores, catalogue intelligence and comparable costs. */
 export function routeModel(input: { complexity: number; risk: number; models: readonly RoutingModel[]; beta?: number }): ModelRoute {
   validateTaskRoutingScores({ complexity: input.complexity, risk: input.risk })
+  return routeNormalizedModel({ ...input, complexity: input.complexity / 100, risk: input.risk / 100 })
+}
+
+/** Route native 0..1 classification scores without a 0..100 round-trip. */
+export function routeNormalizedModel(input: { complexity: number; risk: number; models: readonly RoutingModel[]; beta?: number }): ModelRoute {
+  Object.entries({ complexity: input.complexity, risk: input.risk }).forEach(([dimension, score]) => {
+    if (typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 1) {
+      throw new Error(`${dimension} must be a finite normalized score from 0 to 1`)
+    }
+  })
   const beta = input.beta ?? 0.35
   validateModelRoutingConfig({ beta, models: [...input.models] })
   const available = availableModels(input.models)
   const minI = Math.min(...available.map(model => model.intelligenceScore))
   const maxI = Math.max(...available.map(model => model.intelligenceScore))
-  const c = input.complexity / 100
-  const r = input.risk / 100
+  const c = input.complexity
+  const r = input.risk
   const demand = c + beta * r * (1 - c)
   // Clamp arithmetic round-off at the endpoints, not the catalogue's scale.
   const requiredIntelligence = Math.min(maxI, Math.max(minI, minI + demand * (maxI - minI)))

@@ -743,9 +743,9 @@ describe("stress: completion loop prevention (issue #3)", () => {
     const carolSess = getSession(deps, "carol")
 
     // 2. All three report to lead
-    await executeTeamMessage(deps, { to: "lead", text: "alice done" }, aliceSess)
-    await executeTeamMessage(deps, { to: "lead", text: "bob done" }, bobSess)
-    await executeTeamMessage(deps, { to: "lead", text: "carol done" }, carolSess)
+    await executeTeamMessage(deps, { to: "lead", text: "<task-result><status>completed</status><summary>alice done</summary><details>Task delivered</details></task-result>" }, aliceSess)
+    await executeTeamMessage(deps, { to: "lead", text: "<task-result><status>completed</status><summary>bob done</summary><details>Task delivered</details></task-result>" }, bobSess)
+    await executeTeamMessage(deps, { to: "lead", text: "<task-result><status>completed</status><summary>carol done</summary><details>Task delivered</details></task-result>" }, carolSess)
 
     // 3. All three go idle (busy→ready) — sets reported_to_lead
     for (const sess of [aliceSess, bobSess, carolSess]) {
@@ -800,7 +800,7 @@ describe("stress: completion loop prevention (issue #3)", () => {
     const daveSess = getSession(deps, "dave")
 
     // Dave reports and goes idle
-    await executeTeamMessage(deps, { to: "lead", text: "first pass done" }, daveSess)
+    await executeTeamMessage(deps, { to: "lead", text: "<task-result><status>completed</status><summary>first pass done</summary><details>Task delivered</details></task-result>" }, daveSess)
     deps.db.run("UPDATE team_member SET status = 'busy' WHERE session_id = ?", [daveSess])
     handleSessionStatusEvent(deps.db, deps.registry, daveSess, "idle")
     expect(hasReportedCompletion(deps.db, teamId, "dave")).toBe(true)

@@ -74,14 +74,15 @@ describe("notifyWorkingProgress", () => {
     expect(msg).not.toContain("carol")
   })
 
-  test("shows 'all finished' toast when no members are busy", async () => {
+  test("idle members produce an activity notice, not a success claim", async () => {
     insertMember(deps.db, "t1", "alice", "sess-a", "ready")
     insertMember(deps.db, "t1", "bob", "sess-b", "ready")
     await notifyWorkingProgress(deps.client, deps.db, "t1")
     const toasts = deps.client.calls.filter(c => c.method === "tui.showToast")
     expect(toasts).toHaveLength(1)
     const msg = (toasts[0]!.args[0] as Record<string, unknown>).message as string
-    expect(msg).toContain("All teammates finished")
+    expect(msg).toContain("No teammates currently working")
+    expect((toasts[0]!.args[0] as Record<string, unknown>).variant).toBe("info")
   })
 
   test("does not fire toast when no members exist", async () => {
@@ -107,11 +108,11 @@ describe("notifyWorkingProgress", () => {
     await notifyWorkingProgress(deps.client, deps.db, "t1")
   })
 
-  test("uses success variant for all-finished toast", async () => {
+  test("uses info variant for an inactive team whose tasks may still need validation", async () => {
     insertMember(deps.db, "t1", "alice", "sess-a", "ready")
     await notifyWorkingProgress(deps.client, deps.db, "t1")
     const toasts = deps.client.calls.filter(c => c.method === "tui.showToast")
-    expect((toasts[0]!.args[0] as Record<string, unknown>).variant).toBe("success")
+    expect((toasts[0]!.args[0] as Record<string, unknown>).variant).toBe("info")
   })
 
   test("uses info variant for in-progress toast", async () => {

@@ -1,5 +1,6 @@
 import type { ToolDeps } from "../types"
 import { requireTeamMember } from "./shared"
+import { missionPolicySummary } from "../mission-policy"
 
 /** Tracks the last time team_status was called per team ID (epoch ms). */
 export const lastCallTime = new Map<string, number>()
@@ -20,9 +21,10 @@ function computeStateMarker(deps: ToolDeps, teamId: string): number {
     `SELECT MAX(x) as marker FROM (
        SELECT MAX(time_updated) as x FROM team_member WHERE team_id = ?
        UNION SELECT MAX(time_updated) FROM team_task WHERE team_id = ?
-       UNION SELECT MAX(time_created) FROM team_message WHERE team_id = ?
+        UNION SELECT MAX(time_created) FROM team_message WHERE team_id = ?
+        UNION SELECT MAX(time_updated) FROM mission_policy WHERE team_id = ?
      )`
-  ).get(teamId, teamId, teamId) as { marker: number | null } | null
+   ).get(teamId, teamId, teamId, teamId) as { marker: number | null } | null
   return row?.marker ?? 0
 }
 
@@ -66,6 +68,18 @@ export async function executeTeamStatus(
 
   const lines: string[] = []
   lines.push(`Team: ${teamInfo.teamName} (you are the ${teamInfo.role})`)
+  const explicitPolicy = missionPolicySummary(deps.db, teamInfo.teamId)
+  if (explicitPolicy) lines.push(explicitPolicy)
+  const mission = deps.db.query("SELECT mission_mode, mission_state, classification_policy, classification_runtime FROM team WHERE id = ?").get(teamInfo.teamId) as { mission_mode: string; mission_state: string; classification_policy: string | null; classification_runtime: string | null }
+  if (mission.classification_policy) {
+    const policy = JSON.parse(mission.classification_policy) as { method: string; toolId: string; helperModel: string; generalModel?: string }
+    const budget = mission.classification_runtime ? JSON.parse(mission.classification_runtime) as { calls: number; bytes: number } : { calls: 0, bytes: 0 }
+    lines.push(`Mission: ${mission.mission_mode}/${mission.mission_state}; classification=${policy.method} (${policy.toolId || policy.generalModel || "manual"}); calls=${budget.calls}, input bytes=${budget.bytes}`)
+    const counts = deps.db.query("SELECT classification_status AS state, COUNT(*) AS count FROM team_task WHERE team_id = ? GROUP BY classification_status").all(teamInfo.teamId) as Array<{ state: string; count: number }>
+    lines.push(`Classification: ${counts.map(row => `${row.count} ${row.state}`).join(", ") || "no tasks"}`)
+    const incidents = deps.db.query("SELECT kind, detail FROM classification_incident WHERE team_id = ? ORDER BY time_created DESC, id DESC LIMIT 3").all(teamInfo.teamId) as Array<{ kind: string; detail: string }>
+    incidents.forEach(row => { lines.push(`  classification ${row.kind}: ${row.detail}`) })
+  }
   lines.push("")
 
   if (members.length === 0) {

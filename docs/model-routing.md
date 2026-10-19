@@ -45,9 +45,12 @@ The configured provider must actually expose that variant: Ensemble does not
 translate or guess effort names, nor confirm availability over the network.
 
 The supplied 17-entry catalogue is user-provided data, not a benchmark claim
-or live availability check. `averageCostPerTask` uses `cout_AA_usd` consistently;
-CursorBench costs are retained as optional `cursorBenchCostPerTask` metadata,
-not mixed into the same ranking. `paidFallback`, `level` and `usage` are
+or live availability check. `averageCostPerTask` uses the user's actual amortized
+USD cost when supplied, otherwise the supplied `cout_AA_usd` estimate.
+For `cursor/grok-4.7` high, the user-confirmed Cursor-sponsored cost is $0.313
+per task, replacing the $2.73 estimate. CursorBench costs are retained as optional
+`cursorBenchCostPerTask` metadata, not mixed into the same ranking and not treated
+as the user's actual bill. `paidFallback`, `level` and `usage` are
 metadata only: they cannot override intelligence/cost eligibility. Availability
 is initially declared true and must be maintained by the user/maintenance skill.
 
@@ -90,6 +93,14 @@ Risk does not change review, plan approval, agent type or permissions.
 The minimum-cost rule is not load balancing: many tasks can choose one free
 provider. Provider concurrency/quota scheduling remains a separate concern;
 the router does not replace a sufficient cheap model to distribute load.
+
+The classification integration API `routeNormalizedModel` accepts native
+complexity/risk scores in **0..1** without rounding or a percentage round-trip.
+`routeModel` and current board/tool inputs keep their existing 0–100 contract,
+converting once on entry to the same deterministic algorithm. The classifier
+bridge supports [mission-scoped classification](task-classification.md) with
+persisted protocols, explicit classifier models and authorized failover. It
+does not change the router's deterministic selection or review policy.
 
 ## Maintenance
 

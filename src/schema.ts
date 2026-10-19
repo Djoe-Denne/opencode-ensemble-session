@@ -219,7 +219,55 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE team_task ADD COLUMN complexity INTEGER CHECK(complexity IS NULL OR (typeof(complexity) = 'integer' AND complexity BETWEEN 0 AND 100));
    ALTER TABLE team_task ADD COLUMN risk INTEGER CHECK(risk IS NULL OR (typeof(risk) = 'integer' AND risk BETWEEN 0 AND 100));
    ALTER TABLE team_member ADD COLUMN model_variant TEXT;
-   ALTER TABLE team_member ADD COLUMN model_routing TEXT;`,
+    ALTER TABLE team_member ADD COLUMN model_routing TEXT;`,
+  // Migration 14: mission snapshot and independent task-classification admission.
+  `ALTER TABLE team ADD COLUMN classification_policy TEXT;
+   ALTER TABLE team ADD COLUMN mission_mode TEXT NOT NULL DEFAULT 'supervised' CHECK(mission_mode IN ('supervised', 'long_run'));
+   ALTER TABLE team ADD COLUMN mission_state TEXT NOT NULL DEFAULT 'running' CHECK(mission_state IN ('running', 'attention', 'critical'));
+   ALTER TABLE team ADD COLUMN classification_runtime TEXT;
+   ALTER TABLE team_task ADD COLUMN task_type TEXT;
+   ALTER TABLE team_task ADD COLUMN classification_input TEXT;
+   ALTER TABLE team_task ADD COLUMN classification_status TEXT NOT NULL DEFAULT 'not_required' CHECK(classification_status IN ('not_required', 'pending', 'running', 'completed', 'blocked'));
+   ALTER TABLE team_task ADD COLUMN classification_result TEXT;
+   ALTER TABLE team_task ADD COLUMN classification_error TEXT;
+   ALTER TABLE team_task ADD COLUMN classification_token TEXT;
+   ALTER TABLE team_task ADD COLUMN classification_until INTEGER;
+   ALTER TABLE team_task ADD COLUMN classification_attempts INTEGER NOT NULL DEFAULT 0;
+   CREATE TABLE classification_incident (
+     id TEXT PRIMARY KEY, team_id TEXT NOT NULL REFERENCES team(id) ON DELETE CASCADE,
+     task_id TEXT, kind TEXT NOT NULL, method TEXT NOT NULL, detail TEXT NOT NULL, time_created INTEGER NOT NULL
+   );
+   CREATE INDEX classification_incident_team ON classification_incident(team_id, time_created);
+   CREATE TABLE classification_helper (
+     session_id TEXT PRIMARY KEY, team_id TEXT NOT NULL REFERENCES team(id) ON DELETE CASCADE,
+     task_id TEXT NOT NULL, lease_until INTEGER NOT NULL
+   );
+    CREATE INDEX task_classification_queue ON team_task(team_id, classification_status);`,
+  // Migration 15: opt-in mission policy, explicit approval and task-level routing history.
+  `CREATE TABLE mission_policy (
+      team_id TEXT PRIMARY KEY REFERENCES team(id) ON DELETE CASCADE,
+      objective TEXT NOT NULL, policy_path TEXT NOT NULL,
+      presented_hash TEXT, approved_hash TEXT, approved_json TEXT,
+      revision INTEGER NOT NULL DEFAULT 0, time_updated INTEGER NOT NULL
+    );
+    CREATE TABLE mission_policy_revision (
+      team_id TEXT NOT NULL REFERENCES team(id) ON DELETE CASCADE,
+      revision INTEGER NOT NULL, policy_hash TEXT NOT NULL, policy_json TEXT NOT NULL,
+      time_created INTEGER NOT NULL, PRIMARY KEY(team_id, revision)
+    );
+     ALTER TABLE team_task ADD COLUMN model_routing TEXT;`,
+  // Migration 16: capability-compatible reporting and durable native result candidates.
+  `ALTER TABLE team_member ADD COLUMN report_mode TEXT NOT NULL DEFAULT 'team_message' CHECK(report_mode IN ('team_message', 'final_response'));
+   ALTER TABLE team_member ADD COLUMN report_started_at INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE team_member ADD COLUMN report_generation INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE team_member ADD COLUMN report_message_cursor INTEGER NOT NULL DEFAULT 0;
+   UPDATE team_member SET report_started_at = time_created;
+   CREATE TABLE member_result (
+     id TEXT PRIMARY KEY, team_id TEXT NOT NULL REFERENCES team(id) ON DELETE CASCADE,
+     member_name TEXT NOT NULL, session_id TEXT NOT NULL, native_message_id TEXT NOT NULL,
+     task_ids TEXT NOT NULL, content TEXT NOT NULL, report_generation INTEGER NOT NULL, time_created INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0,
+     UNIQUE(session_id, native_message_id)
+   );`,
 ]
 
 /**

@@ -161,7 +161,8 @@ export class Watchdog {
       // orphan the stall state if promptAsync throws (aborted session, invalid ID),
       // since ProgressTracker.reported is in-memory and only cleared by new activity.
       const stallModel = getMemberPromptModel(this.db, member.team_id, member.name)
-      this.client.session.promptAsync({
+      const finalResponse = (this.db.query("SELECT report_mode FROM team_member WHERE team_id = ? AND name = ?").get(member.team_id, member.name) as { report_mode: string } | null)?.report_mode === "final_response"
+      if (!finalResponse) this.client.session.promptAsync({
         sessionID: member.session_id,
         parts: [{ type: "text", text: "[System]: You appear stalled — no progress detected. Report your current status to the lead via team_message, or wrap up your work." }],
         ...stallModel,
@@ -199,7 +200,7 @@ export class Watchdog {
       `SELECT tm.team_id, tm.name, tm.session_id
        FROM team_member tm
        JOIN team t ON tm.team_id = t.id
-       WHERE t.status = 'active' AND tm.status = 'busy'`
+        WHERE t.status = 'active' AND tm.status = 'busy' AND tm.report_mode = 'team_message'`
     ).all() as Array<{ team_id: string; name: string; session_id: string }>
 
     for (const member of busy) {

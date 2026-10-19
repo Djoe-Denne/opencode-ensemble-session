@@ -38,6 +38,27 @@ function bool(description: string, fallback: boolean): Record<string, unknown> {
   return { type: "boolean", description, default: fallback }
 }
 
+function classification(): Record<string, unknown> {
+  return { type: "object", description: "Frozen mission classification defaults/explicit overrides", additionalProperties: false, properties: {
+    mode: { type: "string", enum: ["off", "auto", "jev", "general", "x86"] },
+    helperModel: str("Explicit helper model in provider/model format; no model is chosen implicitly"),
+    helperVariant: str("Native reasoning variant for the helper model"),
+    toolId: str("Exact classifier tool ID; empty means discover the known JEV contract"),
+    timeoutMs: { type: "integer", minimum: 1 },
+    missionMode: { type: "string", enum: ["supervised", "long_run"] },
+    generalModel: str("Explicit model for embedded general classification; never activated automatically"),
+    generalVariant: str("Reasoning variant for the general classifier"),
+    specialized: { type: "boolean", description: "In auto mode, prefer the discovered x86 tool for explicit x86 tasks" },
+    x86ToolId: str("Exact specialized tool ID; empty discovers the known classify_x86 contract"),
+    fallbacks: { type: "array", maxItems: 8, items: { type: "object", additionalProperties: false, required: ["method", "model"], properties: {
+      method: { type: "string", enum: ["jev", "general"] }, model: str("Explicitly authorized classifier/helper model"), variant: str("Reasoning variant"), toolId: str("Exact JEV tool ID"),
+    } } },
+    limits: { type: "object", additionalProperties: false, properties: Object.fromEntries([
+      "retries", "retryDelayMs", "maxAttempts", "maxCalls", "maxDurationMs", "maxInputBytes", "concurrency", "circuitThreshold", "circuitCooldownMs", "maxCircuitRechecks",
+    ].map(key => [key, { type: "integer", minimum: ["retries", "retryDelayMs", "maxCircuitRechecks"].includes(key) ? 0 : 1 }])) },
+  } }
+}
+
 /** Task priority enum shared by the schema and the runtime validator. */
 const TASK_PRIORITIES = ["high", "medium", "low"] as const
 type TaskPriority = (typeof TASK_PRIORITIES)[number]
@@ -87,6 +108,8 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
         properties: {
           name: str("Team name (lowercase alphanumeric with hyphens, 1-64 chars)"),
           project_name: str("Project display name for first use of this working directory."),
+          classification: classification(),
+          mission_mode: { type: "string", enum: ["supervised", "long_run"], description: "Supervised asks when authorized methods are exhausted; long_run isolates failures until a critical budget/safety stop" },
         },
         required: ["name"],
         additionalProperties: false,
@@ -114,6 +137,7 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
           claim_task: str("Task ID to auto-claim for this teammate (optional)"),
           worktree: bool("Create a git worktree for file isolation (default: true, set false for read-only agents)", true),
           plan_approval: bool("Require teammate to send a plan for approval before writing files (default: false)", false),
+          report_mode: { type: "string", enum: ["team_message", "final_response"], description: "Use final_response for restrictive profiles: preserve native permissions, retrieve a candidate for lead review, never auto-complete tasks. Default team_message." },
           context: {
             type: "object",
             description: "Opt-in V2 history inheritance; independent reviewers should use fresh.",
@@ -153,6 +177,7 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
           reject: str("Reject a teammate's plan with reason (only when recipient has plan_approval='pending')"),
           force: bool("Lead only. Re-activate a teammate who already reported task completion.", false),
           model: str("Lead only: update the recipient teammate's model in-place, in 'provider/model' format."),
+          classification: classification(),
         },
         required: ["to"],
         additionalProperties: false,
@@ -213,6 +238,8 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
                 },
                 complexity: { type: "integer", minimum: 0, maximum: 100, description: "Task complexity for deterministic model routing" },
                 risk: { type: "integer", minimum: 0, maximum: 100, description: "Task risk for model routing only (not review policy)" },
+                task_type: str("Explicit task kind supplied to the fixed classification protocol"),
+                classification_input: { type: "object", additionalProperties: true, description: "Task-specific classification data, treated as data rather than instructions" },
               },
               required: ["content"],
               additionalProperties: false,
@@ -224,7 +251,7 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
       },
       execute: async (input: unknown, context: { sessionID: string }) => {
         const args = input as {
-          tasks: Array<{ content: string; priority?: string; depends_on?: string[]; agent?: string; complexity?: number; risk?: number }>
+          tasks: Array<{ content: string; priority?: string; depends_on?: string[]; agent?: string; complexity?: number; risk?: number; task_type?: string; classification_input?: Record<string, unknown> }>
         }
         const content = await executeTeamTasksAdd(
           deps,
@@ -236,6 +263,8 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
               ...(task.agent ? { agent: task.agent } : {}),
               ...(task.complexity !== undefined ? { complexity: task.complexity } : {}),
               ...(task.risk !== undefined ? { risk: task.risk } : {}),
+              ...(task.task_type !== undefined ? { task_type: task.task_type } : {}),
+              ...(task.classification_input !== undefined ? { classification_input: task.classification_input } : {}),
             })),
           },
           context.sessionID,
@@ -273,10 +302,10 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
     editor.add({
       name: "team_results",
       description:
-        "Retrieve full message content from teammates. Returns unread messages and marks them as read. Use this after receiving a truncated message notification.",
+        "Retrieve unread teammate messages and full native candidates for lead review. Marks items read. candidate_id retrieves a retained candidate again without accepting it.",
       input: {
         type: "object",
-        properties: { from: str("Filter messages by sender name (optional, returns all if omitted)") },
+        properties: { from: str("Filter messages by sender name (optional, returns all if omitted)"), candidate_id: str("Lead only: retrieve a retained native candidate by ID, including one already read") },
         additionalProperties: false,
       },
       execute: run(executeTeamResults),

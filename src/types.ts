@@ -2,6 +2,7 @@ import type { Database } from "./db"
 import type { MemberRegistry, DescendantTracker, PendingPurgeApprovals } from "./state"
 import type { EnsembleConfig } from "./config"
 import type { ProgressTracker } from "./progress"
+import type { ClassificationPort } from "./mission-classification"
 
 /**
  * Shared dependencies injected into every tool's execute function.
@@ -22,6 +23,8 @@ export interface ToolDeps {
   progressTracker: ProgressTracker
   /** Branch preservation seam for spawn rollback; defaults to the real Git helper. */
   preserveBranch?: (source: string, target: string, directory: string) => Promise<boolean>
+  /** Capability-gated native classification; V1/unsupported hosts leave this absent. */
+  classifier?: ClassificationPort
 }
 
 /** A single permission rule for session-level enforcement. */
@@ -78,6 +81,8 @@ export interface PluginClient {
       metadata?: Record<string, unknown>
     }): Promise<unknown>
     abort(options: { sessionID: string }): Promise<unknown>
+    /** V2 native model pinning for a direct claim before the worker's next turn. */
+    switchModel?(options: { sessionID: string; model: { providerID: string; modelID: string }; variant?: string }): Promise<unknown>
     status(): Promise<{ data?: Record<string, { type: string }> }>
     messages(options: { sessionID: string; limit?: number }): Promise<{ data?: Array<{ info: unknown; parts: unknown[] }> }>
     get(options: { sessionID: string }): Promise<{ data?: unknown }>

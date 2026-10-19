@@ -1,0 +1,125 @@
+import type { ToolDeps } from "./types"
+import type { MissionPolicyModel } from "./mission-model-policy"
+import type { Plugin } from "@opencode/plugin"
+import { prepareMission, openMissionConfiguration, approveMission, getPresentedMission, markMissionPresented, previewMissionTask, type MissionPolicySnapshot } from "./mission-policy"
+import { findTeamBySession } from "./types"
+import { checkToolIsolation } from "./hooks"
+import { pumpTeam } from "./dispatch"
+import { classifyBoardTasks } from "./board-classification"
+import { log } from "./log"
+
+/** A generic mission command; project workflows remain in project instructions. */
+export interface MissionCommand {
+  action: "prepare" | "config" | "start"
+  text: string
+}
+
+/** Parse the single command namespace without interpreting user preferences. */
+export function parseMissionCommand(input: string): MissionCommand {
+  const text = input.trim()
+  if (!text) throw new Error("Provide a mission objective, config, or start")
+  if (text === "start") return { action: "start", text: "" }
+  if (/^start\s/.test(text)) throw new Error("start accepts no extra arguments; configure the proposal first")
+  if (text === "config") return { action: "config", text: "" }
+  if (/^config\s/.test(text)) return { action: "config", text: text.slice(6).trim() }
+  return { action: "prepare", text }
+}
+
+type NativeCommandEditor = Parameters<Parameters<Plugin.Context["command"]["transform"]>[0]>[0]
+
+/** Public V2 command definition, including its native prompt/attachment contract. */
+export type MissionCommandDefinition = Parameters<NativeCommandEditor["add"]>[0]
+
+/** Native command invocation; the SDK does not authenticate human origin. */
+export type MissionCommandInvocation = Parameters<MissionCommandDefinition["execute"]>[0]
+
+/** Disposable public command registration. */
+export type MissionCommandRegistration = Awaited<ReturnType<Plugin.Context["command"]["transform"]>>
+
+/** Capability-gated subset of the public V2 command and session APIs. */
+export interface MissionCommandHost {
+  command?: Pick<Plugin.Context["command"], "transform">
+  session: { prompt(input: Parameters<Plugin.Context["session"]["prompt"]>[0]): Promise<unknown> }
+}
+
+/** Register the generic mission command on supported V2 hosts. */
+export async function registerMissionCommands(host: MissionCommandHost, deps: ToolDeps, availableModels?: () => Promise<readonly MissionPolicyModel[]>): Promise<MissionCommandRegistration | undefined> {
+  if (!host.command) return undefined
+  return host.command.transform(editor => {
+    editor.add({
+      name: "ensemble-mission",
+      description: "Prepare a mission, configure providers/models in chat, then explicitly approve with start.",
+      execute: async input => {
+        checkToolIsolation(deps.registry, deps.tracker, "team_create", input.sessionID, deps.db)
+        const command = parseMissionCommand(input.prompt.text)
+        if (command.action === "prepare") {
+          const mission = await prepareMission(deps, input.sessionID, command.text)
+          const proposal = openMissionConfiguration(deps, mission.teamId, input.sessionID, true)
+          await deliverProposal(host, deps, proposal, { ...input.prompt, sessionID: input.sessionID, delivery: input.delivery,
+            text: `${formatProposal(deps, proposal)}\n\nPrepare a bounded plan using this project's instructions. No particular planner profile or agent sequence is required. Evaluate complexity and risk separately using the mission criteria. You may publish proposed tasks, but no Ensemble worker or classifier can start before approval. Present the actual policy and task preview to the user; invite chat corrections or the user's /ensemble-mission start command. Do not invoke start on the user's behalf.` })
+          return
+        }
+        const team = findTeamBySession(deps.db, deps.registry, input.sessionID)
+        if (!team || team.role !== "lead") throw new Error("Only the lead of a prepared mission can use config or start")
+        if (command.action === "config") {
+          const proposal = openMissionConfiguration(deps, team.teamId, input.sessionID, true)
+          const instructions = command.text
+            ? `User corrections (not execution approval):\n${command.text}\n\nUpdate only this mission's draft to represent these corrections. Keep the policy structurally valid and providers, exact native models and variants consistent. Do not change global settings. Explain the diff and ask the user to run /ensemble-mission config again to present the edited policy before start.`
+            : "Present this authoritative policy and task preview in the chat. No new execution is admitted until the user runs /ensemble-mission start. Subsequent chat corrections must be written to the mission draft and presented again with config; do not keep them only in context."
+          await deliverProposal(host, deps, proposal, { ...input.prompt, sessionID: input.sessionID, delivery: input.delivery, resume: Boolean(command.text), text: `${formatProposal(deps, proposal)}\n\n${instructions}` }, !command.text)
+          return
+        }
+        if (!availableModels) throw new Error("Native model catalogue API unavailable; mission cannot be approved on this host")
+        const presented = getPresentedMission(deps, team.teamId, input.sessionID)
+        const approved = approveMission(deps, team.teamId, input.sessionID, await availableModels(), presented)
+        if (!presented.approved) {
+          void classifyBoardTasks(deps, team.teamId).then(() => pumpTeam(deps, team.teamId)).catch(error => { log(`mission-policy:start-failed ${String(error)}`) })
+          void pumpTeam(deps, team.teamId)
+        }
+        try { await host.session.prompt({ ...input.prompt, sessionID: input.sessionID, delivery: input.delivery,
+          resume: !presented.approved,
+          text: `Mission policy approved: revision ${approved.revision}, hash ${approved.hash}.\nObjective: ${approved.objective}\nPolicy: ${approved.policyPath}\nContinue the mission using the approved grid and project verification requirements. Model, variant and provider choices are enforced by Ensemble; do not bypass them with explicit overrides. Retain task ownership and integration barriers, and report evidence and limitations.` }) } catch (error) {
+          throw new Error(`Mission policy remains approved (v${approved.revision}); supervisor message delivery failed. Check the session/status before explicitly resuming in chat: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      },
+    })
+  })
+}
+
+async function deliverProposal(host: MissionCommandHost, deps: ToolDeps, proposal: MissionPolicySnapshot, input: Parameters<MissionCommandHost["session"]["prompt"]>[0], present = true): Promise<void> {
+  try {
+    await host.session.prompt(input)
+    if (present) markMissionPresented(deps.db, proposal)
+  } catch (error) {
+    deps.db.run("UPDATE mission_policy SET presented_hash = NULL, time_updated = MAX(time_updated + 1, ?) WHERE team_id = ? AND time_updated = ? AND presented_hash = ?",
+      [Date.now(), proposal.teamId, proposal.presentationToken, proposal.hash])
+    throw error
+  }
+}
+
+function formatProposal(deps: ToolDeps, proposal: MissionPolicySnapshot): string {
+  const { policy } = proposal
+  const band = (bounds: number[], index: number): string => `${bounds[index]}–${(bounds[index + 1] ?? 101) - 1}`
+  const cells = [
+    `| Risk / complexity | ${policy.complexityBands.slice(0, -1).map((_, index) => band(policy.complexityBands, index)).join(" | ")} |`,
+    `|---|${policy.complexityBands.slice(0, -1).map(() => "---").join("|")}|`,
+    ...policy.matrix.map((groups, index) => `| ${band(policy.riskBands, index)} | ${groups.join(" | ")} |`),
+  ]
+  const groups = Object.entries(policy.groups).map(([name, models]) => `${name}: ${models.map(model => `${model.id} (${model.variant ?? "default"})`).join(" → ")}`)
+  const tasks = deps.db.query("SELECT id, content FROM team_task WHERE team_id = ? AND status IN ('pending', 'blocked') ORDER BY time_created, id LIMIT 50").all(proposal.teamId) as Array<{ id: string; content: string }>
+  const taskPreview = tasks.map(task => {
+    try {
+      const route = previewMissionTask(deps.db, proposal, task.id)
+      return `${task.id}: ${task.content.slice(0, 160)} | complexity ${route.complexity}, risk ${route.risk} | ${route.group} | ${route.selected.id} (${route.selected.variant ?? "default"})`
+    } catch (error) { return `${task.id}: BLOCKED — ${error instanceof Error ? error.message : String(error)}` }
+  })
+  return [
+    "Mission policy proposal — execution is paused, not approved.", `Objective: ${proposal.objective}`,
+    `Draft: ${proposal.policyPath}`, `Proposal hash: ${proposal.hash}`, `Allowed providers: ${policy.providers.join(", ")}`,
+    "Risk and complexity remain independent integers 0–100. The first candidate is primary; alternatives are not automatic retries.",
+    ...cells, ...groups,
+    "Assessment criteria:", `Complexity: ${policy.assessment.complexity.join(" → ")}`, `Risk: ${policy.assessment.risk.join(" → ")}`,
+    ...(taskPreview.length ? ["Task preview (same resolver as admission; at most 50 queued tasks):", ...taskPreview] : []),
+    "Current draft JSON:", "```json", JSON.stringify(policy, null, 2), "```",
+  ].join("\n")
+}

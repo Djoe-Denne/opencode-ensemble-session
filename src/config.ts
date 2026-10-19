@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs"
 import path from "node:path"
 import { validateModelRoutingConfig, type ModelRoutingConfig } from "./model-router"
+import { validateMissionClassificationConfig, type MissionClassificationConfig } from "./mission-classification"
+import { validateMissionModelPolicy, type MissionModelPolicy } from "./mission-model-policy"
 
 /** Plugin configuration shape. All fields optional — defaults applied. */
 export interface EnsembleConfig {
@@ -42,6 +44,10 @@ export interface EnsembleConfig {
   autoScale?: boolean
   /** Deterministic complexity/risk routing (empty catalogue disables it). */
   modelRouting?: ModelRoutingConfig
+  /** Automatic JEV discovery; helper model is explicitly user-selected. */
+  classification?: MissionClassificationConfig
+  /** Default explicit policy for command-prepared missions; null seeds a draft from the catalogue. */
+  missionPolicy?: MissionModelPolicy | null
 }
 
 /** Default configuration values. */
@@ -65,9 +71,12 @@ export const DEFAULT_CONFIG: Required<EnsembleConfig> = {
   autoDispatch: false,
   autoScale: false,
   modelRouting: { beta: 0.35, models: [] },
+  missionPolicy: null,
+  classification: { mode: "auto", helperModel: "", helperVariant: "", toolId: "", timeoutMs: 30_000,
+    missionMode: "supervised", generalModel: "", generalVariant: "", specialized: false, x86ToolId: "", fallbacks: [], limits: {} },
 }
 
-type ConfigFile = Omit<Partial<EnsembleConfig>, "modelRouting"> & { modelRouting?: Partial<ModelRoutingConfig> }
+type ConfigFile = Omit<Partial<EnsembleConfig>, "modelRouting" | "classification"> & { modelRouting?: Partial<ModelRoutingConfig>; classification?: Partial<MissionClassificationConfig> }
 
 /** Read a JSON config file, returning an empty object on missing/invalid. */
 function readConfigFile(filePath: string): ConfigFile {
@@ -97,6 +106,19 @@ function readConfigFile(filePath: string): ConfigFile {
     if (typeof raw.maxActiveMembers === "number") result.maxActiveMembers = raw.maxActiveMembers
     if (typeof raw.autoDispatch === "boolean") result.autoDispatch = raw.autoDispatch
     if (typeof raw.autoScale === "boolean") result.autoScale = raw.autoScale
+    // Validate after merging, outside this reader's compatibility fallback: an
+    // invalid explicit mission policy must never silently become a looser one.
+    if (raw.missionPolicy !== undefined) result.missionPolicy = raw.missionPolicy as MissionModelPolicy | null
+    if (raw.classification !== undefined) {
+      try {
+        if (!raw.classification || typeof raw.classification !== "object" || Array.isArray(raw.classification)) throw new Error("classification must be an object")
+        const classification = raw.classification as Partial<MissionClassificationConfig>
+        validateMissionClassificationConfig({ ...DEFAULT_CONFIG.classification, ...classification })
+        result.classification = Object.fromEntries(Object.entries(classification).filter(([key]) => key in DEFAULT_CONFIG.classification))
+      } catch (error) {
+        console.warn(`[ensemble] Invalid classification at ${filePath}: ${String(error)}; keeping inherited settings`)
+      }
+    }
     if (raw.modelRouting !== undefined) {
       try {
         if (!raw.modelRouting || typeof raw.modelRouting !== "object" || Array.isArray(raw.modelRouting)) throw new Error("modelRouting must be an object")
@@ -132,7 +154,10 @@ export function loadConfig(projectDir: string): Required<EnsembleConfig> {
   const merged = {
     ...DEFAULT_CONFIG, ...global, ...project,
     modelRouting: { ...DEFAULT_CONFIG.modelRouting, ...global.modelRouting, ...project.modelRouting },
+    classification: { ...DEFAULT_CONFIG.classification, ...global.classification, ...project.classification,
+      limits: { ...global.classification?.limits, ...project.classification?.limits } },
   }
+  if (merged.missionPolicy !== null) validateMissionModelPolicy(merged.missionPolicy)
   if (process.env.OPENCODE_ENSEMBLE_V2_API_URL !== undefined) merged.v2ApiUrl = process.env.OPENCODE_ENSEMBLE_V2_API_URL
 
   const maxMembers = process.env.OPENCODE_ENSEMBLE_MAX_MEMBERS

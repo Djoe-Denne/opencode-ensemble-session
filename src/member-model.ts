@@ -1,4 +1,5 @@
 import type { Database } from "./db"
+import { assertMissionMemberModel } from "./mission-policy"
 
 /** A parsed provider/model pair, as accepted by session.promptAsync. */
 export interface ParsedModel {
@@ -31,8 +32,9 @@ export function getMemberModel(db: Database, teamId: string, memberName: string)
 
 /** Read a stored native model/variant pair for all subsequent member deliveries. */
 export function getMemberPromptModel(db: Database, teamId: string, memberName: string): { model?: ParsedModel; variant?: string } {
-  const row = db.query("SELECT model, model_variant FROM team_member WHERE team_id = ? AND name = ?")
-    .get(teamId, memberName) as { model: string | null; model_variant: string | null } | null
+  const row = db.query("SELECT model, model_variant, model_routing FROM team_member WHERE team_id = ? AND name = ?")
+    .get(teamId, memberName) as { model: string | null; model_variant: string | null; model_routing: string | null } | null
+  assertMissionMemberModel(db, teamId, row)
   const model = row?.model ? parseModelId(row.model) : undefined
   if (!model) return {}
   return { model, ...(row?.model_variant ? { variant: row.model_variant } : {}) }

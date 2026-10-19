@@ -17,7 +17,8 @@ export async function executeTeamHandoff(deps: ToolDeps, args: { agent: string }
     : deps.db.query("UPDATE team SET handoff_pending = ? WHERE id = ? AND handoff_pending IS NULL RETURNING id").get(args.agent, team.teamId)
   if (!reserved) throw new Error("A handoff is already pending for this session; wait for completion or recovery")
   try {
-    await deps.client.continuity.switchAgent({ sessionID: sessionId, agent: args.agent }, signal)
+    const finalResponse = team.role === "member" && (deps.db.query("SELECT report_mode FROM team_member WHERE session_id = ?").get(sessionId) as { report_mode: string } | null)?.report_mode === "final_response"
+    await deps.client.continuity.switchAgent({ sessionID: sessionId, agent: args.agent, ...(finalResponse ? { permission: [] } : {}) }, signal)
     await reconcileSessionAgent(deps, sessionId)
   } catch (error) {
     // switchAgent may have committed even when a tool cancellation loses its response.

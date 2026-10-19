@@ -1,4 +1,5 @@
 import type { Database } from "./db"
+import { hasCurrentTaskReport } from "./member-report"
 import type { MemberRegistry, DescendantTracker } from "./state"
 import type { PluginClient } from "./types"
 import { notifyLead } from "./notify"
@@ -65,11 +66,13 @@ export function handleSessionStatusEvent(
   const team = db.query("SELECT status FROM team WHERE id = ?").get(entry.teamId) as { status: string } | null
   if (!team || team.status === "archived") return undefined
 
-  const member = db.query("SELECT status, execution_status FROM team_member WHERE team_id = ? AND name = ?")
-    .get(entry.teamId, entry.memberName) as { status: string; execution_status: string } | null
+  const member = db.query("SELECT status, execution_status, report_mode FROM team_member WHERE team_id = ? AND name = ?")
+    .get(entry.teamId, entry.memberName) as { status: string; execution_status: string; report_mode: string } | null
   if (!member) return undefined
 
   if (status === "idle") {
+    // A later idle/status event cannot erase a terminal execution failure.
+    if (member.status === "shutdown" || (member.status === "error" && ["failed", "timed_out", "cancelled"].includes(member.execution_status))) return undefined
     const newStatus = member.status === "shutdown_requested" ? "shutdown" : "ready"
     if (member.status === newStatus) return undefined
     db.run(
@@ -78,16 +81,13 @@ export function handleSessionStatusEvent(
     )
     // A gracefully shut-down member has actually stopped now — release any
     // tasks they left in_progress back to the pool so nothing is stranded (issue #27).
-    if (newStatus === "shutdown") {
+    if (newStatus === "shutdown" && member.report_mode !== "final_response") {
       releaseMemberTasks(db, entry.teamId, entry.memberName)
     }
-    // Mark teammate as having reported if they sent at least one message to lead (issue #3).
-    // Set on busy→ready transition so Q&A messages during work don't prematurely block delivery.
+    // Only a structured final result in this work period is a report. Questions
+    // and earlier reports must not disable delivery or suppress a missing report.
     if (member.status === "busy" && newStatus === "ready") {
-      const leadMsgCount = (db.query(
-        "SELECT COUNT(*) as c FROM team_message WHERE team_id = ? AND from_name = ? AND to_name = 'lead'"
-      ).get(entry.teamId, entry.memberName) as { c: number }).c
-      if (leadMsgCount > 0) {
+      if (hasCurrentTaskReport(db, entry.teamId, entry.memberName)) {
         db.run(
           "UPDATE team_member SET reported_to_lead = 1 WHERE team_id = ? AND name = ?",
           [entry.teamId, entry.memberName]
@@ -100,8 +100,8 @@ export function handleSessionStatusEvent(
       // Reset reported_to_lead so re-activated teammates can receive messages again (issue #3).
       // INVARIANT: every promptAsync delivery path must check hasReportedCompletion() to prevent loops.
       db.run(
-        "UPDATE team_member SET status = 'busy', execution_status = 'running', reported_to_lead = 0, time_updated = ? WHERE team_id = ? AND name = ?",
-        [Date.now(), entry.teamId, entry.memberName]
+        "UPDATE team_member SET status = 'busy', execution_status = 'running', reported_to_lead = 0, last_nudged_at = NULL, report_generation = report_generation + 1, report_started_at = ?, report_message_cursor = (SELECT COALESCE(MAX(rowid), 0) FROM team_message), time_updated = ? WHERE team_id = ? AND name = ?",
+        [Date.now(), Date.now(), entry.teamId, entry.memberName]
       )
       return { memberName: entry.memberName, teamId: entry.teamId, from: member.status, to: "busy" }
     }
@@ -222,13 +222,10 @@ export function checkToolIsolation(
  * Returns true if the member is idle/ready and has no outbound messages.
  */
 export function shouldNudgeIdleMember(db: Database, teamId: string, memberName: string): boolean {
-  const member = db.query("SELECT status, spawn_pending FROM team_member WHERE team_id = ? AND name = ?")
-    .get(teamId, memberName) as { status: string; spawn_pending: number } | null
-  if (!member || member.status !== "ready" || member.spawn_pending) return false
-
-  const msg = db.query("SELECT id FROM team_message WHERE team_id = ? AND from_name = ? AND (to_name = 'lead' OR to_name IS NULL) LIMIT 1")
-    .get(teamId, memberName) as { id: string } | null
-  return !msg
+  const member = db.query("SELECT status, spawn_pending, report_mode FROM team_member WHERE team_id = ? AND name = ?")
+    .get(teamId, memberName) as { status: string; spawn_pending: number; report_mode: string } | null
+  if (!member || member.status !== "ready" || member.spawn_pending || member.report_mode === "final_response") return false
+  return !hasCurrentTaskReport(db, teamId, memberName)
 }
 
 /** Shape of an error attached to a session.error event. Subset of the SDK's union. */

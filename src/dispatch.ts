@@ -4,6 +4,7 @@ import { claimTask } from "./tools/team-claim"
 import { executeTeamSpawn } from "./tools/team-spawn"
 import { getMemberPromptModel } from "./member-model"
 import { log } from "./log"
+import { assertMissionAdmission } from "./mission-policy"
 
 /** A task candidate the pool can hand to an idle member. */
 export interface PoolTask {
@@ -29,7 +30,9 @@ function priorityRank(priority: string): number {
 export function pickNextTask(db: Database, teamId: string, agentType: string, limit = MAX_CLAIM_ATTEMPTS): PoolTask[] {
   const rows = db.query(
     `SELECT id, content, agent, priority FROM team_task
-     WHERE team_id = ? AND status = 'pending' AND assignee IS NULL
+      WHERE team_id = ? AND status = 'pending' AND assignee IS NULL
+        AND classification_status IN ('not_required', 'completed')
+        AND team_id IN (SELECT id FROM team WHERE mission_state != 'critical')
        AND (agent IS NULL OR agent = ?)
      ORDER BY time_created ASC`,
   ).all(teamId, agentType) as Array<{ id: string; content: string; agent: string | null; priority: string }>
@@ -77,13 +80,17 @@ const scaleInFlight = new Set<string>()
  */
 export function pumpTeam(deps: ToolDeps, teamId: string): Promise<void> {
   if (!deps.config.autoDispatch && !deps.config.autoScale) return Promise.resolve()
+  try { assertMissionAdmission(deps.db, teamId) } catch (error) {
+    log(`mission-policy:admission-blocked team=${teamId} ${String(error)}`)
+    return Promise.resolve()
+  }
 
   // Feed phase: keep assigning while some idle member takes a task.
   let assigned = true
   while (assigned && deps.config.autoDispatch) {
     assigned = false
     const idle = deps.db.query(
-      "SELECT name FROM team_member WHERE team_id = ? AND status = 'ready' AND spawn_pending = 0",
+      "SELECT name FROM team_member WHERE team_id = ? AND status = 'ready' AND spawn_pending = 0 AND report_mode = 'team_message'",
     ).all(teamId) as Array<{ name: string }>
     for (const member of idle) {
       if (dispatchNextTask(deps, teamId, member.name)) {
@@ -103,7 +110,9 @@ export function pumpTeam(deps: ToolDeps, teamId: string): Promise<void> {
 
   const task = deps.db.query(
     `SELECT id, content, agent FROM team_task
-     WHERE team_id = ? AND status = 'pending' AND assignee IS NULL
+      WHERE team_id = ? AND status = 'pending' AND assignee IS NULL
+        AND classification_status IN ('not_required', 'completed')
+        AND team_id IN (SELECT id FROM team WHERE mission_state != 'critical')
      ORDER BY (agent IS NULL OR agent = 'build') DESC,
        CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
        time_created ASC`,
@@ -158,9 +167,10 @@ function dispatchMessage(task: PoolTask): string {
 export function dispatchNextTask(deps: ToolDeps, teamId: string, memberName: string): string | null {
   if (!deps.config.autoDispatch) return null
 
-  const member = deps.db.query("SELECT agent, status, spawn_pending FROM team_member WHERE team_id = ? AND name = ?")
-    .get(teamId, memberName) as { agent: string; status: string; spawn_pending: number } | null
-  if (!member || member.status !== "ready" || member.spawn_pending !== 0) return null
+  const member = deps.db.query("SELECT agent, status, spawn_pending, report_mode FROM team_member WHERE team_id = ? AND name = ?")
+    .get(teamId, memberName) as { agent: string; status: string; spawn_pending: number; report_mode: string } | null
+  if (!member || member.status !== "ready" || member.spawn_pending !== 0 || member.report_mode === "final_response") return null
+  if (deps.db.query("SELECT id FROM team_task WHERE team_id = ? AND assignee = ? AND status = 'in_progress' LIMIT 1").get(teamId, memberName)) return null
 
   const entry = deps.registry.getByName(teamId, memberName)
   if (!entry) return null

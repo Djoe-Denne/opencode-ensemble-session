@@ -20,11 +20,23 @@ Use Ensemble to coordinate bounded, verifiable missions. The lead chooses the te
 - Distinguish an agent **profile** (expertise, system prompt, permissions, model preference) from Ensemble **lead/member** identity. A profile named `architect` or `orchestrator` does not grant lead privileges.
 - Respect the user's delegation and model constraints. For a small or inseparable task, work directly rather than creating an unnecessary team.
 
+## Command-Prepared Missions (V2)
+
+When the host exposes `/ensemble-mission`, the user can prepare an objective,
+discuss providers/models with `config`, and approve the presented policy with
+`start`. The persisted mission grid then owns model/variant selection; do not
+bypass it with explicit models, altered task scores or `team_message` controls.
+Write chat corrections to the mission draft rather than retaining them only in
+context. Do not invoke `start` on the user's behalf. Read
+[mission policy](references/mission-policy.md) for the approval and revision flow.
+Direct `team_create` remains the legacy workflow below.
+
 ## Lead Workflow
 
 1. Define each mission's scope, deliverable, ownership boundaries, and verification criteria.
 2. Create a team with `team_create` when coordination is justified.
 3. Add tasks with `team_tasks_add`. Record the real returned IDs; use `depends_on` only for tasks already in this team. A dependent task must be unblocked before it can be claimed.
+   When classification is enabled, wait for notifications only for tasks needing classification. Fully manual scores make a task `not_required` immediately with zero attempts and no classifier notification; observe that board state once instead of waiting for a notification that will never arrive.
 4. Choose a profile, context strategy, worktree policy, and model strategy for each mission. Discover available profiles/models rather than assuming example names exist.
 5. Spawn teammates one at a time, waiting for each tool result; their work runs asynchronously. Use `claim_task` for a claimable implementation task. Built-in `explore`/`plan` spawns do not auto-claim tasks.
 6. Use `plan_approval: true` when a mission or project policy calls for a reviewed implementation plan. Approve/reject through `team_message`.
@@ -50,8 +62,8 @@ Read [context continuity](references/context-continuity.md) before using inherit
 - Built-in `explore` and `plan` are read-only profiles and skip automatic worktree creation. For a custom read-only profile, configure native edit/shell permissions and pass `worktree: false` explicitly. A name such as `reviewer` is not a permission policy.
 - Writers use isolated worktrees by default. Inherited cross-directory moves require clean source/destination directories at the same Git HEAD. Integrate divergent commits before creating the inherited worktree; do not transfer files implicitly.
 - Handoff preserves the directory. Turning a shared-directory researcher into a writer does not add isolation; fork an isolated worker when that is what the task needs.
-- Set `model` when an explicit selection is required by the task, budget, or project. Otherwise use the configured Ensemble/native selection. A fork preserves the source's native model unless an explicit spawn model or Ensemble model-assignment setting overrides it.
-- Native handoff keeps the session's selected model, independently of the target profile's default. The lead can separately use `team_message({ to, model })` to change a teammate's model.
+- In legacy teams, set `model` when an explicit selection is required by the task, budget, or project. Otherwise use the configured Ensemble/native selection. A fork preserves the source's native model unless an explicit spawn model or Ensemble model-assignment setting overrides it. Command-prepared missions instead enforce their approved grid.
+- Native handoff keeps the session's selected model, independently of the target profile's default. In legacy teams the lead can separately use `team_message({ to, model })` to change a teammate's model; governed missions require a policy revision.
 - IDs such as `openai/gpt-5-mini` and `anthropic/claude-opus-4-7` are illustrative, not required defaults. Verify available IDs and match capabilities to the mission.
 
 ## Project Integration
@@ -65,6 +77,7 @@ For setup, copyable `AGENTS.md` guidance, and an optional agent profile, read [p
 ## Load References As Needed
 
 - Installing or integrating into project/agent instructions: [project integration](references/project-integration.md).
+- Preparing and configuring a command-governed mission: [mission policy](references/mission-policy.md).
 - Reusing native history or changing profiles: [context continuity](references/context-continuity.md).
 - Choosing an optional team shape: [coordination patterns](references/coordination-patterns.md).
 - Writing a mission prompt: [prompt recipes](references/prompt-recipes.md).

@@ -318,6 +318,12 @@ Archived-team purge is intentionally two-step. First call `team_cleanup` with `p
 
 ## Session inheritance (V2)
 
+Restrictive QA/reviewer profiles can set `report_mode: "final_response"` in
+`team_spawn` to return a native candidate for lead review without gaining
+team-tool permissions. Retrieval never completes tasks or releases dependencies;
+the lead must review and integrate before closing the prerequisite. See
+[Worker reporting and lead review](docs/worker-reporting.md).
+
 `team_spawn` starts fresh unless `context` is supplied. To give a worker a scout's actual native history:
 
 ```javascript
@@ -485,6 +491,7 @@ All fields are optional. Missing fields use defaults.
 | `autoDispatch` | `false` | Pull-based pool: when a member goes idle, push it the next eligible board task. Order: agent affinity (`@agent`) first, then priority, then FIFO. |
 | `autoScale` | `false` | Spawn `pool-<N>` workers to fill `maxActiveMembers` while unassigned work remains. Agent type from task affinity; pair with `modelPool` + `modelAssignment: "rotate"` to spread across providers. |
 | `modelRouting` | `{ "beta": 0.35, "models": [] }` | Deterministic minimum-cost routing from task complexity/risk and a scored model/effort catalogue. Explicit `model` wins; no scores preserves existing selection. |
+| `missionPolicy` | `null` | Complete default 2D policy for command-prepared missions. Null seeds a reviewable draft from the available catalogue; approval is still required. |
 
 ### Environment variables
 
@@ -513,7 +520,27 @@ STALL_THRESHOLD_MS=0
 OPENCODE_ENSEMBLE_MAX_MEMBERS=4
 ```
 
-### Deterministic complexity/risk routing
+### Command-prepared missions (V2)
+
+```text
+/ensemble-mission Implement an isolated cache with compatibility tests
+/ensemble-mission config
+/ensemble-mission start
+```
+
+Prepare a mission, discuss providers and model choices in the chat, then approve
+the presented policy with `start`. Each mission owns a versioned
+`.opencode/missions/<team-id>/model-policy.json`. A deterministic complexity × risk
+grid replaces cost/intelligence arbitration for these missions. Explicit model
+overrides cannot bypass it; auto-dispatch and auto-scale wait for approval.
+
+No particular planner or orchestrator profile is required. Project-specific
+scoring floors, workflows and verification rules remain in the project. Requires
+the public V2 command/model APIs; legacy `team_create` behavior is unchanged.
+See [mission policy](docs/mission-policy.md), including the command-origin trust
+limitation and revision/rollback guarantees.
+
+### Legacy deterministic complexity/risk routing
 
 Merge the supplied 17-candidate [catalogue](examples/ensemble.model-routing.json)
 into your plugin `ensemble.json`. Supply optional integer `complexity` and
@@ -527,6 +554,20 @@ an eligible fallback, preferring another provider. It makes no LLM/JEV calls,
 does not change review policy, and does not auto-retry on its fallback.
 The cost rule is not provider load balancing. See [routing details](docs/model-routing.md)
 and the opt-in [`ensemble-model-catalogue` maintenance skill](skills/ensemble-model-catalogue/SKILL.md).
+
+### Mission-scoped classification
+
+`team_create` detects compatible classification tools once and freezes the
+protocol for the mission. Choose `classification.helperModel` explicitly for
+JEV/x86 invocation, or `generalModel` for the tool-denied general classifier;
+no model or fallback is activated implicitly. Internal scores remain **0–1**.
+Unclassified tasks cannot be claimed or auto-dispatched.
+
+`supervised` is the default; `mission_mode: "long_run"` continues independent
+work within explicit retry/fallback and budget limits, stopping new admission
+on critical budget or cleanup failures without aborting existing workers.
+See [task classification](docs/task-classification.md) for configuration,
+provenance, user-approved policy updates and restart recovery.
 
 ## Best practices
 

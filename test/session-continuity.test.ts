@@ -62,6 +62,18 @@ describe("Ensemble session continuity", () => {
     await spawn({ mode: "checkpoint", from: "scout", messageID: "msg_C" })
     expect(calls[0]).toBe("fork:ses_scout:msg_C")
   })
+  test("restricted forks and handoffs do not reinstate Ensemble tool grants", async () => {
+    const permissions: unknown[] = []
+    const switchAgent = deps.client.continuity!.switchAgent
+    deps.client.continuity!.switchAgent = async (options, signal) => {
+      permissions.push(options.permission)
+      await switchAgent(options, signal)
+    }
+    await spawn({ mode: "fork", from: "scout" }, { report_mode: "final_response", worktree: false })
+    expect(permissions).toEqual([[]])
+    await executeTeamHandoff(deps, { agent: "qa" }, "ses_child1")
+    expect(permissions).toEqual([[], []])
+  })
   test("compact_fork completes compaction before forking an idle member", async () => {
     await spawn({ mode: "compact_fork", from: "scout" })
     expect(calls.slice(0, 2)).toEqual(["compact", "fork:ses_scout:all"])

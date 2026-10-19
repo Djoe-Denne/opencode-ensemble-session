@@ -72,6 +72,24 @@ describe("config", () => {
     expect(loadConfig(tmpDir).modelRouting).toEqual(modelRouting)
   })
 
+  test("classification project overrides retain the globally chosen helper model", () => {
+    const globalDir = path.join(process.env.HOME!, ".config", "opencode")
+    const projectDir = path.join(tmpDir, ".opencode")
+    mkdirSync(globalDir, { recursive: true })
+    mkdirSync(projectDir, { recursive: true })
+    writeFileSync(path.join(globalDir, "ensemble.json"), JSON.stringify({ classification: { helperModel: "fixture/flash", helperVariant: "medium" } }))
+    writeFileSync(path.join(projectDir, "ensemble.json"), JSON.stringify({ classification: { timeoutMs: 1000 } }))
+    expect(loadConfig(tmpDir).classification).toMatchObject({ mode: "auto", helperModel: "fixture/flash", helperVariant: "medium", timeoutMs: 1000 })
+  })
+
+  test("invalid classification settings preserve unrelated configuration", () => {
+    const dir = path.join(tmpDir, ".opencode")
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, "ensemble.json"), JSON.stringify({ timeoutMs: 123, classification: { mode: "guess" } }))
+    expect(loadConfig(tmpDir).classification).toEqual(DEFAULT_CONFIG.classification)
+    expect(loadConfig(tmpDir).timeoutMs).toBe(123)
+  })
+
   test("project routing beta override preserves the global catalogue", () => {
     const globalDir = path.join(process.env.HOME!, ".config", "opencode")
     const projectDir = path.join(tmpDir, ".opencode")

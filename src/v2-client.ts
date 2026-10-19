@@ -158,6 +158,10 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
         const text = joinParts(options.parts)
         return ctx.session.prompt({ sessionID: options.sessionID, text, delivery: "queue", ...(options.metadata ? { metadata: options.metadata } : {}) })
       },
+      switchModel: async options => ctx.session.switchModel({
+        sessionID: options.sessionID,
+        model: { providerID: options.model.providerID, id: options.model.modelID, ...(options.variant ? { variant: options.variant } : {}) },
+      }),
       abort: async (options) => ctx.session.interrupt({ sessionID: options.sessionID }),
       status: async () => {
         const active = await ctx.session.active()
@@ -167,7 +171,12 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
       },
       messages: async (options) => {
         const messages = await ctx.session.context({ sessionID: options.sessionID })
-        return { data: messages as Array<{ info: unknown; parts: unknown[] }> }
+        // V2 context contains native typed messages, not V1 {info, parts} rows.
+        return { data: messages.map(message => {
+          const value = message as Record<string, unknown>
+          if (value.info) return value as { info: unknown; parts: unknown[] }
+          return { info: { ...value, role: value.type }, parts: Array.isArray(value.content) ? value.content : [] }
+        }) }
       },
       get: async (options) => {
         const data = await ctx.session.get({ sessionID: options.sessionID })
