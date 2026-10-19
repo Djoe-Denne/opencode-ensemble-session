@@ -1,0 +1,18 @@
+{
+  "at": "2026-10-19T16:35:05.270Z",
+  "method": "GET",
+  "path": "/api/session/active",
+  "status": 200,
+  "nativeMeaning": "Sessions absent from the result are inactive (OpenAPI session.active description)",
+  "ownedSessions": [
+    { "id": "ses_eaafc7450ffexcIlOzpXld9JwL", "present": false, "active": null },
+    { "id": "ses_eaafc7334ffekwcVcBsbnlqaFq", "present": false, "active": null },
+    { "id": "ses_eaafc7226ffeNCDAIqR4L2knwy", "present": false, "active": null },
+    { "id": "ses_eaafc709affeKPsYXSIvaW8TAU", "present": false, "active": null },
+    { "id": "ses_eaafc6f78ffeyUr4xch04rBHAs", "present": false, "active": null },
+    { "id": "ses_eaafc6e39ffezVWaCw5FUdGB9X", "present": false, "active": null },
+    { "id": "ses_eaafc6d2dffep4UYS4Faa9HWfZ", "present": false, "active": null }
+  ],
+  "owner": "sp1-permissions",
+  "runID": "2026-10-19T16-34-18.154Z"
+}
