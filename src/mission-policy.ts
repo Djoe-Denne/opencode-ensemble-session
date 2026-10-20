@@ -83,8 +83,8 @@ function readPolicyDraft(record: PolicyRow): DraftRead {
         if (typeof block.method === "string" && block.mode === undefined) block.mode = block.method === "manual" ? "off" : block.method
         const limits = block.limits !== null && typeof block.limits === "object" && !Array.isArray(block.limits)
           ? block.limits as Record<string, unknown> : undefined
-        if (limits && limits.timeoutMs !== undefined && block.timeoutMs === undefined) {
-          block.timeoutMs = limits.timeoutMs
+        if (limits && limits.timeoutMs !== undefined) {
+          if (block.timeoutMs === undefined) block.timeoutMs = limits.timeoutMs
           delete limits.timeoutMs
         }
         classificationOverride = block as Partial<MissionClassificationConfig>
@@ -108,7 +108,8 @@ function readPolicy(record: PolicyRow): MissionPolicySnapshot {
   const draft = readPolicyDraft(record)
   const hash = createHash("sha256").update(JSON.stringify(draft.policy)).digest("hex")
   return { teamId: record.team_id, policyPath: record.policy_path, objective: record.objective, revision: record.revision, policy: draft.policy, hash,
-    presentationToken: record.time_updated, approved: record.approved_hash === hash, warnings: draft.warnings }
+    presentationToken: record.time_updated, approved: record.approved_hash === hash, warnings: draft.warnings,
+    ...(draft.classificationOverride ? { classificationOverride: draft.classificationOverride } : {}) }
 }
 
 function seedPolicy(deps: ToolDeps): MissionModelPolicy {
@@ -202,6 +203,7 @@ export function approveMission(deps: ToolDeps, teamId: string, sessionId: string
     throw new Error("Mission configuration changed while start was pending; present config and start again")
   }
   const snapshot = readPolicy(record)
+  if (snapshot.classificationOverride) throw new Error("The draft carries an unapplied classification block; run /ensemble-mission config again to apply and present it")
   if (snapshot.hash !== record.presented_hash) throw new Error("Mission policy changed; run /ensemble-mission config again before start")
   const available = availableModels ?? deps.config.modelRouting.models.filter(model => model.available).map(model => ({ id: model.id,
     ...(model.reasoningEffort && model.reasoningEffort !== "default" ? { variant: model.reasoningEffort } : {}) }))
@@ -264,6 +266,7 @@ export function getPresentedMission(deps: ToolDeps, teamId: string, sessionId: s
   const record = row(deps.db, teamId)
   if (!record?.presented_hash) throw new Error("Run /ensemble-mission config before start")
   const snapshot = readPolicy(record)
+  if (snapshot.classificationOverride) throw new Error("The draft carries an unapplied classification block; run /ensemble-mission config again to apply and present it")
   if (snapshot.hash !== record.presented_hash) throw new Error("Mission policy changed; run config before start")
   return snapshot
 }
