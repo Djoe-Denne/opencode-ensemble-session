@@ -4,7 +4,7 @@ import { requireTeamMember } from "./shared"
 import { sendMessage, markDelivered, hasReportedCompletion } from "../messaging"
 import { parseModelId, getMemberPromptModel } from "../member-model"
 import { log } from "../log"
-import { getMissionClassification, resolveMissionClassification, type MissionClassificationConfig } from "../mission-classification"
+import { applyMissionClassification, type MissionClassificationConfig } from "../mission-classification"
 import { classifyBoardTasks } from "../board-classification"
 import { pumpTeam } from "../dispatch"
 import { hasMissionPolicy } from "../mission-policy"
@@ -31,14 +31,7 @@ export async function executeTeamMessage(
   if (args.classification !== undefined) {
     if (teamInfo.role !== "lead") throw new Error("Only the lead can update mission classification")
     if (args.to !== "lead" || args.model || args.approve || args.reject || args.force) throw new Error("Classification updates must target lead and cannot include other control operations")
-    const frozen = getMissionClassification(deps.db, teamInfo.teamId, true)
-    const inherited = frozen ? { ...frozen, mode: frozen.mode ?? (frozen.method === "manual" ? "off" as const : frozen.method) } : deps.config.classification
-    const policy = await resolveMissionClassification({ ...deps, config: { ...deps.config, classification: inherited } }, args.classification)
-    deps.db.transaction(() => {
-      deps.db.run("UPDATE team SET classification_policy = ?, mission_mode = ?, mission_state = 'running', time_updated = ? WHERE id = ?", [JSON.stringify(policy), policy.missionMode ?? "supervised", Date.now(), teamInfo.teamId])
-      deps.db.run("UPDATE team_task SET classification_status = CASE WHEN ? = 'manual' AND NOT (? = 1 AND task_type = 'x86') THEN 'not_required' ELSE 'pending' END, classification_result = NULL, classification_token = NULL, classification_until = NULL, classification_error = NULL, classification_attempts = 0 WHERE team_id = ? AND classification_status IN ('pending', 'running', 'blocked') AND status IN ('pending', 'blocked') AND assignee IS NULL", [policy.method, policy.specialized ? 1 : 0, teamInfo.teamId])
-      sendMessage(deps.db, { teamId: teamInfo.teamId, from: "system", to: "lead", content: `Mission classification changed explicitly: ${policy.method}, tool=${policy.toolId || "none"}, helper=${policy.helperModel || "unset"}. ${policy.reason}` })
-    })()
+    const policy = await applyMissionClassification(deps, teamInfo.teamId, args.classification)
     void classifyBoardTasks(deps, teamInfo.teamId).catch(error => { log(`classification:drain-failed ${String(error)}`) })
     void pumpTeam(deps, teamInfo.teamId)
     if (!args.text) return `Mission classification updated: ${policy.reason}`

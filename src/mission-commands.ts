@@ -6,7 +6,7 @@ import { findTeamBySession } from "./types"
 import { checkToolIsolation } from "./hooks"
 import { pumpTeam } from "./dispatch"
 import { classifyBoardTasks } from "./board-classification"
-import { classificationReadiness, getMissionClassification } from "./mission-classification"
+import { applyMissionClassification, classificationReadiness, getMissionClassification } from "./mission-classification"
 import { log } from "./log"
 import { calibrationWarnings, describeMissionModel } from "./variant-effort"
 
@@ -57,6 +57,7 @@ export async function registerMissionCommands(host: MissionCommandHost, deps: To
         if (command.action === "prepare") {
           const mission = await prepareMission(deps, input.sessionID, command.text)
           const proposal = openMissionConfiguration(deps, mission.teamId, input.sessionID, true)
+          await healDraftClassification(deps, proposal)
           await deliverProposal(host, deps, proposal, { ...input.prompt, sessionID: input.sessionID, delivery: input.delivery,
             text: `${formatProposal(deps, proposal)}\n\nPrepare a bounded plan using this project's instructions. No particular planner profile or agent sequence is required. Evaluate complexity and risk separately using the mission criteria. You may publish proposed tasks, but no Ensemble worker or classifier can start before approval. Present the actual policy and task preview to the user; invite chat corrections or the user's /ensemble-mission start command. Do not invoke start on the user's behalf.` })
           return
@@ -65,8 +66,9 @@ export async function registerMissionCommands(host: MissionCommandHost, deps: To
         if (!team || team.role !== "lead") throw new Error("Only the lead of a prepared mission can use config or start")
         if (command.action === "config") {
           const proposal = openMissionConfiguration(deps, team.teamId, input.sessionID, true)
+          await healDraftClassification(deps, proposal)
           const instructions = command.text
-            ? `User corrections (not execution approval):\n${command.text}\n\nUpdate only this mission's draft to represent these corrections. Keep the policy structurally valid and providers, exact native models and variants consistent. Do not change global settings. Explain the diff and ask the user to run /ensemble-mission config again to present the edited policy before start.`
+            ? `User corrections (not execution approval):\n${command.text}\n\nUpdate only this mission's draft to represent these corrections. Classification corrections belong in a top-level "classification" object of the draft; config applies it and strips it from the policy. Never add fields outside the policy schema (version, providers, assessment, complexityBands, riskBands, groups, matrix). Keep the policy structurally valid and providers, exact native models and variants consistent. Do not change global settings. Explain the diff and ask the user to run /ensemble-mission config again to present the edited policy before start.`
             : "Present this authoritative policy and task preview in the chat. No new execution is admitted until the user runs /ensemble-mission start. Subsequent chat corrections must be written to the mission draft and presented again with config; do not keep them only in context."
           await deliverProposal(host, deps, proposal, { ...input.prompt, sessionID: input.sessionID, delivery: input.delivery, resume: Boolean(command.text), text: `${formatProposal(deps, proposal)}\n\n${instructions}` }, !command.text)
           return
@@ -99,6 +101,17 @@ async function deliverProposal(host: MissionCommandHost, deps: ToolDeps, proposa
   }
 }
 
+/** Apply a classification block extracted from the draft; any failure becomes a draft note. */
+async function healDraftClassification(deps: ToolDeps, proposal: MissionPolicySnapshot): Promise<void> {
+  if (!proposal.classificationOverride) return
+  try {
+    const applied = await applyMissionClassification(deps, proposal.teamId, proposal.classificationOverride)
+    proposal.warnings.push(`Draft classification applied: method ${applied.method}; general ${applied.generalModel || "unset"}; helper ${applied.helperModel || "unset"}.`)
+  } catch (error) {
+    proposal.warnings.push(`Draft classification block ignored: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 function classificationProposal(deps: ToolDeps, teamId: string): string[] {
   const policy = getMissionClassification(deps.db, teamId)
   if (!policy) return []
@@ -109,7 +122,7 @@ function classificationProposal(deps: ToolDeps, teamId: string): string[] {
     `Classification: method ${policy.method}; helper ${policy.helperModel || "unset"}; general ${policy.generalModel || "unset"}; fallbacks ${policy.fallbacks?.length ?? 0}; retries ${retries ?? "unset"}; maxAttempts ${maxAttempts ?? "unset"}; timeoutMs ${policy.timeoutMs}.`,
     ...(readiness.ready ? [] : [
       `Classification blocked: ${readiness.reason}`,
-      "Lift this block with team_message classification, setting helperModel or generalModel, or by setting classification mode to off. Run /ensemble-mission config again before start.",
+      "Lift this block by adding a top-level \"classification\" object to the draft (for example {\"mode\":\"general\",\"generalModel\":\"provider/model\"}) and running /ensemble-mission config again; config applies it and strips it from the policy. Setting its mode to off keeps manual scores.",
     ]),
   ]
 }
@@ -134,6 +147,7 @@ function formatProposal(deps: ToolDeps, proposal: MissionPolicySnapshot): string
   return [
     "Mission policy proposal — execution is paused, not approved.", `Objective: ${proposal.objective}`,
     `Draft: ${proposal.policyPath}`, `Proposal hash: ${proposal.hash}`, `Allowed providers: ${policy.providers.join(", ")}`,
+    ...proposal.warnings.map(warning => `Draft repair: ${warning}`),
     "Risk and complexity remain independent integers 0–100. The first candidate is primary; alternatives are not automatic retries.",
     ...cells, ...groups, ...calibration,
     "Assessment criteria:", `Complexity: ${policy.assessment.complexity.join(" → ")}`, `Risk: ${policy.assessment.risk.join(" → ")}`,

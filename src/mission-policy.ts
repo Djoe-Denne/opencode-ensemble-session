@@ -5,7 +5,7 @@ import type { Database } from "./db"
 import type { ToolDeps } from "./types"
 import { findTeamBySession } from "./types"
 import { executeTeamCreate } from "./tools/team-create"
-import { classificationReadiness, getMissionClassification } from "./mission-classification"
+import { classificationReadiness, getMissionClassification, type MissionClassificationConfig } from "./mission-classification"
 import { routeMissionModel, validateMissionModelPolicy, type MissionModelPolicy, type MissionPolicyModel, type MissionPolicyRoute } from "./mission-model-policy"
 import { canonicalizeVariantLabel } from "./variant-effort"
 
@@ -23,6 +23,10 @@ export interface MissionPolicySnapshot extends MissionProposal {
   policy: MissionModelPolicy
   presentationToken: number
   approved: boolean
+  /** Non-schema content removed from the draft, plus any draft repairs. */
+  warnings: string[]
+  /** Classification block extracted from the draft; consumed by the config command. */
+  classificationOverride?: Partial<MissionClassificationConfig>
 }
 
 interface PolicyRow {
@@ -45,13 +49,66 @@ function requireLead(deps: ToolDeps, teamId: string, sessionId: string): void {
   if (team?.teamId !== teamId || team.role !== "lead") throw new Error("Only the mission lead can configure or approve its policy")
 }
 
-function readPolicy(record: PolicyRow): MissionPolicySnapshot {
+/** Root fields the model policy schema accepts; everything else is draft noise. */
+const POLICY_FIELDS = ["version", "providers", "assessment", "complexityBands", "riskBands", "groups", "matrix"]
+
+interface DraftRead {
+  policy: MissionModelPolicy
+  warnings: string[]
+  classificationOverride?: Partial<MissionClassificationConfig>
+  dirty: boolean
+}
+
+/**
+ * Read a draft tolerantly. A top-level `classification` object is extracted for
+ * the legitimate classifier-update path (config shape or frozen shape; a
+ * `limits.timeoutMs` is hoisted). Unknown root fields are dropped. Both produce
+ * warnings instead of failures, so a draft edit can never brick the mission.
+ * The remaining policy still validates strictly.
+ */
+function readPolicyDraft(record: PolicyRow): DraftRead {
   if (statSync(record.policy_path).size > 256_000) throw new Error("Mission policy file exceeds 256 KB")
-  const policy: unknown = JSON.parse(readFileSync(record.policy_path, "utf8"))
-  validateMissionModelPolicy(policy)
-  const hash = createHash("sha256").update(JSON.stringify(policy)).digest("hex")
-  return { teamId: record.team_id, policyPath: record.policy_path, objective: record.objective, revision: record.revision, policy, hash,
-    presentationToken: record.time_updated, approved: record.approved_hash === hash }
+  const parsed: unknown = JSON.parse(readFileSync(record.policy_path, "utf8"))
+  const warnings: string[] = []
+  let classificationOverride: Partial<MissionClassificationConfig> | undefined
+  let dirty = false
+  if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const draft = parsed as Record<string, unknown>
+    const classification = draft.classification
+    if (classification !== undefined) {
+      dirty = true
+      delete draft.classification
+      if (classification && typeof classification === "object" && !Array.isArray(classification)) {
+        const block = { ...(classification as Record<string, unknown>) }
+        if (typeof block.method === "string" && block.mode === undefined) block.mode = block.method === "manual" ? "off" : block.method
+        const limits = block.limits !== null && typeof block.limits === "object" && !Array.isArray(block.limits)
+          ? block.limits as Record<string, unknown> : undefined
+        if (limits && limits.timeoutMs !== undefined && block.timeoutMs === undefined) {
+          block.timeoutMs = limits.timeoutMs
+          delete limits.timeoutMs
+        }
+        classificationOverride = block as Partial<MissionClassificationConfig>
+      } else {
+        warnings.push("draft.classification was ignored: it must be an object with mode/generalModel/helperModel fields.")
+      }
+    }
+    Object.keys(draft).forEach(key => {
+      if (!POLICY_FIELDS.includes(key)) {
+        dirty = true
+        delete draft[key]
+        warnings.push(`draft.${key} was removed: the model policy accepts only ${POLICY_FIELDS.join(", ")}.`)
+      }
+    })
+  }
+  validateMissionModelPolicy(parsed)
+  return { policy: parsed as MissionModelPolicy, warnings, ...(classificationOverride ? { classificationOverride } : {}), dirty }
+}
+
+function readPolicy(record: PolicyRow): MissionPolicySnapshot {
+  const draft = readPolicyDraft(record)
+  const hash = createHash("sha256").update(JSON.stringify(draft.policy)).digest("hex")
+  return { teamId: record.team_id, policyPath: record.policy_path, objective: record.objective, revision: record.revision, policy: draft.policy, hash,
+    presentationToken: record.time_updated, approved: record.approved_hash === hash, warnings: draft.warnings }
 }
 
 function seedPolicy(deps: ToolDeps): MissionModelPolicy {
@@ -114,7 +171,15 @@ export function openMissionConfiguration(deps: ToolDeps, teamId: string, session
   deps.db.run("UPDATE mission_policy SET approved_hash = NULL, presented_hash = NULL, time_updated = MAX(time_updated + 1, ?) WHERE team_id = ?", [Date.now(), teamId])
   const current = row(deps.db, teamId)
   if (!current) throw new Error("Mission policy disappeared during configuration")
+  const draft = readPolicyDraft(current)
+  if (draft.dirty) {
+    // Rewrite the draft without the extracted or dropped content so the file on
+    // disk always matches the presented hash and can never re-brick config.
+    writeFileSync(current.policy_path, `${JSON.stringify(draft.policy, null, 2)}\n`)
+  }
   const snapshot = readPolicy(current)
+  snapshot.warnings = [...draft.warnings]
+  if (draft.classificationOverride) snapshot.classificationOverride = draft.classificationOverride
   if (!deferPresentation) markMissionPresented(deps.db, snapshot)
   return snapshot
 }

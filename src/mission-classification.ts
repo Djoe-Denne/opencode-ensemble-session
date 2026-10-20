@@ -4,6 +4,7 @@ import type { NativeClassificationRequest, NativeGeneralClassificationRequest } 
 import type { ClassifierTool } from "./classification-protocol"
 import { discoverJevTool, CLASSIFICATION_PROTOCOL } from "./classification-protocol"
 import { parseModelId } from "./member-model"
+import { sendMessage } from "./messaging"
 
 /** Authorized general/JEV alternatives; never activates a provider or changes worker models. */
 export interface ClassificationFallback {
@@ -152,6 +153,23 @@ export function getMissionClassification(db: Database, teamId: string, allowUnsu
   if (policy.version !== 1 || !["manual", "jev", "general", "x86"].includes(policy.method)) throw new Error("Unsupported mission classification policy")
   if (!allowUnsupportedProtocol && policy.protocol && policy.protocol !== CLASSIFICATION_PROTOCOL) throw new Error("Unsupported persisted classification protocol; an explicit user-approved policy update is required")
   validateMissionClassificationConfig({ ...policy, mode: policy.mode ?? (policy.method === "manual" ? "off" : policy.method) })
+  return policy
+}
+
+/**
+ * Apply an explicit classifier update through the legitimate resolution path:
+ * inherit the frozen policy, resolve the override, then persist it atomically.
+ * Shared by the team_message classification update and the mission config draft.
+ */
+export async function applyMissionClassification(deps: ToolDeps, teamId: string, override: Partial<MissionClassificationConfig>): Promise<MissionClassificationPolicy> {
+  const frozen = getMissionClassification(deps.db, teamId, true)
+  const inherited = frozen ? { ...frozen, mode: frozen.mode ?? (frozen.method === "manual" ? "off" as const : frozen.method) } : deps.config.classification
+  const policy = await resolveMissionClassification({ ...deps, config: { ...deps.config, classification: inherited } }, override)
+  deps.db.transaction(() => {
+    deps.db.run("UPDATE team SET classification_policy = ?, mission_mode = ?, mission_state = 'running', time_updated = MAX(time_updated + 1, ?) WHERE id = ?", [JSON.stringify(policy), policy.missionMode ?? "supervised", Date.now(), teamId])
+    deps.db.run("UPDATE team_task SET classification_status = CASE WHEN ? = 'manual' AND NOT (? = 1 AND task_type = 'x86') THEN 'not_required' ELSE 'pending' END, classification_result = NULL, classification_token = NULL, classification_until = NULL, classification_error = NULL, classification_attempts = 0 WHERE team_id = ? AND classification_status IN ('pending', 'running', 'blocked') AND status IN ('pending', 'blocked') AND assignee IS NULL", [policy.method, policy.specialized ? 1 : 0, teamId])
+    sendMessage(deps.db, { teamId, from: "system", to: "lead", content: `Mission classification changed explicitly: ${policy.method}, tool=${policy.toolId || "none"}, helper=${policy.helperModel || "unset"}. ${policy.reason}` })
+  })()
   return policy
 }
 

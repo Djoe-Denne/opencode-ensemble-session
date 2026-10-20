@@ -146,7 +146,7 @@ describe("native mission command", () => {
     const preview = JSON.stringify(f.prompts.at(-1))
     expect(preview).toContain("Configure helperModel")
     expect(preview).toContain("Classification blocked")
-    expect(preview).toContain("team_message")
+    expect(preview).toContain("object to the draft")
     await expect(f.invoke("start")).rejects.toThrow("Configure helperModel")
     expect(f.deps.db.query("SELECT approved_hash FROM mission_policy").get()).toEqual({ approved_hash: null })
     expect(JSON.stringify(f.prompts.at(-1))).not.toContain("Mission policy approved")
