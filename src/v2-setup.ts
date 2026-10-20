@@ -34,6 +34,7 @@ import type { MissionCommandHost } from "./mission-commands"
 import type { NativeMissionModel } from "./mission-native-models"
 import { nativeMissionModels } from "./mission-native-models"
 import { registerMissionCommands } from "./mission-commands"
+import { bundledSkillsDir, registerPluginSkills, type SkillDefinition } from "./plugin-skills"
 
 /** V2 setup context subset (structural, mock-friendly). */
 export interface V2SetupContext {
@@ -48,6 +49,10 @@ export interface V2SetupContext {
   /** Optional public APIs on older V2 hosts; no command emulation on V1. */
   command?: MissionCommandHost["command"]
   model?: { list(input?: { location?: { directory?: string } }): Promise<{ data: readonly NativeMissionModel[] }> }
+  /** Optional skill registration on capable V2 hosts; skipped silently elsewhere. */
+  skill?: {
+    transform(callback: (editor: { add(definition: SkillDefinition): void }) => unknown): Promise<unknown>
+  }
   event: {
     subscribe(opts?: { signal?: AbortSignal }): AsyncIterable<V2EventLike>
   }
@@ -88,6 +93,8 @@ export interface SetupOptions {
   dbPath?: string
   /** Dashboard port. Defaults to config; 0 disables. */
   dashboardPort?: number
+  /** Skills directory override for tests; defaults to the running package's own. */
+  skillsDir?: string
 }
 
 /** Live handle for a V2 ensemble instance. */
@@ -400,6 +407,14 @@ export async function setupEnsemble(
   const listMissionModels = ctx.model?.list.bind(ctx.model)
   const missionCommands = await registerMissionCommands(ctx, deps, listMissionModels ? async () =>
     nativeMissionModels((await listMissionModels({ location: { directory: ctx.location.directory } })).data) : undefined)
+  // Self-register the shipped skills so instructions follow the running
+  // revision even when an external skills pointer lags behind a deployment.
+  try {
+    const registered = await registerPluginSkills(ctx, options.skillsDir ?? bundledSkillsDir())
+    vlog(`init:skills registered=${registered}`)
+  } catch (error) {
+    vlog(`init:skills:failed ${String(error)}`)
+  }
 
   // Install context/permissions/tools and dependencies before consuming events or
   // waking sessions. Otherwise a startup report can run without its team context,
