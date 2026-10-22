@@ -36,6 +36,12 @@ Resolve unknowns directly or through a focused research mission before committin
 - Forward relevant findings between teammates when it changes their work.
 - Reject unclear plans instead of approving them under time pressure.
 - Stop and ask the user if teammate outputs conflict with each other or with the user's goal.
+- Present a linked checkpoint report between meaningful stages, and a current
+  decision report before every user question: context, evidence, limits, options,
+  consequences and recommendation. Group related questions; do not add approvals.
+- Use Markdown by default. A Canvas requires an owned running preview backend
+  and a verified loopback URL/content; otherwise use Markdown. Track its handle
+  and keep it available during the decision, then stop it when no longer needed.
 
 ## Merge Checklist
 
@@ -53,6 +59,8 @@ Resolve unknowns directly or through a focused research mission before committin
 - Verification commands have passed or blockers are clearly reported.
 - `team_cleanup` has run after review and verification.
 - Final user summary includes what changed, tests run, and any residual risks.
+- Final report is saved/linked, and any owned report preview no longer needed
+  is stopped without affecting unrelated services.
 
 ## Verification Checklist
 

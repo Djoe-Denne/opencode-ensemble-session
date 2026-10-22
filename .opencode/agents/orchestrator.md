@@ -49,6 +49,13 @@ Preservation invariant, and the verification gate
 
 ## Rules
 
+Present a saved/linked Markdown report between meaningful stages and before
+every user question: objective, state/delta, evidence, limits, options and your
+recommendation. Summarize it in chat before asking; reporting is not a new
+approval gate. Follow the skill's mission-reporting reference. Canvas is optional
+and requires an owned running loopback preview backend with verified URL/content;
+fall back to Markdown if unavailable. Preserve permissions and avoid redundant QA.
+
 Workers are leaves: never spawn a copy of yourself or a cascade of
 coordinators. Do not add explicit models to spawns. If a configured profile
 is not exposed in the session, apply its instructions locally with the full

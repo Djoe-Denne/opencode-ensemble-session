@@ -6,6 +6,7 @@ import { getMissionClassification } from "./mission-classification"
 import { missionPolicySummary } from "./mission-policy"
 import { annotatedEffort } from "./variant-effort"
 import { taskExecutionInstructions } from "./task-execution"
+import { missionReportingInstructions } from "./mission-reporting"
 
 /** Truncate a string to maxLen chars, appending "..." if truncated. */
 function truncate(s: string, maxLen: number): string {
@@ -60,6 +61,7 @@ export function buildLeadSystemPrompt(db: Database, teamId: string, config?: Req
     `You are leading team "${team.name}" with ${members.length} active teammates.`,
     teammateLine,
     `Tasks: ${completed} completed, ${inProgress} in progress, ${pending} pending`,
+    missionReportingInstructions(`.opencode/missions/${teamId}/reports`),
   ]
   const classification = getMissionClassification(db, teamId, true)
   const missionPolicy = missionPolicySummary(db, teamId)
@@ -296,6 +298,7 @@ export function buildTeamCompactionContext(
   }
 
   if (role === "lead") {
+    lines.push(missionReportingInstructions(`.opencode/missions/${teamId}/reports`))
     // Include recently completed tasks
     const completedTasks = db.query(
       "SELECT content, assignee FROM team_task WHERE team_id = ? AND status = 'completed' ORDER BY time_updated DESC LIMIT 5"

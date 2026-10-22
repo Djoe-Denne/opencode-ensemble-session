@@ -45,6 +45,16 @@ proportionate (default), or reinforced verification. Surface conflicts for human
 arbitration; never silently weaken security, data integrity or accepted ADRs.
 When generating/adapting QA profiles, use [mission verification](references/mission-verification.md).
 
+Generate/adapt supervisors to present a concise checkpoint between meaningful
+stages and a contextual decision report before every user question. Default to
+Markdown, link the report and summarize the options/recommendation before asking.
+Canvas requires an owned running loopback preview backend with verified URL and
+report content; otherwise use Markdown. Preserve permissions and existing
+scientific independence. This reporting duty does not add approvals or QA runs.
+Use the operational `opencode-ensemble` mission-reporting reference for details.
+Apply this rule to setup's own clarification/approval questions too: the current
+inventory/proposal can serve as the report if it contains the decision context.
+
 Ask the smallest set of consequential questions, usually one to three, using the question tool when available. For example:
 
 - Is the inferred coordination policy correct, or should this project remain single-agent by default until explicitly requested?

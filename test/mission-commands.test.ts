@@ -6,7 +6,9 @@ import { parseMissionCommand, registerMissionCommands, type MissionCommandDefini
 import { setupDeps, historicalModelPolicy } from "./helpers"
 
 const directories: string[] = []
-afterEach(() => directories.splice(0).forEach(path => rmSync(path, { recursive: true, force: true })))
+afterEach(() => {
+  directories.splice(0).forEach(path => { rmSync(path, { recursive: true, force: true }) })
+})
 
 function commandFixture() {
   const deps = setupDeps()
@@ -55,6 +57,28 @@ describe("mission command parsing", () => {
 })
 
 describe("native mission command", () => {
+  test("supplies the report directory and pre-question contract through preparation, config and start", async () => {
+    const f = commandFixture()
+    await registerMissionCommands(f.host, f.deps, f.models)
+    const assertReporting = () => {
+      const { text } = f.prompts.at(-1) as { text: string }
+      const row = f.deps.db.query("SELECT policy_path FROM mission_policy").get() as { policy_path: string }
+      const reportDirectory = join(row.policy_path, "..", "reports")
+      expect(text).toContain("Before every user question")
+      expect(text).toContain("Markdown by default")
+      expect(text).toContain(JSON.stringify(reportDirectory))
+    }
+    await f.invoke("Fix cache")
+    assertReporting()
+    await f.invoke("config")
+    assertReporting()
+    await f.invoke("config keep the current models")
+    assertReporting()
+    await f.invoke("config")
+    await f.invoke("start")
+    assertReporting()
+  })
+
   test("registers one public command and returns its disposable registration", async () => {
     const f = commandFixture()
     const registration = await registerMissionCommands(f.host, f.deps, f.models)
@@ -62,6 +86,17 @@ describe("native mission command", () => {
     await registration?.dispose()
     expect(f.disposed()).toBe(true)
     expect(await registerMissionCommands({ session: f.host.session }, f.deps, f.models)).toBeUndefined()
+  })
+
+  test("also includes reporting in the default autonomous catalogue proposal", async () => {
+    const f = commandFixture()
+    f.deps.config = { ...f.deps.config, missionPolicy: null, startingIntelligence: 20 }
+    await registerMissionCommands(f.host, f.deps, f.models)
+    await f.invoke("Fix cache autonomously")
+    const { text } = f.prompts[0] as { text: string }
+    expect(text).toContain("Default planning intelligence threshold")
+    expect(text).toContain("Before every user question")
+    expect(text).toContain("SUPERVISOR CHECKPOINT REPORTS")
   })
 
   test("prepares a chat proposal without workers, then approves only through start", async () => {

@@ -47,6 +47,17 @@ V1/no-catalogue teams retain the legacy assignment workflow below.
 7. Wait for teammate messages. Use `team_results` for full content when a report is truncated or consequential; use status tools for a specific diagnostic, not a waiting loop.
 8. After completion, use `team_shutdown`, then `team_merge` once the teammate is shut down. Inspect the diff and run the project's verification before `team_cleanup` and before claiming success.
 
+## Supervisor Reports
+
+Present a concise report between meaningful stages and **before every question
+to the user**, including approvals and blockers. Markdown is the default; save
+it in the mission's reports directory, link it and give the decision context in
+chat before asking. A report is not a new approval gate or a reason to rerun QA.
+For Canvas, start/reuse an owned loopback preview backend and verify the working
+URL and report content before presenting it; otherwise fall back to Markdown.
+Read [mission reporting](references/mission-reporting.md) for the template,
+privacy, permission fallback and preview-server lifecycle.
+
 ## Choose Context Deliberately
 
 On V2, choose the smallest appropriate transition:

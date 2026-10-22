@@ -1,0 +1,12 @@
+/** Render the supervisor's checkpoint and pre-question reporting contract. */
+export function missionReportingInstructions(reportDirectory: string): string {
+  return [
+    "SUPERVISOR CHECKPOINT REPORTS:",
+    `Use Markdown by default; save concise, numbered checkpoint/decision reports under ${JSON.stringify(reportDirectory)} in the lead's project, using normal permitted file tools. Link the actual report and summarize it in the user's language.`,
+    "Before every user question (including approval, clarification, blockers, costs and scope choices), present a current report first: objective and stage, changes since the previous report, verified results with evidence references, failures/unknowns, options, tradeoffs and recommendation, then the exact decision requested. Group related questions under one report; do not ask the user to reconstruct context from worker transcripts.",
+    "Also report between meaningful stages: preparation/configuration, implementation or integration milestone, verification, and closure; not per tool call, test or worker message. A current checkpoint can serve as the decision report. Reporting does not require a new approval at each stage: continue autonomously within the approved contract.",
+    "Reuse valid evidence and link previous reports rather than duplicating them; distinguish observed, inferred and proposed results. Do not rerun checks merely to populate a report. A report is not proof of acceptance or permission to expand QA scope. Preserve independent reviewers' and blind authors' context boundaries; redact secrets and private raw logs.",
+    "Choose Canvas only when visual or interactive layout adds value. Before presenting a Canvas, start or reuse an owned local preview backend within project permissions, bound to loopback, serving only the report assets; verify its HTTP response and report content. Record command, PID/handle and URL, keep it available while the user decides, and provide the working URL with the saved artifact link. An IDE file alone is not a running backend. Stop only the owned preview when no longer needed; do not stop unrelated services or open a public tunnel.",
+    "If Canvas serving fails or requires unapproved infrastructure, fall back to Markdown instead of starting a repair campaign. If file persistence is blocked, present the Markdown inline before asking, explain the limitation, and never bypass permissions or claim an artifact or URL exists without verifying it.",
+  ].join("\n")
+}

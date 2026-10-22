@@ -11,6 +11,19 @@ function insertTask(db: Database, teamId: string, id: string, status: string, pr
 }
 
 describe("buildLeadSystemPrompt", () => {
+  test("keeps checkpoint reporting with the lead across compaction, not with workers", () => {
+    const db = setupDb()
+    insertTeam(db, "report-team", "reporting", "lead-sess")
+    insertMember(db, "report-team", "worker", "worker-sess")
+    const lead = buildLeadSystemPrompt(db, "report-team")
+    expect(lead).toContain("Before every user question")
+    expect(lead).toContain(".opencode/missions/report-team/reports")
+    expect(buildTeamCompactionContext(db, "report-team", "lead")).toContain("Before every user question")
+    expect(buildTeammateSystemPrompt(db, "report-team", "worker")).not.toContain("Before every user question")
+    expect(buildTeamCompactionContext(db, "report-team", "member", "worker")).not.toContain("Before every user question")
+    expect(buildLeadSystemPrompt(db, "missing")).toBe("")
+  })
+
   test("includes team name, member names+statuses, task counts, and anti-polling guidance", () => {
     const db = setupDb()
     insertTeam(db, "t1", "alpha", "lead-sess")

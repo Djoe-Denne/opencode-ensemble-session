@@ -10,6 +10,8 @@ import { applyMissionClassification, classificationReadiness, getMissionClassifi
 import { log } from "./log"
 import { calibrationWarnings, describeMissionModel } from "./variant-effort"
 import { verificationInstructions } from "./verification-policy"
+import { missionReportingInstructions } from "./mission-reporting"
+import { dirname, join } from "node:path"
 
 const QA_CONFIG_GUIDANCE = 'Discuss mission QA interactively: light (targeted checks), proportionate (risk-based checks; default), or reinforced (explicit verification plan and independent review). Offer the current/default choice for confirmation, not a new questionnaire per task. Ask only for consequential commands and acceptance criteria. Persist corrections in verification: { level, commands?, acceptance? } before presenting config again. Project safety/mandatory rules cannot be silently waived; surface conflicts for explicit arbitration. Do not impose a fixed QA agent pipeline.'
 
@@ -85,7 +87,7 @@ export async function registerMissionCommands(host: MissionCommandHost, deps: To
         }
         try { await host.session.prompt({ ...input.prompt, sessionID: input.sessionID, delivery: input.delivery,
           resume: !presented.approved,
-          text: `Mission policy approved: revision ${approved.revision}, hash ${approved.hash}.\nObjective: ${approved.objective}\nPolicy: ${approved.policyPath}\nContinue the mission using the approved ${approved.policy.version === 2 ? "catalogue policy; workers choose their implementation reasoning within its bounds" : "grid"} and project verification requirements. Model, variant and provider choices are enforced by Ensemble; do not bypass them with explicit overrides. Retain task ownership and integration barriers, and report evidence and limitations.` }) } catch (error) {
+          text: `Mission policy approved: revision ${approved.revision}, hash ${approved.hash}.\nObjective: ${approved.objective}\nPolicy: ${approved.policyPath}\nContinue the mission using the approved ${approved.policy.version === 2 ? "catalogue policy; workers choose their implementation reasoning within its bounds" : "grid"} and project verification requirements. Model, variant and provider choices are enforced by Ensemble; do not bypass them with explicit overrides. Retain task ownership and integration barriers, and report evidence and limitations.\n${missionReportingInstructions(join(dirname(approved.policyPath), "reports"))}` }) } catch (error) {
           throw new Error(`Mission policy remains approved (v${approved.revision}); supervisor message delivery failed. Check the session/status before explicitly resuming in chat: ${error instanceof Error ? error.message : String(error)}`)
         }
       },
@@ -137,6 +139,7 @@ function formatProposal(deps: ToolDeps, proposal: MissionPolicySnapshot): string
     `Draft: ${proposal.policyPath}`, `Proposal hash: ${proposal.hash}`,
     `Default planning intelligence threshold: ${policy.startingIntelligence}. Classification is opt-in.`,
     verificationInstructions(policy.verification),
+    missionReportingInstructions(join(dirname(proposal.policyPath), "reports")),
     "Each task keeps the same session and model. The worker chooses its implementation reasoning and may raise or lower it within the approved catalogue.",
     ...policy.models.map(model => `${model.id} (${model.reasoningEffort ?? "default"}): intelligence ${model.intelligenceScore}, cost/task ${model.averageCostPerTask}`),
     ...classificationProposal(deps, proposal.teamId), ...proposal.warnings,
@@ -162,6 +165,7 @@ function formatProposal(deps: ToolDeps, proposal: MissionPolicySnapshot): string
     `Draft: ${proposal.policyPath}`, `Proposal hash: ${proposal.hash}`, `Allowed providers: ${policy.providers.join(", ")}`,
     ...proposal.warnings.map(warning => `Draft repair: ${warning}`),
     verificationInstructions(policy.verification),
+    missionReportingInstructions(join(dirname(proposal.policyPath), "reports")),
     "Risk and complexity remain independent integers 0–100. The first candidate is primary; alternatives are not automatic retries.",
     ...cells, ...groups, ...calibration,
     "Assessment criteria:", `Complexity: ${policy.assessment.complexity.join(" → ")}`, `Risk: ${policy.assessment.risk.join(" → ")}`,

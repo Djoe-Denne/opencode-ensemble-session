@@ -27,6 +27,27 @@ This is not a global provider reconfiguration. It controls calls orchestrated by
 Ensemble for this mission; the existing supervisor conversation keeps its native
 OpenCode model.
 
+## Supervisor reports
+
+The lead receives a checkpoint/decision reporting instruction during preparation,
+both configuration flows, start, normal team turns and lead compaction. It writes
+concise Markdown reports in `.opencode/missions/<team-id>/reports/` between
+meaningful stages and presents a current report before every question to the user.
+Reports include context, observed evidence, limitations and, when a decision is
+needed, options/tradeoffs/recommendation. Link the artifact and summarize it before
+asking. Reuse valid evidence; reporting adds neither approval gates nor test runs.
+
+Canvas is optional and requires a running owned loopback preview backend with
+verified HTTP/content and a recorded handle/URL. Keep it accessible while the user
+decides and stop only the owned preview when no longer needed. If serving is
+unavailable, use Markdown; if persistence is unavailable, present Markdown inline
+and declare the limitation. Never bypass native permissions to produce a report.
+
+This is a prompt/skill contract, not a filesystem-writing engine or a question-tool
+interceptor: the lead authors the reports. The plugin does not certify that a
+report was written or that a preview backend is running. The mission schema and
+approval hash are unchanged. See the operational skill's mission-reporting guide.
+
 ## Durable policy
 
 QA is configured in the same mission discussion with
