@@ -10,6 +10,7 @@ describe("ensemble project setup skill copy", () => {
       "references/patch-recipes.md",
       "references/teammate-profile.md",
       "references/profile-lint.md",
+      "references/mission-verification.md",
     ]) {
       expect(readFileSync(join(root, "skills/ensemble-project-setup", file), "utf8"))
         .toEqual(readFileSync(join(root, "agent/skills/ensemble-project-setup", file), "utf8"))

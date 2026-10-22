@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { setupDeps } from "./helpers"
-import { prepareMission, openMissionConfiguration, approveMission } from "../src/mission-policy"
+import { setupDeps, prepareHistoricalMission as prepareMission } from "./helpers"
+import { openMissionConfiguration, approveMission } from "../src/mission-policy"
 import { executeTeamTasksAdd } from "../src/tools/team-tasks-add"
 import { classifyBoardTasks } from "../src/board-classification"
 
@@ -17,7 +17,7 @@ function fixture() {
   deps.config = { ...deps.config, modelRouting: { beta: 0.35, models: [
     { id: "fixture/light", intelligenceScore: 10, averageCostPerTask: 0, available: true },
     { id: "fixture/strong", intelligenceScore: 30, averageCostPerTask: 1, available: true },
-  ] }, classification: { ...deps.config.classification, helperModel: "fixture/light", limits: { retries: 0 } } }
+  ] }, classification: { ...deps.config.classification, mode: "auto", helperModel: "fixture/light", limits: { retries: 0 } } }
   const requests: unknown[] = []
   deps.classifier = {
     list: async () => [{ id: "router_jev_ask", input: { type: "object", properties: { state: {}, questions: {} }, required: ["state", "questions"] } }],

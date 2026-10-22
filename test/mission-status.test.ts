@@ -30,6 +30,6 @@ describe("mission policy operating context", () => {
     expect(await executeTeamStatus(deps, "lead")).toContain("Mission policy: draft")
     const compacted = buildTeamCompactionContext(deps.db, "governed", "lead")
     expect(compacted).toContain("mission-policy.json")
-    expect(compacted).toContain("grid")
+    expect(compacted).toContain("admitted task")
   })
 })

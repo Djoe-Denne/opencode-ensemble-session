@@ -79,7 +79,7 @@ export async function resolveMissionClassification(deps: ToolDeps, override: Par
   const base = { version: 1 as const, protocol: CLASSIFICATION_PROTOCOL, mode: config.mode, helperModel: config.helperModel, helperVariant: config.helperVariant, timeoutMs: config.timeoutMs,
     missionMode: config.missionMode ?? "supervised", generalModel: config.generalModel ?? "", generalVariant: config.generalVariant ?? "",
     fallbacks: structuredClone(config.fallbacks ?? []), limits: { ...CLASSIFICATION_LIMITS, ...config.limits } }
-  if (config.mode === "off") return { ...base, method: "manual", toolId: "", reason: "Classification explicitly disabled; use manual scores." }
+  if (config.mode === "off") return { ...base, method: "manual", toolId: "", reason: "Classification explicitly disabled; default catalogue execution needs no scores. Manual scores remain available when requested." }
   if (!deps.classifier) {
     if (!["auto", "off"].includes(config.mode) || config.generalModel || config.fallbacks?.length) throw new Error("Native classification unavailable on this host")
     return { ...base, method: "manual", toolId: "", reason: "No native classification bridge; existing manual operation retained." }

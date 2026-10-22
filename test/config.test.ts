@@ -79,7 +79,7 @@ describe("config", () => {
     mkdirSync(projectDir, { recursive: true })
     writeFileSync(path.join(globalDir, "ensemble.json"), JSON.stringify({ classification: { helperModel: "fixture/flash", helperVariant: "medium" } }))
     writeFileSync(path.join(projectDir, "ensemble.json"), JSON.stringify({ classification: { timeoutMs: 1000 } }))
-    expect(loadConfig(tmpDir).classification).toMatchObject({ mode: "auto", helperModel: "fixture/flash", helperVariant: "medium", timeoutMs: 1000 })
+    expect(loadConfig(tmpDir).classification).toMatchObject({ mode: "off", helperModel: "fixture/flash", helperVariant: "medium", timeoutMs: 1000 })
   })
 
   test("invalid classification settings preserve unrelated configuration", () => {

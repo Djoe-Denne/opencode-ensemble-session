@@ -9,6 +9,9 @@ import { classifyBoardTasks } from "./board-classification"
 import { applyMissionClassification, classificationReadiness, getMissionClassification } from "./mission-classification"
 import { log } from "./log"
 import { calibrationWarnings, describeMissionModel } from "./variant-effort"
+import { verificationInstructions } from "./verification-policy"
+
+const QA_CONFIG_GUIDANCE = 'Discuss mission QA interactively: light (targeted checks), proportionate (risk-based checks; default), or reinforced (explicit verification plan and independent review). Offer the current/default choice for confirmation, not a new questionnaire per task. Ask only for consequential commands and acceptance criteria. Persist corrections in verification: { level, commands?, acceptance? } before presenting config again. Project safety/mandatory rules cannot be silently waived; surface conflicts for explicit arbitration. Do not impose a fixed QA agent pipeline.'
 
 /** A generic mission command; project workflows remain in project instructions. */
 export interface MissionCommand {
@@ -59,7 +62,7 @@ export async function registerMissionCommands(host: MissionCommandHost, deps: To
           const proposal = openMissionConfiguration(deps, mission.teamId, input.sessionID, true)
           await healDraftClassification(deps, proposal)
           await deliverProposal(host, deps, proposal, { ...input.prompt, sessionID: input.sessionID, delivery: input.delivery,
-            text: `${formatProposal(deps, proposal)}\n\nPrepare a bounded plan using this project's instructions. No particular planner profile or agent sequence is required. Evaluate complexity and risk separately using the mission criteria. You may publish proposed tasks, but no Ensemble worker or classifier can start before approval. Present the actual policy and task preview to the user; invite chat corrections or the user's /ensemble-mission start command. Do not invoke start on the user's behalf.` })
+            text: `${formatProposal(deps, proposal)}\n\nPrepare a bounded plan using this project's instructions. No particular planner profile or agent sequence is required. ${proposal.policy.version === 2 ? "Default catalogue execution needs no difficulty scores or classifier. Use classification only when explicitly requested." : "Evaluate complexity and risk separately using the mission criteria."} You may publish proposed tasks, but no Ensemble worker or classifier can start before approval. Present the actual policy and task preview to the user; invite chat corrections or the user's /ensemble-mission start command. Do not invoke start on the user's behalf. ${QA_CONFIG_GUIDANCE}` })
           return
         }
         const team = findTeamBySession(deps.db, deps.registry, input.sessionID)
@@ -68,9 +71,9 @@ export async function registerMissionCommands(host: MissionCommandHost, deps: To
           const proposal = openMissionConfiguration(deps, team.teamId, input.sessionID, true)
           await healDraftClassification(deps, proposal)
           const instructions = command.text
-            ? `User corrections (not execution approval):\n${command.text}\n\nUpdate only this mission's draft to represent these corrections. Classification corrections belong in a top-level "classification" object of the draft; config applies it and strips it from the policy. Never add fields outside the policy schema (version, providers, assessment, complexityBands, riskBands, groups, matrix). Keep the policy structurally valid and providers, exact native models and variants consistent. Do not change global settings. Explain the diff and ask the user to run /ensemble-mission config again to present the edited policy before start.`
+            ? `User corrections (not execution approval):\n${command.text}\n\nUpdate only this mission's draft to represent these corrections. Classification corrections belong in a top-level "classification" object of the draft; config applies it and strips it from the policy. Never add fields outside the policy schema (${proposal.policy.version === 2 ? "version, providers, models, startingIntelligence, classificationBeta, verification" : "version, providers, assessment, complexityBands, riskBands, groups, matrix, verification"}). Keep the policy structurally valid and providers, exact native models and variants consistent. Do not change global settings. Explain the diff and ask the user to run /ensemble-mission config again to present the edited policy before start.`
             : "Present this authoritative policy and task preview in the chat. No new execution is admitted until the user runs /ensemble-mission start. Subsequent chat corrections must be written to the mission draft and presented again with config; do not keep them only in context."
-          await deliverProposal(host, deps, proposal, { ...input.prompt, sessionID: input.sessionID, delivery: input.delivery, resume: Boolean(command.text), text: `${formatProposal(deps, proposal)}\n\n${instructions}` }, !command.text)
+          await deliverProposal(host, deps, proposal, { ...input.prompt, sessionID: input.sessionID, delivery: input.delivery, resume: Boolean(command.text), text: `${formatProposal(deps, proposal)}\n\n${instructions}\n${QA_CONFIG_GUIDANCE}` }, !command.text)
           return
         }
         if (!availableModels) throw new Error("Native model catalogue API unavailable; mission cannot be approved on this host")
@@ -82,7 +85,7 @@ export async function registerMissionCommands(host: MissionCommandHost, deps: To
         }
         try { await host.session.prompt({ ...input.prompt, sessionID: input.sessionID, delivery: input.delivery,
           resume: !presented.approved,
-          text: `Mission policy approved: revision ${approved.revision}, hash ${approved.hash}.\nObjective: ${approved.objective}\nPolicy: ${approved.policyPath}\nContinue the mission using the approved grid and project verification requirements. Model, variant and provider choices are enforced by Ensemble; do not bypass them with explicit overrides. Retain task ownership and integration barriers, and report evidence and limitations.` }) } catch (error) {
+          text: `Mission policy approved: revision ${approved.revision}, hash ${approved.hash}.\nObjective: ${approved.objective}\nPolicy: ${approved.policyPath}\nContinue the mission using the approved ${approved.policy.version === 2 ? "catalogue policy; workers choose their implementation reasoning within its bounds" : "grid"} and project verification requirements. Model, variant and provider choices are enforced by Ensemble; do not bypass them with explicit overrides. Retain task ownership and integration barriers, and report evidence and limitations.` }) } catch (error) {
           throw new Error(`Mission policy remains approved (v${approved.revision}); supervisor message delivery failed. Check the session/status before explicitly resuming in chat: ${error instanceof Error ? error.message : String(error)}`)
         }
       },
@@ -129,6 +132,16 @@ function classificationProposal(deps: ToolDeps, teamId: string): string[] {
 
 function formatProposal(deps: ToolDeps, proposal: MissionPolicySnapshot): string {
   const { policy } = proposal
+  if (policy.version === 2) return [
+    "Mission policy proposal — execution is paused, not approved.", `Objective: ${proposal.objective}`,
+    `Draft: ${proposal.policyPath}`, `Proposal hash: ${proposal.hash}`,
+    `Default planning intelligence threshold: ${policy.startingIntelligence}. Classification is opt-in.`,
+    verificationInstructions(policy.verification),
+    "Each task keeps the same session and model. The worker chooses its implementation reasoning and may raise or lower it within the approved catalogue.",
+    ...policy.models.map(model => `${model.id} (${model.reasoningEffort ?? "default"}): intelligence ${model.intelligenceScore}, cost/task ${model.averageCostPerTask}`),
+    ...classificationProposal(deps, proposal.teamId), ...proposal.warnings,
+    "Current draft JSON:", "```json", JSON.stringify(policy, null, 2), "```",
+  ].join("\n")
   const band = (bounds: number[], index: number): string => `${bounds[index]}–${(bounds[index + 1] ?? 101) - 1}`
   const cells = [
     `| Risk / complexity | ${policy.complexityBands.slice(0, -1).map((_, index) => band(policy.complexityBands, index)).join(" | ")} |`,
@@ -148,6 +161,7 @@ function formatProposal(deps: ToolDeps, proposal: MissionPolicySnapshot): string
     "Mission policy proposal — execution is paused, not approved.", `Objective: ${proposal.objective}`,
     `Draft: ${proposal.policyPath}`, `Proposal hash: ${proposal.hash}`, `Allowed providers: ${policy.providers.join(", ")}`,
     ...proposal.warnings.map(warning => `Draft repair: ${warning}`),
+    verificationInstructions(policy.verification),
     "Risk and complexity remain independent integers 0–100. The first candidate is primary; alternatives are not automatic retries.",
     ...cells, ...groups, ...calibration,
     "Assessment criteria:", `Complexity: ${policy.assessment.complexity.join(" → ")}`, `Risk: ${policy.assessment.risk.join(" → ")}`,

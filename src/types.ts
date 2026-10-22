@@ -3,6 +3,7 @@ import type { MemberRegistry, DescendantTracker, PendingPurgeApprovals } from ".
 import type { EnsembleConfig } from "./config"
 import type { ProgressTracker } from "./progress"
 import type { ClassificationPort } from "./mission-classification"
+import type { MissionPolicyModel } from "./mission-model-policy"
 
 /**
  * Shared dependencies injected into every tool's execute function.
@@ -25,6 +26,8 @@ export interface ToolDeps {
   preserveBranch?: (source: string, target: string, directory: string) => Promise<boolean>
   /** Capability-gated native classification; V1/unsupported hosts leave this absent. */
   classifier?: ClassificationPort
+  /** Exact enabled model/variant identities from the public V2 host catalogue. */
+  nativeModels?: () => Promise<readonly MissionPolicyModel[]>
 }
 
 /** A single permission rule for session-level enforcement. */

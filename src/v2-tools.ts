@@ -158,9 +158,9 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
 
     editor.add({
       name: "team_handoff",
-      description: "V2: switch your own team session to another agent for subsequent provider turns, retaining its history, identity, tasks and worktree. This does not grant lead privileges.",
-      input: { type: "object", properties: { agent: str("Native target agent name") }, required: ["agent"], additionalProperties: false },
-      execute: async (input, context) => ({ content: await executeTeamHandoff(deps, input as { agent: string }, context.sessionID, context.signal) }),
+      description: "V2: retain this session/history/worktree. For an autonomous task, pass phase:'implementation' and optional reasoning to finish planning, or reasoning alone to adjust implementation effort. The task's model/profile remain fixed. Outside autonomous tasks, agent changes the native profile. This does not grant lead privileges.",
+      input: { type: "object", properties: { agent: str("Native target agent outside autonomous tasks"), phase: { type: "string", enum: ["implementation"] }, reasoning: str("Exact allowed catalogue variant; default selects the omitted native variant") }, anyOf: [{ required: ["agent"] }, { required: ["phase"] }, { required: ["reasoning"] }], additionalProperties: false },
+      execute: async (input, context) => ({ content: await executeTeamHandoff(deps, input as Parameters<typeof executeTeamHandoff>[1], context.sessionID, context.signal) }),
     })
 
     editor.add({

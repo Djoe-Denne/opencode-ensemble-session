@@ -5,6 +5,8 @@ import { isSessionAlive } from "../recovery"
 import { archiveTeam } from "../team-archive"
 import { getTeamResourceParts, preserveBranch, preservedBranchName } from "./merge-helper"
 import { resolveMissionClassification, type MissionClassificationConfig } from "../mission-classification"
+import { createExecutionPolicy, nativeExecutionCatalogue } from "../execution-policy"
+import { createHash } from "node:crypto"
 
 /**
  * Execute the team_create tool. Creates a new team with the caller as lead.
@@ -52,6 +54,10 @@ export async function executeTeamCreate(
   if (lead) throw new Error(`This session already belongs to team "${lead.teamName}"`)
 
   const classification = await resolveMissionClassification(deps, { ...args.classification, ...(args.mission_mode !== undefined ? { missionMode: args.mission_mode } : {}) })
+  // Command-prepared missions install their own approval gate via onCreated.
+  // Direct V2 teams freeze the same catalogue policy at their explicit creation.
+  const execution = !onCreated && !deps.config.missionPolicy && deps.config.modelRouting.models.length && deps.client.continuity && deps.client.session.switchModel && deps.nativeModels
+    ? createExecutionPolicy(nativeExecutionCatalogue(deps.config.modelRouting.models, await deps.nativeModels()), deps.config.startingIntelligence, deps.config.modelRouting.beta) : undefined
 
   const id = generateId("team")
   const now = Date.now()
@@ -71,6 +77,11 @@ export async function executeTeamCreate(
     [id, args.name, projectId, sessionId, now, now, JSON.stringify(classification), classification.missionMode ?? "supervised"]
   )
     onCreated?.(id)
+    if (execution) {
+      const json = JSON.stringify(execution)
+      deps.db.run("INSERT INTO mission_policy_revision (team_id, revision, policy_hash, policy_json, time_created) VALUES (?, 1, ?, ?, ?)",
+        [id, createHash("sha256").update(json).digest("hex"), json, now])
+    }
   })()
 
   return `Team "${args.name}" created. You are the lead. Use team_spawn to add teammates.\nClassification: ${classification.reason}`

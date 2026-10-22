@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { Database } from "./db"
@@ -6,8 +6,18 @@ import type { ToolDeps } from "./types"
 import { findTeamBySession } from "./types"
 import { executeTeamCreate } from "./tools/team-create"
 import { classificationReadiness, getMissionClassification, type MissionClassificationConfig } from "./mission-classification"
-import { routeMissionModel, validateMissionModelPolicy, type MissionModelPolicy, type MissionPolicyModel, type MissionPolicyRoute } from "./mission-model-policy"
+import { routeMissionModel, validateMissionModelPolicy, type MissionModelPolicy, type MissionPolicyModel } from "./mission-model-policy"
 import { canonicalizeVariantLabel } from "./variant-effort"
+import { createExecutionPolicy, nativeExecutionCatalogue, routeExecution, validateExecutionPolicy, type ExecutionPolicy, type TaskModelRoute } from "./execution-policy"
+import { routeNormalizedModel } from "./model-router"
+import { verificationInstructions } from "./verification-policy"
+
+type ModelPolicy = MissionModelPolicy | ExecutionPolicy
+
+function validatePolicy(value: unknown): asserts value is ModelPolicy {
+  if (value && typeof value === "object" && "version" in value && value.version === 2) validateExecutionPolicy(value)
+  else validateMissionModelPolicy(value)
+}
 
 /** A persisted mission proposal, isolated from legacy teams. */
 export interface MissionProposal {
@@ -20,7 +30,7 @@ export interface MissionPolicySnapshot extends MissionProposal {
   hash: string
   revision: number
   objective: string
-  policy: MissionModelPolicy
+  policy: ModelPolicy
   presentationToken: number
   approved: boolean
   /** Non-schema content removed from the draft, plus any draft repairs. */
@@ -44,16 +54,28 @@ function row(db: Database, teamId: string): PolicyRow | undefined {
   return db.query("SELECT * FROM mission_policy WHERE team_id = ?").get(teamId) as PolicyRow | undefined
 }
 
+function directSnapshot(db: Database, teamId: string): MissionPolicySnapshot | undefined {
+  const revision = db.query("SELECT revision, policy_hash, policy_json FROM mission_policy_revision WHERE team_id = ? ORDER BY revision DESC LIMIT 1")
+    .get(teamId) as { revision: number; policy_hash: string; policy_json: string } | null
+  if (!revision) return undefined
+  const policy: unknown = JSON.parse(revision.policy_json)
+  if (!policy || typeof policy !== "object" || !("version" in policy) || policy.version !== 2) return undefined
+  validateExecutionPolicy(policy)
+  if (createHash("sha256").update(revision.policy_json).digest("hex") !== revision.policy_hash) throw new Error("Execution policy integrity mismatch")
+  return { teamId, policyPath: "ensemble.json (frozen at team creation)", objective: "", hash: revision.policy_hash,
+    revision: revision.revision, policy, presentationToken: 0, approved: true, warnings: [] }
+}
+
 function requireLead(deps: ToolDeps, teamId: string, sessionId: string): void {
   const team = findTeamBySession(deps.db, deps.registry, sessionId)
   if (team?.teamId !== teamId || team.role !== "lead") throw new Error("Only the mission lead can configure or approve its policy")
 }
 
 /** Root fields the model policy schema accepts; everything else is draft noise. */
-const POLICY_FIELDS = ["version", "providers", "assessment", "complexityBands", "riskBands", "groups", "matrix"]
+const POLICY_FIELDS = ["version", "providers", "assessment", "complexityBands", "riskBands", "groups", "matrix", "verification"]
 
 interface DraftRead {
-  policy: MissionModelPolicy
+  policy: ModelPolicy
   warnings: string[]
   classificationOverride?: Partial<MissionClassificationConfig>
   dirty: boolean
@@ -93,15 +115,15 @@ function readPolicyDraft(record: PolicyRow): DraftRead {
       }
     }
     Object.keys(draft).forEach(key => {
-      if (!POLICY_FIELDS.includes(key)) {
+      if (!(draft.version === 2 ? ["version", "providers", "models", "startingIntelligence", "classificationBeta", "verification"] : POLICY_FIELDS).includes(key)) {
         dirty = true
         delete draft[key]
         warnings.push(`draft.${key} was removed: the model policy accepts only ${POLICY_FIELDS.join(", ")}.`)
       }
     })
   }
-  validateMissionModelPolicy(parsed)
-  return { policy: parsed as MissionModelPolicy, warnings, ...(classificationOverride ? { classificationOverride } : {}), dirty }
+  validatePolicy(parsed)
+  return { policy: parsed, warnings, ...(classificationOverride ? { classificationOverride } : {}), dirty }
 }
 
 function readPolicy(record: PolicyRow): MissionPolicySnapshot {
@@ -112,40 +134,20 @@ function readPolicy(record: PolicyRow): MissionPolicySnapshot {
     ...(draft.classificationOverride ? { classificationOverride: draft.classificationOverride } : {}) }
 }
 
-function seedPolicy(deps: ToolDeps): MissionModelPolicy {
+async function seedPolicy(deps: ToolDeps): Promise<ModelPolicy> {
   if (deps.config.missionPolicy) {
     validateMissionModelPolicy(deps.config.missionPolicy)
     return structuredClone(deps.config.missionPolicy)
   }
-  const models = deps.config.modelRouting.models.filter(model => model.available)
-    .toSorted((a, b) => a.intelligenceScore - b.intelligenceScore || a.averageCostPerTask - b.averageCostPerTask || a.id.localeCompare(b.id) || (a.reasoningEffort ?? "").localeCompare(b.reasoningEffort ?? ""))
-  if (!models.length) throw new Error("Configure missionPolicy or a nonempty modelRouting catalogue in ensemble.json before preparing a mission")
-  const candidate = (index: number): MissionPolicyModel => {
-    const model = models[index]
-    if (!model) throw new Error("Mission catalogue is empty")
-    return { id: model.id, ...(model.reasoningEffort && model.reasoningEffort !== "default" ? { variant: model.reasoningEffort } : {}) }
-  }
-  // Catalogue scores seed a visible draft only. Approved routing never reads them.
-  const policy: MissionModelPolicy = {
-    version: 1,
-    providers: [...new Set(models.map(model => model.id.slice(0, model.id.indexOf("/"))))].sort(),
-    assessment: {
-      complexity: ["Low: local, clear requirements and established patterns.", "High: ambiguous contracts, interacting components or difficult reconstruction."],
-      risk: ["Low: isolated, reversible failure with limited impact.", "High: security, persisted data, compatibility or critical correctness is at stake."],
-    },
-    complexityBands: [0, 34, 67, 101], riskBands: [0, 34, 67, 101],
-    groups: { light: [candidate(0)], standard: [candidate(Math.floor((models.length - 1) / 2))], strong: [candidate(models.length - 1)] },
-    matrix: [["light", "standard", "strong"], ["standard", "standard", "strong"], ["strong", "strong", "strong"]],
-  }
-  validateMissionModelPolicy(policy)
-  return policy
+  const models = deps.nativeModels ? nativeExecutionCatalogue(deps.config.modelRouting.models, await deps.nativeModels()) : deps.config.modelRouting.models
+  return createExecutionPolicy(models, deps.config.startingIntelligence, deps.config.modelRouting.beta)
 }
 
 /** Prepare a new mission without admitting execution or overwriting an existing team. */
 export async function prepareMission(deps: ToolDeps, sessionId: string, objective: string): Promise<MissionProposal> {
   if (!objective.trim()) throw new Error("A mission objective is required")
   if (findTeamBySession(deps.db, deps.registry, sessionId)) throw new Error("This session already belongs to a team; configure that mission or use a new session")
-  const policy = seedPolicy(deps)
+  const policy = await seedPolicy(deps)
   let proposal: MissionProposal | undefined
   await executeTeamCreate(deps, { name: `mission-${createHash("sha256").update(`${sessionId}:${Date.now()}`).digest("hex").slice(0, 16)}` }, sessionId, teamId => {
     const policyPath = join(deps.directory, ".opencode", "missions", teamId, "model-policy.json")
@@ -220,7 +222,10 @@ export function approveMission(deps: ToolDeps, teamId: string, sessionId: string
       throw new Error(`Mission model/variant disabled by the operator: ${model.id}`)
     }
   }
-  Object.values(snapshot.policy.groups).flat().forEach(assertModel)
+  const candidates = snapshot.policy.version === 2
+    ? snapshot.policy.models.map(model => ({ id: model.id, ...(model.reasoningEffort && model.reasoningEffort !== "default" ? { variant: model.reasoningEffort } : {}) }))
+    : Object.values(snapshot.policy.groups).flat()
+  candidates.forEach(assertModel)
   const classifier = getMissionClassification(deps.db, teamId)
   if (classifier && (classifier.method !== "manual" || classifier.specialized)) {
     const id = classifier.method === "general" ? classifier.generalModel : classifier.helperModel
@@ -239,9 +244,9 @@ export function approveMission(deps: ToolDeps, teamId: string, sessionId: string
     if (!restored.changes) throw new Error("Mission policy approval raced with another configuration; run config again")
     return { ...snapshot, revision: latest.revision, approved: true }
   }
-  const previous = record.approved_json ? JSON.parse(record.approved_json) as MissionModelPolicy : undefined
-  if (previous !== undefined) validateMissionModelPolicy(previous)
-  const rubricChanged = previous !== undefined && JSON.stringify(previous.assessment) !== JSON.stringify(snapshot.policy.assessment)
+  const previous: unknown = record.approved_json ? JSON.parse(record.approved_json) : undefined
+  if (previous !== undefined) validatePolicy(previous)
+  const rubricChanged = previous !== undefined && JSON.stringify(previous.version === 1 ? previous.assessment : undefined) !== JSON.stringify(snapshot.policy.version === 1 ? snapshot.policy.assessment : undefined)
   const revision = record.revision + 1
   deps.db.transaction(() => {
     deps.db.run("INSERT INTO mission_policy_revision (team_id, revision, policy_hash, policy_json, time_created) VALUES (?, ?, ?, ?, ?)",
@@ -274,33 +279,37 @@ export function getPresentedMission(deps: ToolDeps, teamId: string, sessionId: s
 /** Reject new execution for draft or modified policies; legacy teams remain compatible. */
 export function assertMissionAdmission(db: Database, teamId: string): MissionPolicySnapshot | undefined {
   const record = row(db, teamId)
-  if (!record) return undefined
+  if (!record) return directSnapshot(db, teamId)
   if (!record.approved_hash) throw new Error("Mission policy is not approved; use /ensemble-mission config then start")
   const snapshot = readPolicy(record)
   if (snapshot.hash !== record.approved_hash) throw new Error("Mission policy changed after approval; run /ensemble-mission config then start")
   return snapshot
 }
 
-/** Whether a team uses explicit mission policy rather than legacy assignment. */
+/** Whether a team has an approved mission or a catalogue snapshot frozen at direct creation. */
 export function hasMissionPolicy(db: Database, teamId: string): boolean {
-  return Boolean(row(db, teamId))
+  return Boolean(row(db, teamId) || directSnapshot(db, teamId))
 }
 
 /** Describe durable policy and admission state without copying rules into context. */
 export function missionPolicySummary(db: Database, teamId: string): string | undefined {
   const record = row(db, teamId)
-  if (!record) return undefined
+  if (!record) {
+    const direct = directSnapshot(db, teamId)
+    return direct ? `Task execution: frozen catalogue; strong planning start, autonomous reasoning on the same model. Classification is opt-in. ${verificationInstructions(direct.policy.verification)}` : undefined
+  }
   let state = "draft (not approved)"
   if (record.approved_hash) {
     try { assertMissionAdmission(db, teamId); state = `approved v${record.revision}` } catch (error) {
       state = `blocked (${error instanceof Error ? error.message : String(error)})`
     }
   }
-  return `Mission policy: ${state}; deterministic complexity/risk grid; file=${record.policy_path}. Use /ensemble-mission config then /ensemble-mission start. New admission is gated in code; already-admitted tasks retain their policy revision. Do not override models or retain corrections only in conversation.`
+  const verification = record.approved_json ? verificationInstructions((JSON.parse(record.approved_json) as ModelPolicy).verification) : "QA scope is proposed in /ensemble-mission config."
+  return `Mission policy: ${state}; file=${record.policy_path}. Use /ensemble-mission config then /ensemble-mission start. New admission is gated in code; already-admitted tasks retain their policy revision. Follow the admitted task's execution policy; do not substitute an unapproved model. ${verification}`
 }
 
-/** Resolve complete recorded scores, refusing to replace task scores at spawn. */
-export function routeMissionTask(db: Database, teamId: string, taskId?: string, scores: { complexity?: number; risk?: number } = {}): (MissionPolicyRoute & { policyRevision: number; policyHash: string }) | undefined {
+/** Resolve a score-free planning start or explicitly supplied classification, without overriding task scores. */
+export function routeMissionTask(db: Database, teamId: string, taskId?: string, scores: { complexity?: number; risk?: number } = {}): (TaskModelRoute & { policyRevision: number; policyHash: string }) | undefined {
   const snapshot = assertMissionAdmission(db, teamId)
   if (!snapshot) return undefined
   return { ...previewMissionTask(db, snapshot, taskId, scores), policyRevision: snapshot.revision, policyHash: snapshot.hash }
@@ -318,7 +327,7 @@ function normalizedScore(value: unknown, dimension: string): number | undefined 
 }
 
 /** Preview using the same score normalization and pure resolver as real admission. */
-export function previewMissionTask(db: Database, snapshot: MissionPolicySnapshot, taskId?: string, scores: { complexity?: number; risk?: number } = {}): MissionPolicyRoute {
+export function previewMissionTask(db: Database, snapshot: MissionPolicySnapshot, taskId?: string, scores: { complexity?: number; risk?: number } = {}): TaskModelRoute {
   const task = taskId ? db.query("SELECT complexity, risk, classification_result FROM team_task WHERE id = ? AND team_id = ?").get(taskId, snapshot.teamId) as
     { complexity: number | null; risk: number | null; classification_result: string | null } | null : undefined
   if (taskId && !task) throw new Error(`Task ${taskId} not found in this mission`)
@@ -326,13 +335,26 @@ export function previewMissionTask(db: Database, snapshot: MissionPolicySnapshot
   const complexity = task ? task.complexity ?? normalizedScore(classified?.complexity, "complexity") : scores.complexity
   const risk = task ? task.risk ?? normalizedScore(classified?.risk, "risk") : scores.risk
   if (task && ((scores.complexity !== undefined && scores.complexity !== complexity) || (scores.risk !== undefined && scores.risk !== risk))) throw new Error("Mission spawn scores cannot override recorded task scores")
+  if (snapshot.policy.version === 2) {
+    const policy = snapshot.policy
+    const classifier = getMissionClassification(db, snapshot.teamId)
+    const needsScores = classifier && (classifier.method !== "manual" || classifier.specialized)
+    if ((needsScores || complexity !== undefined || risk !== undefined) && (complexity === undefined || risk === undefined)) throw new Error("Explicit classification requires both complexity and risk")
+    const selected = complexity !== undefined && risk !== undefined
+      ? routeNormalizedModel({ models: policy.models, beta: policy.classificationBeta, complexity: complexity / 100, risk: risk / 100 }).selected
+      : undefined
+    const route = routeExecution(policy, `${snapshot.teamId}:${taskId ?? "standalone"}:${snapshot.hash}`,
+      selected ? { id: selected.id, ...(selected.reasoningEffort && selected.reasoningEffort !== "default" ? { variant: selected.reasoningEffort } : {}) } : undefined)
+    return { ...route, ...(complexity !== undefined ? { complexity, risk } : {}) }
+  }
   if (complexity === undefined || risk === undefined) throw new Error("Mission execution requires both complexity and risk; missing scores never default to zero")
   return routeMissionModel(snapshot.policy, { complexity, risk })
 }
 
 /** Persist a task's exact model, native variant and approved policy provenance. */
 export function saveMissionTaskRoute(db: Database, teamId: string, taskId: string, assignee: string, route: NonNullable<ReturnType<typeof routeMissionTask>>): void {
-  const json = JSON.stringify(route)
+  // A fresh claim must not accept a late native completion from a previous claim.
+  const json = JSON.stringify("execution" in route ? { ...route, assignmentID: randomUUID() } : route)
   db.run("UPDATE team_task SET model_routing = ? WHERE id = ? AND team_id = ?", [json, taskId, teamId])
   db.run("UPDATE team_member SET model = ?, model_variant = ?, model_routing = ? WHERE team_id = ? AND name = ?",
     [route.selected.id, route.selected.variant ?? null, json, teamId, assignee])
@@ -344,13 +366,20 @@ export function assertMissionMemberModel(db: Database, teamId: string, stored: {
   try {
     if (!stored?.model || !stored.model_routing) throw new Error("missing model or routing record")
     const route = JSON.parse(stored.model_routing) as Partial<NonNullable<ReturnType<typeof routeMissionTask>>>
-    if (!Number.isInteger(route.policyRevision) || typeof route.complexity !== "number" || typeof route.risk !== "number") throw new Error("missing revision or scores")
+    if (!Number.isInteger(route.policyRevision)) throw new Error("missing revision")
     const revision = db.query("SELECT policy_hash, policy_json FROM mission_policy_revision WHERE team_id = ? AND revision = ?").get(teamId, route.policyRevision ?? 0) as
       { policy_hash: string; policy_json: string } | null
     if (!revision || revision.policy_hash !== route.policyHash) throw new Error("unknown approved revision")
     const policy: unknown = JSON.parse(revision.policy_json)
-    validateMissionModelPolicy(policy)
+    validatePolicy(policy)
     if (createHash("sha256").update(JSON.stringify(policy)).digest("hex") !== revision.policy_hash) throw new Error("approved revision integrity mismatch")
+    if (policy.version === 2) {
+      if (!("execution" in route) || !route.execution || route.execution.applying) throw new Error("execution transition is pending or missing")
+      if (route.selected?.id !== stored.model) throw new Error("task model changed")
+      if (route.execution.variant !== (stored.model_variant ?? undefined) || !policy.models.some(model => model.id === stored.model && (model.reasoningEffort === "default" ? undefined : model.reasoningEffort) === (stored.model_variant ?? undefined))) throw new Error("reasoning is outside the approved catalogue")
+      return
+    }
+    if (typeof route.complexity !== "number" || typeof route.risk !== "number") throw new Error("missing scores")
     const expected = routeMissionModel(policy, { complexity: route.complexity, risk: route.risk })
     const routeAgrees = route.group === expected.group && route.selected?.id === expected.selected.id && route.selected.variant === expected.selected.variant
     const modelAgrees = stored.model === expected.selected.id && (stored.model_variant ?? undefined) === expected.selected.variant

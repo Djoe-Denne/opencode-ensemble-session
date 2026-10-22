@@ -403,10 +403,10 @@ export async function setupEnsemble(
   if (listClassifiers && ctx.session.wait && ctx.session.remove && ctx.permission?.hook) {
     deps.classifier = { list: listClassifiers, invoke: request => invokeNativeClassifier(ctx as unknown as V2ClassificationContext, { ...request, signal: controller.signal }), general: request => invokeNativeGeneralClassifier(ctx as unknown as V2ClassificationContext, { ...request, signal: controller.signal }), removeHelper: sessionID => removeNativeClassificationHelper(ctx as unknown as V2ClassificationContext, sessionID) }
   }
-  await registerV2Tools(ctx.tool, deps)
   const listMissionModels = ctx.model?.list.bind(ctx.model)
-  const missionCommands = await registerMissionCommands(ctx, deps, listMissionModels ? async () =>
-    nativeMissionModels((await listMissionModels({ location: { directory: ctx.location.directory } })).data) : undefined)
+  if (listMissionModels) deps.nativeModels = async () => nativeMissionModels((await listMissionModels({ location: { directory: ctx.location.directory } })).data)
+  await registerV2Tools(ctx.tool, deps)
+  const missionCommands = await registerMissionCommands(ctx, deps, deps.nativeModels)
   // Self-register the shipped skills so instructions follow the running
   // revision even when an external skills pointer lags behind a deployment.
   try {

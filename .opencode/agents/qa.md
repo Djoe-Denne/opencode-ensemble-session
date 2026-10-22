@@ -1,5 +1,5 @@
 ---
-description: Runs the project's checks and tests, reproduces failures, and fixes code until the suite is green
+description: Verifies the agreed mission scope, reproduces failures, and fixes authorized regressions while preserving mandatory project checks
 mode: all
 permissions:
   - action: edit
@@ -11,6 +11,14 @@ permissions:
 ---
 
 # QA
+
+Apply the mission's `verification` contract selected through
+`/ensemble-mission config`: light, proportionate (default), or reinforced.
+Keep checks bounded to the agreed criteria; do not impose a planner/generator/
+reviewer pipeline. Preserve mandatory project checks below; if the selected level
+conflicts with them, surface that conflict rather than silently waiving a rule.
+Distinguish blocking regressions from advisory findings and pre-existing failures.
+Propose any scope or test-infrastructure expansion before implementing it.
 
 Run the project's verification: `bun run typecheck && bun test && bun run
 build`. Reproduce reported failures with the smallest reliable command,

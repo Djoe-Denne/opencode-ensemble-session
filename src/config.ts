@@ -42,9 +42,11 @@ export interface EnsembleConfig {
   autoDispatch?: boolean
   /** Spawn pool workers to fill the cap while unassigned work remains (default: false) */
   autoScale?: boolean
-  /** Deterministic complexity/risk routing (empty catalogue disables it). */
+  /** Shared catalogue and coefficient for explicitly requested classification. */
   modelRouting?: ModelRoutingConfig
-  /** Automatic JEV discovery; helper model is explicitly user-selected. */
+  /** Minimum catalogue intelligence for default planning starts (default: 50). */
+  startingIntelligence?: number
+  /** Opt-in classification; helper model is explicitly user-selected. */
   classification?: MissionClassificationConfig
   /** Default explicit policy for command-prepared missions; null seeds a draft from the catalogue. */
   missionPolicy?: MissionModelPolicy | null
@@ -79,8 +81,9 @@ export const DEFAULT_CONFIG: Required<EnsembleConfig> = {
   autoDispatch: false,
   autoScale: false,
   modelRouting: { beta: 0.35, models: [] },
+  startingIntelligence: 50,
   missionPolicy: null,
-  classification: { mode: "auto", helperModel: "", helperVariant: "", toolId: "", timeoutMs: 30_000,
+  classification: { mode: "off", helperModel: "", helperVariant: "", toolId: "", timeoutMs: 30_000,
     missionMode: "supervised", generalModel: "", generalVariant: "", specialized: false, x86ToolId: "", fallbacks: [], limits: {} },
   worktreePathBudget: 80,
   windowsSubstLetters: "S,T,U",
@@ -118,6 +121,7 @@ function readConfigFile(filePath: string): ConfigFile {
     if (typeof raw.maxActiveMembers === "number") result.maxActiveMembers = raw.maxActiveMembers
     if (typeof raw.autoDispatch === "boolean") result.autoDispatch = raw.autoDispatch
     if (typeof raw.autoScale === "boolean") result.autoScale = raw.autoScale
+    if (typeof raw.startingIntelligence === "number") result.startingIntelligence = raw.startingIntelligence
     if (typeof raw.worktreePathBudget === "number") result.worktreePathBudget = raw.worktreePathBudget
     if (typeof raw.windowsSubstLetters === "string") result.windowsSubstLetters = raw.windowsSubstLetters
     if (typeof raw.linkNodeModules === "boolean") result.linkNodeModules = raw.linkNodeModules
@@ -174,6 +178,7 @@ export function loadConfig(projectDir: string): Required<EnsembleConfig> {
       limits: { ...global.classification?.limits, ...project.classification?.limits } },
   }
   if (merged.missionPolicy !== null) validateMissionModelPolicy(merged.missionPolicy)
+  if (!Number.isFinite(merged.startingIntelligence) || merged.startingIntelligence < 0) throw new Error("Invalid starting intelligence threshold")
   if (process.env.OPENCODE_ENSEMBLE_V2_API_URL !== undefined) merged.v2ApiUrl = process.env.OPENCODE_ENSEMBLE_V2_API_URL
 
   const maxMembers = process.env.OPENCODE_ENSEMBLE_MAX_MEMBERS

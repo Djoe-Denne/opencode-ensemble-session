@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { setupDeps } from "./helpers"
-import { approveMission, openMissionConfiguration, prepareMission } from "../src/mission-policy"
+import { setupDeps, historicalModelPolicy, prepareHistoricalMission as prepareMission } from "./helpers"
+import { approveMission, openMissionConfiguration } from "../src/mission-policy"
 import { applyMissionClassification } from "../src/mission-classification"
 import type { MissionCommandDefinition, MissionCommandInvocation } from "../src/mission-commands"
 
@@ -20,6 +20,7 @@ function fixture() {
     { id: "allowed/standard", reasoningEffort: "medium", intelligenceScore: 20, averageCostPerTask: 0.2, available: true },
     { id: "other/strong", reasoningEffort: "high", intelligenceScore: 30, averageCostPerTask: 1, available: true },
   ] } }
+  deps.config.missionPolicy = historicalModelPolicy(deps)
   return deps
 }
 

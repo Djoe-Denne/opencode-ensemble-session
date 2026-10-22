@@ -2,8 +2,8 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { setupDeps } from "./helpers"
-import { approveMission, assertMissionAdmission, openMissionConfiguration, prepareMission } from "../src/mission-policy"
+import { setupDeps, prepareHistoricalMission as prepareMission } from "./helpers"
+import { approveMission, assertMissionAdmission, openMissionConfiguration } from "../src/mission-policy"
 import { resolveMissionClassification } from "../src/mission-classification"
 import { executeTeamCreate } from "../src/tools/team-create"
 
@@ -13,6 +13,7 @@ afterEach(() => fixtures.splice(0).forEach(path => rmSync(path, { recursive: tru
 
 function fixture() {
   const deps = setupDeps()
+  deps.config.classification = { ...deps.config.classification, mode: "auto" }
   deps.directory = mkdtempSync(join(tmpdir(), "ensemble-mission-policy-"))
   fixtures.push(deps.directory)
   deps.config = { ...deps.config, modelRouting: { beta: 0.35, models: [
@@ -118,6 +119,7 @@ describe("mission policy lifecycle", () => {
     openMissionConfiguration(deps, mission.teamId, "lead")
     const approved = approveMission(deps, mission.teamId, "lead")
     expect(approved.revision).toBe(1)
+    if (approved.policy.version !== 1) throw new Error("Historical grid expected")
     expect(approved.policy.groups.strong?.[0]).toEqual({ id: "openai/gpt-6.1-sol", variant: "xhigh", effort: "xhigh" })
     policy.groups.standard = [{ id: "openai/gpt-6.1-sol", variant: "xhigh", effort: "low" }]
     writeFileSync(mission.policyPath, `${JSON.stringify(policy)}\n`)

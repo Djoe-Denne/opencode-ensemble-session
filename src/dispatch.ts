@@ -3,8 +3,10 @@ import type { ToolDeps } from "./types"
 import { claimTask } from "./tools/team-claim"
 import { executeTeamSpawn } from "./tools/team-spawn"
 import { getMemberPromptModel } from "./member-model"
+import { hasAutonomousAssignment, startTaskPlanning, taskExecutionInstructions } from "./task-execution"
 import { log } from "./log"
 import { assertMissionAdmission } from "./mission-policy"
+import { notifyLead } from "./notify"
 
 /** A task candidate the pool can hand to an idle member. */
 export interface PoolTask {
@@ -183,16 +185,26 @@ export function dispatchNextTask(deps: ToolDeps, teamId: string, memberName: str
     }
 
     const model = getMemberPromptModel(deps.db, teamId, memberName)
-    deps.client.session.promptAsync({
+    const deliver = () => deps.client.session.promptAsync({
       sessionID: entry.sessionId,
-      parts: [{ type: "text", text: dispatchMessage(task) }],
+      parts: [{ type: "text", text: `${dispatchMessage(task)}\n${taskExecutionInstructions(deps, entry.sessionId)}`.trim() }],
       ...model,
-    }).catch(() => {
+    })
+    const autonomous = hasAutonomousAssignment(deps, entry.sessionId)
+    const delivery = autonomous
+      ? startTaskPlanning(deps, teamId, memberName, entry.sessionId).then(deliver)
+      : deliver()
+    delivery.catch(error => {
       // Delivery failed — release the claim so the task returns to the pool.
       deps.db.run(
         "UPDATE team_task SET status = 'pending', assignee = NULL, time_updated = ? WHERE id = ? AND assignee = ? AND status = 'in_progress'",
         [Date.now(), task.id, memberName],
       )
+      if (autonomous) {
+        deps.db.run("UPDATE team_member SET status = 'error', time_updated = ? WHERE team_id = ? AND name = ?", [Date.now(), teamId, memberName])
+        deps.registry.unregister(entry.sessionId)
+        notifyLead(deps.client, deps.db, teamId, `Worker ${memberName} could not enter planning; task ${task.id} was released and the session retained for recovery: ${String(error)}`)
+      }
       log(`dispatch:release team=${teamId} member=${memberName} task=${task.id}`)
     })
     log(`dispatch:assigned team=${teamId} member=${memberName} task=${task.id}`)

@@ -23,8 +23,11 @@ Preservation invariant, and the verification gate
    criteria, ownership, dependencies. Route by specialty: `dev-reader` for
    reconnaissance worth isolating, `architect` when a structural decision
    precedes implementation, `implementer` for normal lots, `qa` for the
-   verification gate and fixes, `code-reviewer` as the independent fresh
-   reviewer after integration.
+    verification gate and fixes, `code-reviewer` for an independent review when
+    the mission's QA contract calls for one. These are optional specialties,
+    not a mandatory pipeline. Present light/proportionate/reinforced QA through
+    `/ensemble-mission config`; propose proportionate by default. Preserve the
+    mandatory project verification gate and surface any conflict for arbitration.
 3. Load the `opencode-ensemble` skill before coordinating a team. For a new
    mission, use the native prepare/config/start cycle, not `team_create`.
    Never start workers or change sources before the user's explicit start; a
@@ -36,8 +39,10 @@ Preservation invariant, and the verification gate
    fire-and-forget promptAsync, branch preservation) instead of letting it
    rediscover them.
 5. Integrate before consumers: a finished author does not make its diff
-   available elsewhere. Review the integrated result with a fresh
-   `code-reviewer` before publishing dependent tasks.
+    available elsewhere. Inspect the integrated result before dependent tasks;
+    use a fresh reviewer when agreed or justified by a concrete changed risk,
+    not automatically after every lot. Separate blocking defects from advisory
+    findings and request approval before expanding proof infrastructure.
 6. Run the verification gate on the integrated tree, then report the files,
    the commands actually executed, their results, and the remaining limits.
    A partial pass is never a global pass; agent claims must match evidence.

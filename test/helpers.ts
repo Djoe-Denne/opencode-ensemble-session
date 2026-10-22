@@ -5,6 +5,8 @@ import { MemberRegistry, DescendantTracker, PendingPurgeApprovals } from "../src
 import type { ToolDeps, PluginClient } from "../src/types"
 import { DEFAULT_CONFIG } from "../src/config"
 import { ProgressTracker } from "../src/progress"
+import type { MissionModelPolicy } from "../src/mission-model-policy"
+import { prepareMission } from "../src/mission-policy"
 
 /** Create a fresh in-memory DB with migrations applied. */
 export function setupDb(): EnsembleDatabase {
@@ -106,6 +108,27 @@ export function setupDeps(db?: EnsembleDatabase): ToolDeps & { client: ReturnTyp
     progressTracker: new ProgressTracker(),
     preserveBranch: async () => true,
   }
+}
+
+/** Explicit historical grid fixture; new production missions no longer synthesize this grid. */
+export function historicalModelPolicy(deps: ToolDeps): MissionModelPolicy {
+  const models = deps.config.modelRouting.models.filter(model => model.available).toSorted((a, b) => a.intelligenceScore - b.intelligenceScore)
+  const candidate = (index: number) => {
+    const model = models[index]
+    if (!model) throw new Error("Historical fixture needs a catalogue")
+    return { id: model.id, ...(model.reasoningEffort && model.reasoningEffort !== "default" ? { variant: model.reasoningEffort } : {}) }
+  }
+  return { version: 1, providers: [...new Set(models.map(model => model.id.slice(0, model.id.indexOf("/"))))].sort(),
+    assessment: { complexity: ["Local change", "Interacting components"], risk: ["Reversible failure", "Critical persisted data"] },
+    complexityBands: [0, 34, 67, 101], riskBands: [0, 34, 67, 101],
+    groups: { light: [candidate(0)], standard: [candidate(Math.floor((models.length - 1) / 2))], strong: [candidate(models.length - 1)] },
+    matrix: [["light", "standard", "strong"], ["standard", "standard", "strong"], ["strong", "strong", "strong"]] }
+}
+
+/** Exercise persisted v1 compatibility explicitly, independently of the new default. */
+export async function prepareHistoricalMission(deps: ToolDeps, sessionId: string, objective: string) {
+  if (!deps.config.missionPolicy) deps.config.missionPolicy = historicalModelPolicy(deps)
+  return prepareMission(deps, sessionId, objective)
 }
 
 /** Insert a team directly into the DB. */

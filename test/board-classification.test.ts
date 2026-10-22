@@ -20,7 +20,7 @@ function fixture() {
     list: async () => [{ id: "router_jev_ask", input: { type: "object", properties: { state: {}, questions: {} }, required: ["state", "questions"] } }],
     invoke: async request => { invocations.push(request); return { model: "jev", answers: { complexity: { type: "score", score: 0.48123 }, risk: { type: "score", score: 0.97234 } } } },
   }
-  deps.config.classification = { ...deps.config.classification, helperModel: "fixture/flash" }
+  deps.config.classification = { ...deps.config.classification, mode: "auto", helperModel: "fixture/flash" }
   return { deps, invocations }
 }
 

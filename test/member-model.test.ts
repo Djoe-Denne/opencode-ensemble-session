@@ -2,10 +2,10 @@ import { afterEach, describe, test, expect, beforeEach } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { setupDb, setupDeps, insertTeam, insertMember } from "./helpers"
+import { setupDb, setupDeps, insertTeam, insertMember, prepareHistoricalMission as prepareMission } from "./helpers"
 import type { Database } from "../src/db"
 import { parseModelId, getMemberModel, getMemberPromptModel } from "../src/member-model"
-import { approveMission, assertMissionMemberModel, openMissionConfiguration, prepareMission, routeMissionTask, saveMissionTaskRoute } from "../src/mission-policy"
+import { approveMission, assertMissionMemberModel, openMissionConfiguration, routeMissionTask, saveMissionTaskRoute } from "../src/mission-policy"
 
 describe("parseModelId", () => {
   test("parses a valid provider/model string", () => {

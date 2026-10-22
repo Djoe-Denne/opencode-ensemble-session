@@ -5,6 +5,7 @@ import type { EnsembleConfig } from "./config"
 import { getMissionClassification } from "./mission-classification"
 import { missionPolicySummary } from "./mission-policy"
 import { annotatedEffort } from "./variant-effort"
+import { taskExecutionInstructions } from "./task-execution"
 
 /** Truncate a string to maxLen chars, appending "..." if truncated. */
 function truncate(s: string, maxLen: number): string {
@@ -177,13 +178,17 @@ export function buildTeammateSystemPrompt(db: Database, teamId: string, memberNa
   const team = db.query("SELECT name FROM team WHERE id = ?").get(teamId) as { name: string } | null
   if (!team) return ""
 
-  const member = db.query("SELECT report_mode, model, model_variant FROM team_member WHERE team_id = ? AND name = ?").get(teamId, memberName) as { report_mode: string; model: string | null; model_variant: string | null } | null
+  const member = db.query("SELECT session_id, report_mode, model, model_variant FROM team_member WHERE team_id = ? AND name = ?").get(teamId, memberName) as { session_id: string; report_mode: string; model: string | null; model_variant: string | null } | null
   const lines = [member?.report_mode === "final_response"
     ? `You are "${memberName}", a teammate in team "${team.name}". Return findings or blockers in your final response, then stop. Ensemble retrieves the candidate for lead review. Do not use team tools or close tasks; preserve your native profile permissions.`
     : `You are "${memberName}", a teammate in team "${team.name}". Use team_message to communicate. You MUST send your results to the lead via team_message as a <task-result> with status, summary and details before stopping.`,
   ]
   if (member?.model) {
     lines.push(`Model identity: ${member.model}, variant ${member.model_variant ?? "default"}, effort ${annotatedEffort({ variant: member.model_variant })}.`)
+  }
+  if (member?.session_id) {
+    const execution = taskExecutionInstructions({ db }, member.session_id)
+    if (execution) lines.push(execution)
   }
   if (member?.report_mode !== "final_response") {
     lines.push("On V2, your member tools are called through the execute tool: team_message, team_broadcast, team_tasks_list, team_tasks_add, team_tasks_complete, team_claim, team_results, team_status, team_view, and team_handoff. Do not assume edit or shell permission beyond your profile.")

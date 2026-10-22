@@ -1,10 +1,15 @@
 import type { ToolDeps } from "../types"
 import { requireTeamMember } from "./shared"
 import { reconcileSessionAgent } from "../session-continuity"
+import { hasAutonomousAssignment, transitionTaskExecution } from "../task-execution"
 
 /** Switch this team session's agent for subsequent turns without replacing its history. */
-export async function executeTeamHandoff(deps: ToolDeps, args: { agent: string }, sessionId: string, signal?: AbortSignal): Promise<string> {
+export async function executeTeamHandoff(deps: ToolDeps, args: { agent?: string; phase?: "implementation"; reasoning?: string }, sessionId: string, signal?: AbortSignal): Promise<string> {
   const team = requireTeamMember(deps, sessionId)
+  if (team.role === "member" && hasAutonomousAssignment(deps, sessionId)) {
+    return transitionTaskExecution(deps, team.teamId, team.memberName ?? "", sessionId, args, signal)
+  }
+  if (args.phase !== undefined || args.reasoning !== undefined) throw new Error("Phase and reasoning controls require an autonomous task assignment")
   if (typeof args.agent !== "string" || !args.agent.trim()) throw new Error("agent is required")
   if (!deps.client.continuity) throw new Error("team_handoff requires OpenCode V2 switchAgent")
   signal?.throwIfAborted()

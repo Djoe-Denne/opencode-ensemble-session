@@ -1,5 +1,10 @@
 # Command-prepared missions
 
+New V2 missions default to [autonomous task execution](autonomous-execution.md):
+a strong catalogue start, one session/model per task, and worker-controlled
+reasoning. Classification is opt-in. The grid sections below describe explicitly
+configured or historical version-1 policies, not the new default.
+
 Ensemble separates a mission's proposal from permission to execute it. Project
 instructions still choose the workflow, agent profiles, verification requirements
 and scoring conventions. No `orchestrator` or `project-manager` profile is required.
@@ -24,19 +29,26 @@ OpenCode model.
 
 ## Durable policy
 
+QA is configured in the same mission discussion with
+`verification: { "level": "light" | "proportionate" | "reinforced", "commands": [], "acceptance": [] }`.
+The default is proportionate. The lead offers the level and only consequential
+command/acceptance choices interactively; there is no new questionnaire per task.
+The displayed contract is hashed and approved by `start`, then transmitted to
+workers from their admitted revision. Commands are declarative, never executed
+automatically by the plugin. No role pipeline or new QA gate is added. Project
+safety and mandatory rules cannot be silently waived by a lighter level.
+
 Each command-prepared mission gets:
 
 ```text
 .opencode/missions/<team-id>/model-policy.json
 ```
 
-An explicit `missionPolicy` in the effective global/project `ensemble.json` is
-copied into that file. Otherwise, the existing available model catalogue seeds a
-visible proposal: its low, middle and high capability entries initialize three
-groups. Catalogue scores and costs are **proposal inputs only**, never runtime
-routing inputs. This draft is not an assertion that its models are adequate;
-review it before approval. A configured catalogue or explicit default policy is
-required to prepare a mission.
+An explicit historical `missionPolicy` in the effective global/project
+`ensemble.json` is copied into that file. Otherwise, a version-2 proposal freezes
+enabled, natively supported catalogue entries and `startingIntelligence` (50 by
+default). There is no generated grid. Review the catalogue envelope before
+approval; already-admitted tasks retain their revision.
 
 Example of the policy shape (replace illustrative native IDs with available ones):
 

@@ -10,16 +10,18 @@ On capable V2 hosts the user can run:
 
 Preparation creates a draft and requests a plan using the project's instructions.
 The plugin does not require a specific planner profile or sequence of agents.
-Providers, exact native model/variant pairs, ordered alternatives and evaluation
-criteria are configured together. The existing supervisor retains its native
+The default freezes enabled, natively supported model/variant pairs from
+`ensemble.json` and a planning intelligence threshold (`startingIntelligence`,
+default 50). Classification is explicitly opt-in, not a prerequisite.
+The existing supervisor retains its native
 OpenCode model; the mission policy controls calls orchestrated by Ensemble.
 
 ## Proposal, corrections and approval
 
 1. Read the mission's `.opencode/missions/<team-id>/model-policy.json`.
-2. Propose a complete complexity × risk grid and explain the selected models for
-   known tasks. Both task scores are explicit integers 0–100. Criteria and scores
-   are heuristics, not success probabilities.
+2. Present the catalogue pairs, metrics and planning threshold. Do not invent
+   complexity/risk scores for default execution. Explicit historical v1 policies
+   retain their configured grid; their scores are heuristics, not probabilities.
 3. Apply the user's chat corrections to that draft, not global configuration or
    remembered context. A model equivalence is local to an ordered mission group,
    not a global or transitive claim about capabilities.
@@ -33,7 +35,30 @@ OpenCode model; the mission policy controls calls orchestrated by Ensemble.
 The plugin checks the displayed hash, native model/variant availability and
 configuration generation. Pending or failed preview delivery cannot authorize
 execution. Publishing tasks early does not start workers or classifiers. Missing
-scores never become zero, and explicit model/score overrides cannot evade the grid.
+scores never become zero, and explicit model/score overrides cannot evade policy.
+
+## Mission verification
+
+`config` proposes a QA level: `light`, `proportionate` (default), or `reinforced`.
+Store the selection as `verification: { level, commands?, acceptance? }` in the
+mission draft, present it again, and let the user approve with `start`. Do not
+execute those strings automatically: report the checks actually performed.
+Model/reasoning selection is independent of this choice. Existing project safety
+and mandatory testing contracts remain applicable; ask about conflicts instead
+of silently overriding them. No fixed QA agent pipeline is prescribed.
+Running tasks retain their admitted QA revision; changed QA applies to new tasks.
+
+## Worker execution
+
+Each default task uses one session/model. The worker plans with read/search and
+messaging permissions, then chooses its implementation reasoning with
+`team_handoff({ phase: "implementation", reasoning: "<allowed native variant>" })`.
+Omit reasoning to keep it. Afterwards `team_handoff({ reasoning: "<allowed variant>" })`
+can raise or lower effort. Only admitted catalogue variants of that same model
+are allowed. The worker decides when its plan is ready; no extra reviewer is
+required by this feature. Keep project verification requirements bounded to the
+actual deliverable. Report unsupported native controls instead of constructing
+an unrelated proof platform.
 
 ## Revisions and running work
 
@@ -45,9 +70,11 @@ changes; aggregate mission budgets are not reset. Native model alternatives are
 recorded, not automatic provider retries.
 
 Do not replace this policy using `team_message.model` or classification controls.
-The approved cell's native `(id, variant)` is the execution identity. Canonical reasoning effort is an annotation only; see `docs/mission-policy.md`.
+The admitted model stays fixed; its current reasoning is recorded separately.
+Canonical effort is an annotation, never a replacement for native variant IDs.
 Keep project-specific scoring floors, TDD requirements and verification contracts
-in project instructions. Direct `team_create` teams keep legacy operation.
+in project instructions. Direct V2 teams with a configured catalogue use the same
+execution path; V1/no-catalogue teams and historical grid policies remain compatible.
 
 ## Trust boundary
 

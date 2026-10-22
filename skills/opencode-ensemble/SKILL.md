@@ -24,12 +24,16 @@ Use Ensemble to coordinate bounded, verifiable missions. The lead chooses the te
 
 When the host exposes `/ensemble-mission`, the user can prepare an objective,
 discuss providers/models with `config`, and approve the presented policy with
-`start`. The persisted mission grid then owns model/variant selection; do not
-bypass it with explicit models, altered task scores or `team_message` controls.
+`start`. The persisted policy owns the initial model and allowed reasoning;
+workers may adjust reasoning within that envelope, not substitute models through
+altered task scores or `team_message` controls. Default V2 tasks plan read-only,
+then use `team_handoff({ phase: "implementation", reasoning: "<allowed variant>" })`;
+later `team_handoff({ reasoning: "<allowed variant>" })` may raise or lower effort.
 Write chat corrections to the mission draft rather than retaining them only in
 context. Do not invoke `start` on the user's behalf. Read
 [mission policy](references/mission-policy.md) for the approval and revision flow.
-Direct `team_create` remains the legacy workflow below.
+Direct V2 `team_create` also freezes this catalogue policy when configured;
+V1/no-catalogue teams retain the legacy assignment workflow below.
 
 ## Lead Workflow
 

@@ -29,7 +29,7 @@ export async function runClassification(deps: ToolDeps, teamId: string, policy: 
     : { method: "jev", model: policy.helperModel, variant: policy.helperVariant, toolId: policy.toolId }
   // Validate task evidence before attempting any method; absence is not an outage.
   const x86Input = specialized ? validateX86Input(job.data) : undefined
-  const jevInput = buildJevClassificationInput({ content: job.content, type: job.type, data: job.data }, job.manual, mission?.policy.assessment)
+    const jevInput = buildJevClassificationInput({ content: job.content, type: job.type, data: job.data }, job.manual, mission?.policy.version === 1 ? mission.policy.assessment : undefined)
   const chain: Method[] = [primary, ...(policy.fallbacks ?? [])]
   let attempts = 0
   let lastError = new Error("No authorized classification method available")

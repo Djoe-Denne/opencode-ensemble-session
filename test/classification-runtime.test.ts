@@ -21,7 +21,7 @@ function fixture() {
     invoke: async request => { calls.push(request.toolId); return request.toolId === "classify_x86" ? { complexity: 42, uncertainty: 23 } : { answers: { complexity: { type: "score", score: 0.4 }, risk: { type: "score", score: 0.2 } } } },
     general: async request => { calls.push(request.model); return { complexity: 0.3, risk: 0.1 } },
   } as ClassificationPort
-  deps.config.classification = { ...deps.config.classification, helperModel: "fixture/helper" }
+  deps.config.classification = { ...deps.config.classification, mode: "auto", helperModel: "fixture/helper" }
   return { deps, calls }
 }
 

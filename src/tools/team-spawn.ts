@@ -17,6 +17,7 @@ import type { EnsembleConfig } from "../config"
 import { routeNormalizedModel, validateTaskRoutingScores, type TaskRoutingScores } from "../model-router"
 import { getTeamResourceParts, preserveBranch, preservedBranchName } from "./merge-helper"
 import { releaseMemberTasks } from "../tasks"
+import { planningPermissions, startTaskPlanning, taskExecutionInstructions } from "../task-execution"
 
 /** Tracks consecutive spawn failures per team for circuit breaker. */
 export const spawnFailures = new Map<string, { count: number; lastError: string }>()
@@ -149,6 +150,9 @@ export async function executeTeamSpawn(
   validateTaskRoutingScores(scores)
   const hasScores = scores.complexity !== undefined || scores.risk !== undefined || classified !== undefined
   const policyRouting = routeMissionTask(deps.db, teamInfo.teamId, args.claim_task, { complexity: args.complexity, risk: args.risk })
+  const autonomous = Boolean(policyRouting && "execution" in policyRouting)
+  if (autonomous && (!deps.client.continuity || !deps.client.session.switchModel || !deps.nativeModels)) throw new Error("Autonomous execution requires OpenCode V2 model catalogue and permission switching")
+  if (autonomous && (!args.claim_task || finalResponse)) throw new Error("Autonomous workers require claim_task and collaborative reporting")
   if (policyRouting && taskScores && (taskScores.status !== "pending" || taskScores.assignee)) throw new Error(`Cannot claim mission task ${args.claim_task}: it is not unassigned and pending`)
   if (policyRouting && args.claim_task && !finalResponse && (agent === "plan" || agent === "explore")) throw new Error("Built-in read-only agents cannot claim mission tasks; use complete standalone scores or an appropriate task-owning profile")
   if (policyRouting && ((args.model !== undefined && args.model !== policyRouting.selected.id) || (args.variant !== undefined && args.variant !== policyRouting.selected.variant))) {
@@ -279,6 +283,7 @@ export async function executeTeamSpawn(
   // team tool. Safe: nested calls inside execute still enforce their own
   // permissions, so explore stays read-only.
   permission.push({ permission: "execute", pattern: "*", action: "allow" })
+  if (autonomous) permission.push(...planningPermissions())
 
   // Create child session — bind to workspace if available (server-enforced CWD isolation).
   // Falls back to no workspace binding if workspace.create failed.
@@ -421,11 +426,17 @@ export async function executeTeamSpawn(
     }
   }
 
+  if (autonomous) {
+    try { await startTaskPlanning(deps, teamInfo.teamId, args.name, childSessionId) }
+    catch (error) { return rejectPolicySpawn(error) }
+  }
+
   // Build teammate context message
   const context = [
     `You are "${args.name}", a teammate in team "${teamInfo.teamName}".`,
     `Your agent type is "${agent}".`,
   ]
+  if (autonomous) context.push(taskExecutionInstructions(deps, childSessionId))
   if (inherited) context.push(`[Ensemble task ${childSessionId}]`, "You inherited the source session's projected research/history. This message defines your new identity and task; historical teammate roles and instructions belong to the source, not to you.")
 
   // Show other teammates so this agent knows who to message
@@ -509,7 +520,7 @@ export async function executeTeamSpawn(
     }
 
     context.push("", "When you finish your task:")
-    if (deps.client.continuity) context.push("Use team_handoff to change your own agent in this same session when needed. Use team_results, team_status and team_view for inspection.")
+    if (deps.client.continuity && !autonomous) context.push("Use team_handoff to change your own agent in this same session when needed. Use team_results, team_status and team_view for inspection.")
     if (!isReadOnly && worktreeBranch) {
       context.push(`1. Commit your changes: git add -A && git commit -m "your summary"`)
       context.push("2. If you claimed a task, mark it complete using team_tasks_complete.")

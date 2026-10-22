@@ -4,6 +4,7 @@ import { requireTeamMember } from "./shared"
 import { assertMissionAdmission, hasMissionPolicy, routeMissionTask, saveMissionTaskRoute } from "../mission-policy"
 import { getMemberPromptModel } from "../member-model"
 import { notifyLead } from "../notify"
+import { hasAutonomousAssignment, startTaskPlanning, taskExecutionInstructions } from "../task-execution"
 
 /**
  * Atomically claim a pending task for an assignee. Sets status to
@@ -32,8 +33,8 @@ export function claimTask(db: Database, teamId: string, taskId: string, assignee
     if (route) {
       const active = db.query("SELECT id FROM team_task WHERE team_id = ? AND assignee = ? AND status = 'in_progress' AND id != ?").get(teamId, assignee, taskId)
       if (active) throw new Error(`Assignee ${assignee} already has an in-progress mission task`)
-      const approved = db.query("SELECT approved_hash, revision FROM mission_policy WHERE team_id = ?").get(teamId) as { approved_hash: string | null; revision: number }
-      if (approved.approved_hash !== route.policyHash || approved.revision !== route.policyRevision) throw new Error("Mission approval changed during claim")
+      const approved = assertMissionAdmission(db, teamId)
+      if (approved?.hash !== route.policyHash || approved.revision !== route.policyRevision) throw new Error("Mission approval changed during claim")
     }
     const result = db.run(
     "UPDATE team_task SET status = 'in_progress', assignee = ?, time_updated = ? WHERE id = ? AND team_id = ? AND status = 'pending' AND assignee IS NULL AND classification_status IN ('not_required', 'completed') AND team_id IN (SELECT id FROM team WHERE mission_state != 'critical')",
@@ -67,7 +68,8 @@ export async function executeTeamClaim(
     try {
       const selection = getMemberPromptModel(deps.db, teamInfo.teamId, claimerName)
       if (!selection.model) throw new Error("No approved native model for the claimed task")
-      await pinModel({ sessionID: sessionId, model: selection.model, ...(selection.variant ? { variant: selection.variant } : {}) })
+      if (hasAutonomousAssignment(deps, sessionId)) await startTaskPlanning(deps, teamInfo.teamId, claimerName, sessionId)
+      else await pinModel({ sessionID: sessionId, model: selection.model, ...(selection.variant ? { variant: selection.variant } : {}) })
     } catch (error) {
       deps.db.transaction(() => {
         deps.db.run("UPDATE team_task SET status = 'pending', assignee = NULL, time_updated = ? WHERE id = ? AND team_id = ? AND assignee = ? AND status = 'in_progress'",
@@ -80,5 +82,5 @@ export async function executeTeamClaim(
     }
   }
 
-  return `Claimed task: ${content}`
+  return `Claimed task: ${content}\n${taskExecutionInstructions(deps, sessionId)}`.trim()
 }

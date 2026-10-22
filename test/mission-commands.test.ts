@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseMissionCommand, registerMissionCommands, type MissionCommandDefinition, type MissionCommandInvocation } from "../src/mission-commands"
-import { setupDeps } from "./helpers"
+import { setupDeps, historicalModelPolicy } from "./helpers"
 
 const directories: string[] = []
 afterEach(() => directories.splice(0).forEach(path => rmSync(path, { recursive: true, force: true })))
@@ -16,6 +16,8 @@ function commandFixture() {
     { id: "fixture/light", intelligenceScore: 10, averageCostPerTask: 0, available: true },
     { id: "fixture/strong", reasoningEffort: "high", intelligenceScore: 30, averageCostPerTask: 1, available: true },
   ] } }
+  deps.config.missionPolicy = historicalModelPolicy(deps)
+  deps.config.classification = { ...deps.config.classification, mode: "auto" }
   const commands: MissionCommandDefinition[] = []
   const prompts: unknown[] = []
   let disposed = false

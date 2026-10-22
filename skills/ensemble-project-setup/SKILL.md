@@ -39,6 +39,12 @@ Explain the inferred behavior in a few sentences with supporting file paths. Sep
 
 Determine only durable project preferences: when coordination is useful, ownership/verification conventions, whether some reusable profiles are intended to coordinate, and whether reviews should be independent. Choose no permanent team size or mandatory explorer/architect/implementer sequence.
 
+QA depth is a mission choice through `/ensemble-mission config`, not a permanent
+agent pipeline. Diagnose any project obligations that conflict with light,
+proportionate (default), or reinforced verification. Surface conflicts for human
+arbitration; never silently weaken security, data integrity or accepted ADRs.
+When generating/adapting QA profiles, use [mission verification](references/mission-verification.md).
+
 Ask the smallest set of consequential questions, usually one to three, using the question tool when available. For example:
 
 - Is the inferred coordination policy correct, or should this project remain single-agent by default until explicitly requested?
