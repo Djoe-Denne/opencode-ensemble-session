@@ -316,6 +316,8 @@ export const MIGRATIONS: string[] = [
   // Migration 22: proposals and supervisor decisions are separate from admitted assignments.
   `ALTER TABLE team_task ADD COLUMN execution_request TEXT;
    ALTER TABLE team_task ADD COLUMN execution_decision TEXT;`,
+  // Migration 23: a cleanup retry must not squash-merge the same changes again.
+  `ALTER TABLE team_member ADD COLUMN merge_applied INTEGER NOT NULL DEFAULT 0 CHECK(merge_applied IN (0, 1));`,
 ]
 
 /**

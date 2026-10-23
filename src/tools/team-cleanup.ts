@@ -461,8 +461,8 @@ export async function executeTeamCleanup(
 
   const teamInfo = requireLead(deps, sessionId)
 
-  const members = deps.db.query("SELECT name, session_id, status, worktree_dir, worktree_branch, checkout_branch, preserved_branch, workspace_id FROM team_member WHERE team_id = ?")
-    .all(teamInfo.teamId) as Array<{ name: string; session_id: string; status: string; worktree_dir: string | null; worktree_branch: string | null; checkout_branch: string | null; preserved_branch: string | null; workspace_id: string | null }>
+  const members = deps.db.query("SELECT name, session_id, status, worktree_dir, worktree_branch, checkout_branch, preserved_branch, workspace_id, merge_applied FROM team_member WHERE team_id = ?")
+    .all(teamInfo.teamId) as Array<{ name: string; session_id: string; status: string; worktree_dir: string | null; worktree_branch: string | null; checkout_branch: string | null; preserved_branch: string | null; workspace_id: string | null; merge_applied: number }>
 
   const active = members.filter(m => m.status !== "shutdown" && m.status !== "shutdown_requested" && m.status !== "error")
 
@@ -497,7 +497,7 @@ export async function executeTeamCleanup(
   // A failed copy stops cleanup while the checkout still exists.
   for (const member of members) {
     const source = liveCheckoutBranch(member)
-    if (!member.preserved_branch || !source) continue
+    if (member.merge_applied || !member.worktree_dir || !member.preserved_branch || !source) continue
     const ok = await preserve(source, member.preserved_branch, deps.directory)
     if (!ok) throw new Error(`Refusing to clean up ${member.name}: could not refresh ${member.preserved_branch} from ${source}`)
   }
@@ -522,10 +522,12 @@ export async function executeTeamCleanup(
   }
 
   // Safety net: merge any remaining unmerged preserved branches
-  const unmerged = members.filter(m => branchToMerge(m) !== null)
+  const unmerged = members.filter(m => !m.merge_applied && branchToMerge(m) !== null)
   const merged: string[] = []
   const conflicted: string[] = []
   const overlapWarnings: string[] = []
+  const mergedMembers = new Set(members.filter(m => m.merge_applied && branchToMerge(m) !== null).map(m => m.name))
+  const cleanupWarnings: string[] = []
 
   if (unmerged.length > 0 && mergeOnCleanup) {
     for (const member of unmerged) {
@@ -539,10 +541,8 @@ export async function executeTeamCleanup(
       } catch { /* best effort */ }
       const result = await merge(branch, deps.directory)
       if (result.ok) {
-        await delBranch(branch, deps.directory)
-        deps.db.run("UPDATE team_member SET worktree_branch = NULL, preserved_branch = NULL, checkout_branch = NULL, worktree_state = 'released' WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
-        member.worktree_branch = null
-        member.preserved_branch = null
+        deps.db.run("UPDATE team_member SET merge_applied = 1 WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
+        mergedMembers.add(member.name)
         merged.push(`${member.name} (${branch})`)
       } else {
         log(`cleanup:merge:conflict member=${member.name} branch=${branch} err=${result.error}`)
@@ -553,6 +553,8 @@ export async function executeTeamCleanup(
 
   // Remove workspaces and worktrees
   for (const member of members) {
+    // Failed merges retain their worktree and refs for inspection/retry.
+    if (mergeOnCleanup && branchToMerge(member) && !mergedMembers.has(member.name)) continue
     if (member.workspace_id) {
       try {
         await deps.client.workspace.remove({ id: member.workspace_id })
@@ -563,19 +565,40 @@ export async function executeTeamCleanup(
       try {
         await deps.client.worktree.remove({ worktreeRemoveInput: { directory: member.worktree_dir } })
         deps.db.run("UPDATE team_member SET worktree_dir = NULL WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
-      } catch { /* best effort */ }
+      } catch {
+        cleanupWarnings.push(`${member.name}: could not remove worktree; branches retained`)
+        continue
+      }
+    }
+    if (mergedMembers.has(member.name)) {
+      const branch = branchToMerge(member)
+      if (!branch) continue
+      const source = liveCheckoutBranch(member)
+      if (source && source !== branch) {
+        if (!(await delBranch(source, deps.directory, branch))) {
+          cleanupWarnings.push(`${member.name}: could not delete ${source} locally/remotely; safety branch retained`)
+          continue
+        }
+        deps.db.run("UPDATE team_member SET worktree_branch = NULL, checkout_branch = NULL WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
+      }
+      if (!(await delBranch(branch, deps.directory))) {
+        cleanupWarnings.push(`${member.name}: could not delete ${branch} locally/remotely; branch identity retained`)
+        continue
+      }
+      deps.db.run("UPDATE team_member SET worktree_branch = NULL, preserved_branch = NULL, checkout_branch = NULL, worktree_state = 'released' WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
     }
   }
 
-  // Archive team
-  commitArchive(deps.db, teamInfo.teamId)
-
-  // Clean up in-memory state
-  deps.registry.unregisterTeam(teamInfo.teamId)
-  spawnFailures.delete(teamInfo.teamId)
+  const pending = cleanupWarnings.length > 0 || conflicted.length > 0
+  if (!pending) {
+    commitArchive(deps.db, teamInfo.teamId)
+    deps.registry.unregisterTeam(teamInfo.teamId)
+    spawnFailures.delete(teamInfo.teamId)
+  }
 
   // Build response
-  const parts: string[] = [`Team "${teamInfo.teamName}" cleaned up.`]
+  const parts: string[] = [pending ? `Team "${teamInfo.teamName}" cleanup pending; not archived. Retry team_cleanup after resolving the issues.` : `Team "${teamInfo.teamName}" cleaned up.`]
+  if (cleanupWarnings.length > 0) parts.push(...cleanupWarnings)
   if (merged.length > 0) {
     parts.push(`Safety-net merged ${merged.length} unmerged branch(es): ${merged.join(", ")}. Review with: git diff`)
   }

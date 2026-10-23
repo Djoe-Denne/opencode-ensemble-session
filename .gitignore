@@ -24,6 +24,7 @@ logs
 # caches
 .eslintcache
 .cache
+.tmp/
 .grepai/
 .serena/
 *.tsbuildinfo

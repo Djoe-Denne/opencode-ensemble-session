@@ -286,6 +286,43 @@ describe("supervisor-authorized direct documentation/research", () => {
     expect(taskExecutionInstructions(deps, "worker-session")).toContain("Plan read-only first")
   })
 
+  test("planning asks for an explicit reasoning reassessment before handoff, not after it", async () => {
+    const { deps, teamId } = await fixture()
+    const id = await add(deps, direct, "worker-session")
+    await executeTeamTasksAdd(deps, { tasks: [], execution_decisions: [{ task_id: id, mode: "planned", kind: "mixed" }] }, "lead")
+    await executeTeamClaim(deps, { task_id: id }, "worker-session")
+    const planning = taskExecutionInstructions(deps, "worker-session")
+    expect(planning).toContain("Once the plan is established, reassess the reasoning needed for implementation")
+    expect(planning).toContain("lowest allowed level you judge sufficient")
+    expect(planning).toContain("do not automatically retain the planning level")
+    expect(planning).toContain("Briefly explain your choice in public text before calling")
+    expect(planning).toContain('team_handoff({ phase: "implementation", reasoning: "<allowed variant>" })')
+    expect(planning).toContain("Keeping the current level is appropriate when needed")
+    expect(planning).toContain("Allowed reasoning: low, high")
+    expect(planning).toContain("General-purpose command execution is unavailable during planning")
+
+    // Omitting reasoning remains backwards-compatible; this is guidance, not a runtime gate.
+    await executeTeamHandoff(deps, { phase: "implementation" }, "worker-session")
+    expect(getMemberPromptModel(deps.db, teamId, "worker").variant).toBe("high")
+    const implementation = taskExecutionInstructions(deps, "worker-session")
+    expect(implementation).toContain("Planning is complete")
+    expect(implementation).toContain("Allowed reasoning: low, high")
+    expect(implementation).toContain("raises or lowers effort")
+    expect(implementation).not.toContain("Once the plan is established, reassess")
+    await expect(executeTeamHandoff(deps, { reasoning: "unapproved" }, "worker-session")).rejects.toThrow("Requested reasoning is outside the approved catalogue")
+    expect(getMemberPromptModel(deps.db, teamId, "worker").variant).toBe("high")
+  })
+
+  test("direct implementation tasks do not receive the planning reassessment instruction", async () => {
+    const { deps } = await fixture()
+    const id = await add(deps)
+    await executeTeamClaim(deps, { task_id: id }, "worker-session")
+    const instructions = taskExecutionInstructions(deps, "worker-session")
+    expect(instructions).toContain("Task phase: implementation")
+    expect(instructions).toContain("Supervisor-authorized direct documentation task")
+    expect(instructions).not.toContain("Once the plan is established, reassess")
+  })
+
   test("a decision changed during spawn allocation cannot launch with stale permissions/model", async () => {
     const { deps } = await fixture()
     const id = await add(deps)

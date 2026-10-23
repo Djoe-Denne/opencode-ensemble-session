@@ -1,6 +1,7 @@
 import type { Database } from "../db"
 import { log } from "../log"
 import { runCommand } from "../process"
+import { deleteOwnedBranch } from "../worktree-branches"
 
 /** Result of merging a single branch. */
 export interface MergeResult {
@@ -18,7 +19,7 @@ export type OverlapCheckFn = (branch: string, cwd: string) => Promise<string[]>
 export type PreserveBranchFn = (sourceBranch: string, targetBranch: string, cwd: string) => Promise<boolean>
 
 /** Injectable function for deleting a branch. */
-export type DeleteBranchFn = (branch: string, cwd: string) => Promise<boolean>
+export type DeleteBranchFn = (branch: string, cwd: string, safetyBranch?: string) => Promise<boolean>
 
 /** Human-readable resource identity for a team. */
 export interface TeamResourceParts {
@@ -79,15 +80,13 @@ export async function preserveBranch(sourceBranch: string, targetBranch: string,
 }
 
 /**
- * Delete a git branch. Returns true if successful.
+ * Delete an owned Git branch locally and remotely, retaining it on any failure.
+ * A safety copy proves the expected tip if the host already removed the local ref.
  */
-export async function deleteBranch(branch: string, cwd: string): Promise<boolean> {
-  const result = await runCommand(["git", "branch", "-D", branch], { cwd })
-  if (result.exitCode !== 0) {
-    log(`merge-helper:delete:failed branch=${branch}`)
-    return false
-  }
-  return true
+export async function deleteBranch(branch: string, cwd: string, safetyBranch?: string): Promise<boolean> {
+  const ok = await deleteOwnedBranch(branch, cwd, safetyBranch)
+  if (!ok) log(`merge-helper:delete:failed branch=${branch}`)
+  return ok
 }
 
 /**

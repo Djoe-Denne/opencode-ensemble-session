@@ -6,6 +6,15 @@ import type { MergeBranchFn, DeleteBranchFn, OverlapCheckFn, PreserveBranchFn } 
 import { log } from "../log"
 import { branchToMerge, liveCheckoutBranch } from "../worktree-state"
 
+interface MergeMember {
+  status: string
+  worktree_branch: string | null
+  checkout_branch: string | null
+  preserved_branch: string | null
+  worktree_dir: string | null
+  merge_applied: number
+}
+
 /**
  * Execute the team_merge tool. Merges a shutdown teammate's preserved
  * branch into the working directory as unstaged changes.
@@ -23,8 +32,8 @@ export async function executeTeamMerge(
 ): Promise<string> {
   const teamInfo = requireLead(deps, sessionId)
 
-  const member = deps.db.query("SELECT status, worktree_branch, checkout_branch, preserved_branch, worktree_dir FROM team_member WHERE team_id = ? AND name = ?")
-    .get(teamInfo.teamId, args.member) as { status: string; worktree_branch: string | null; checkout_branch: string | null; preserved_branch: string | null; worktree_dir: string | null } | null
+  const member = deps.db.query("SELECT status, worktree_branch, checkout_branch, preserved_branch, worktree_dir, merge_applied FROM team_member WHERE team_id = ? AND name = ?")
+    .get(teamInfo.teamId, args.member) as MergeMember | null
   if (!member) throw new Error(`Teammate "${args.member}" not found in team "${teamInfo.teamName}"`)
 
   if (member.status !== "shutdown" && member.status !== "error") {
@@ -35,8 +44,9 @@ export async function executeTeamMerge(
   if (!branch) {
     throw new Error(`No branch to merge for "${args.member}". They may not have a worktree, or their work was already merged.`)
   }
+  if (member.merge_applied) return finishMerge(deps, teamInfo.teamId, args.member, member, delBranch)
   const source = liveCheckoutBranch(member)
-  if (member.preserved_branch && source && !(await preserve(source, member.preserved_branch, deps.directory))) {
+  if (member.worktree_dir && member.preserved_branch && source && !(await preserve(source, member.preserved_branch, deps.directory))) {
     return `Cannot merge ${args.member}: could not refresh preserved ref ${member.preserved_branch} from ${source}. The checkout branch was left in place.`
   }
   log(`merge:start member=${args.member} branch=${branch}`)
@@ -94,13 +104,38 @@ export async function executeTeamMerge(
     ].join("\n")
   }
 
-  // Merge succeeded — delete the preserved branch and clear DB
-  await delBranch(branch, deps.directory)
+  deps.db.run("UPDATE team_member SET merge_applied = 1 WHERE team_id = ? AND name = ?", [teamInfo.teamId, args.member])
+  return finishMerge(deps, teamInfo.teamId, args.member, member, delBranch)
+}
+
+async function finishMerge(deps: ToolDeps, teamId: string, memberName: string, member: MergeMember, delBranch: DeleteBranchFn): Promise<string> {
+  const branch = branchToMerge(member)
+  if (!branch) throw new Error(`No branch to release for "${memberName}"`)
+  const source = liveCheckoutBranch(member)
+  // A checked-out branch cannot be deleted. Keep the safety copy until the
+  // host teardown and local/remote checkout deletion have both succeeded.
+  if (member.worktree_dir) {
+    try {
+      await deps.client.worktree.remove({ worktreeRemoveInput: { directory: member.worktree_dir } })
+      deps.db.run("UPDATE team_member SET worktree_dir = NULL WHERE team_id = ? AND name = ?", [teamId, memberName])
+    } catch {
+      return `Merged ${memberName}'s changes (unstaged); cleanup pending: could not remove their worktree. Branches retained; retry team_merge.`
+    }
+  }
+  if (source && source !== branch && !(await delBranch(source, deps.directory, branch))) {
+    return `Merged ${memberName}'s changes (unstaged); cleanup pending: could not delete ${source} locally/remotely. Safety branch retained; retry team_merge.`
+  }
+  if (source && source !== branch) {
+    deps.db.run("UPDATE team_member SET checkout_branch = NULL, worktree_branch = NULL WHERE team_id = ? AND name = ?", [teamId, memberName])
+  }
+  if (!(await delBranch(branch, deps.directory))) {
+    return `Merged ${memberName}'s changes (unstaged); cleanup pending: could not delete ${branch} locally/remotely. Branch identity retained; retry team_merge.`
+  }
   deps.db.run(
     "UPDATE team_member SET worktree_branch = NULL, preserved_branch = NULL, checkout_branch = NULL, worktree_state = 'released' WHERE team_id = ? AND name = ?",
-    [teamInfo.teamId, args.member],
+    [teamId, memberName],
   )
 
-  log(`merge:done member=${args.member} branch=${branch}`)
-  return `Merged ${args.member}'s changes into your working directory (unstaged). Review with: git diff`
+  log(`merge:done member=${memberName} branch=${branch}`)
+  return `Merged ${memberName}'s changes into your working directory (unstaged). Review with: git diff`
 }

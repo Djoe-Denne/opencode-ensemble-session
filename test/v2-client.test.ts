@@ -235,10 +235,41 @@ describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
     expect((await client.workspace.create({ branch: "ensemble-branch" })).data?.directory).toBe("/wt/ensemble-proj-team-alice")
   })
 
-  test("worktree.create refuses an empty git branch --show-current", async () => {
+  test("worktree.create attaches a detached native worktree before admitting it", async () => {
+    const { ctx } = mockCtx()
+    const attached: string[] = []
+    const client = createV2Client({ ...ctx, location: { directory: "/project" } } as never, {
+      gitBranch: async () => attached.length ? "ensemble-created" : null,
+      attachBranch: async (directory, source) => {
+        attached.push(directory, source)
+        return "ensemble-created"
+      },
+    })
+    const result = await client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })
+    expect(result.data?.branch).toBe("ensemble-created")
+    expect(attached).toEqual(["/wt/ensemble-proj-team-alice", "/project"])
+    expect((await client.workspace.create({ branch: "ensemble-created" })).data?.directory).toBe(result.data?.directory)
+  })
+
+  test("worktree.create refuses an empty branch when source identity is unavailable", async () => {
     const { ctx } = mockCtx()
     const client = createV2Client(ctx as never, { gitBranch: mockGit({}) })
     await expect(client.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })).rejects.toThrow("show-current")
+  })
+
+  test("worktree.create does not admit an unverified or failed branch attachment", async () => {
+    const { ctx } = mockCtx()
+    const location = { directory: "/project" }
+    const unverified = createV2Client({ ...ctx, location } as never, {
+      gitBranch: async () => null,
+      attachBranch: async () => "ensemble-not-attached",
+    })
+    await expect(unverified.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })).rejects.toThrow("not verified")
+    const failed = createV2Client({ ...ctx, location } as never, {
+      gitBranch: async () => null,
+      attachBranch: async () => { throw new Error("attachment failed") },
+    })
+    await expect(failed.worktree.create({ worktreeCreateInput: { name: "ensemble-x" } })).rejects.toThrow("attachment failed")
   })
 
   test("worktree.remove/list/reset map to V2 remove/list/refresh", async () => {

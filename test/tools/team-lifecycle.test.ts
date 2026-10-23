@@ -377,7 +377,7 @@ describe("team_cleanup", () => {
     expect(removeCalls).toHaveLength(1)
   })
 
-  test("cleanup continues if worktree removal fails", async () => {
+  test("cleanup retains resource identities for retry if worktree removal fails", async () => {
     insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
     deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ? WHERE name = 'alice'",
       ["/tmp/worktree-alice", "ensemble-my-team-alice"])
@@ -386,7 +386,10 @@ describe("team_cleanup", () => {
     deps.client.worktree.remove = async () => { throw new Error("worktree gone") }
 
     const result = await executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, noopMerge, noopDelete, false)
-    expect(result).toContain("cleaned up")
+    expect(result).toContain("cleanup pending")
+    const row = deps.db.query("SELECT worktree_dir, worktree_branch FROM team_member WHERE name = 'alice'").get() as { worktree_dir: string | null; worktree_branch: string | null }
+    expect(row.worktree_dir).toBe("/tmp/worktree-alice")
+    expect(row.worktree_branch).toBe("ensemble-my-team-alice")
   })
 
   test("cleanup with no worktrees does not mention branches", async () => {

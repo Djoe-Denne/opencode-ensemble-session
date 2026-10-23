@@ -31,6 +31,52 @@ function preservedFor(deps: Deps, teamName: string, memberName: string): string 
 
 // ─── Branch preservation on shutdown ───
 
+describe("automatic branch release on cleanup", () => {
+  test("deletes the checkout only after removing its worktree, then deletes the safety ref", async () => {
+    const deps = setupDeps()
+    const lead = "lead-release"
+    await executeTeamCreate(deps, { name: "cleanup-release" }, lead)
+    await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "task" }, lead)
+    await executeTeamShutdown(deps, { member: "alice" }, lead, undefined, noopPreserve)
+    const row = deps.db.query("SELECT checkout_branch, preserved_branch FROM team_member WHERE name = 'alice'").get() as { checkout_branch: string; preserved_branch: string }
+    const deleted: string[] = []
+    await executeTeamCleanup(deps, { force: false }, lead, async () => false, noopMerge, async branch => {
+      expect(deps.client.calls.some(call => call.method === "worktree.remove")).toBe(true)
+      deleted.push(branch)
+      return true
+    }, true, noopOverlap)
+    expect(deleted).toEqual([row.checkout_branch, row.preserved_branch])
+  })
+
+  test("does not archive or forget branches when deletion fails", async () => {
+    const deps = setupDeps()
+    const lead = "lead-release-fail"
+    await executeTeamCreate(deps, { name: "cleanup-release-fail" }, lead)
+    await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "task" }, lead)
+    await executeTeamShutdown(deps, { member: "alice" }, lead, undefined, noopPreserve)
+    const result = await executeTeamCleanup(deps, { force: false }, lead, async () => false, noopMerge, async () => false, true, noopOverlap)
+    expect(result).toContain("cleanup pending")
+    const member = deps.db.query("SELECT checkout_branch, preserved_branch FROM team_member WHERE name = 'alice'").get() as { checkout_branch: string | null; preserved_branch: string | null }
+    expect(member.checkout_branch).not.toBeNull()
+    expect(member.preserved_branch).not.toBeNull()
+    const team = deps.db.query("SELECT status FROM team WHERE name = 'cleanup-release-fail'").get() as { status: string }
+    expect(team.status).not.toBe("archived")
+  })
+
+  test("retry finishes cleanup without re-merging changes already applied", async () => {
+    const deps = setupDeps()
+    const lead = "lead-release-resume"
+    await executeTeamCreate(deps, { name: "cleanup-release-resume" }, lead)
+    await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "task" }, lead)
+    await executeTeamShutdown(deps, { member: "alice" }, lead, undefined, noopPreserve)
+    let merges = 0
+    const merge: MergeBranchFn = async () => { merges++; return { ok: true } }
+    await executeTeamCleanup(deps, { force: false }, lead, async () => false, merge, async () => false, true, noopOverlap)
+    expect(await executeTeamCleanup(deps, { force: false }, lead, async () => false, merge, noopDelete, true, noopOverlap)).toContain("cleaned up")
+    expect(merges).toBe(1)
+  })
+})
+
 describe("branch preservation", () => {
   let deps: Deps
   const lead = "lead-sess"
@@ -222,6 +268,47 @@ describe("team_merge", () => {
 
     await executeTeamMerge(deps, { member: "alice" }, lead, noopMerge, trackDelete, noopOverlap)
     expect(deletedBranch).toBe(preservedFor(deps, "del-branch", "alice"))
+  })
+
+  test("removes the worktree before deleting checkout and safety branches", async () => {
+    await executeTeamCreate(deps, { name: "release-order" }, lead)
+    await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "task" }, lead)
+    await executeTeamShutdown(deps, { member: "alice" }, lead, undefined, noopPreserve)
+    const row = deps.db.query("SELECT checkout_branch FROM team_member WHERE name = 'alice'").get() as { checkout_branch: string }
+    const deleted: string[] = []
+    const result = await executeTeamMerge(deps, { member: "alice" }, lead, noopMerge, async branch => {
+      expect(deps.client.calls.some(call => call.method === "worktree.remove")).toBe(true)
+      deleted.push(branch)
+      return true
+    }, noopOverlap)
+    expect(result).toContain("Merged alice's changes")
+    expect(deleted).toEqual([row.checkout_branch, preservedFor(deps, "release-order", "alice")])
+  })
+
+  test("retains branch identities and reports a failed deletion for retry", async () => {
+    await executeTeamCreate(deps, { name: "release-retry" }, lead)
+    await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "task" }, lead)
+    await executeTeamShutdown(deps, { member: "alice" }, lead, undefined, noopPreserve)
+    const result = await executeTeamMerge(deps, { member: "alice" }, lead, noopMerge, async () => false, noopOverlap)
+    expect(result).toContain("cleanup pending")
+    const row = deps.db.query("SELECT checkout_branch, preserved_branch FROM team_member WHERE name = 'alice'").get() as { checkout_branch: string | null; preserved_branch: string | null }
+    expect(row.checkout_branch).not.toBeNull()
+    expect(row.preserved_branch).not.toBeNull()
+  })
+
+  test("retries a failed safety-ref deletion without refreshing a released checkout", async () => {
+    await executeTeamCreate(deps, { name: "release-partial" }, lead)
+    await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "task" }, lead)
+    await executeTeamShutdown(deps, { member: "alice" }, lead, undefined, noopPreserve)
+    const safety = preservedFor(deps, "release-partial", "alice")
+    await executeTeamMerge(deps, { member: "alice" }, lead, noopMerge, async branch => branch !== safety, noopOverlap)
+    const row = deps.db.query("SELECT checkout_branch, worktree_branch, preserved_branch FROM team_member WHERE name = 'alice'").get() as { checkout_branch: string | null; worktree_branch: string | null; preserved_branch: string | null }
+    expect(row.checkout_branch).toBeNull()
+    expect(row.worktree_branch).toBeNull()
+    expect(row.preserved_branch).toBe(safety)
+    const result = await executeTeamMerge(deps, { member: "alice" }, lead, noopMerge, noopDelete, noopOverlap)
+    expect(result).toContain("Merged alice's changes")
+    expect(result).not.toContain("cleanup pending")
   })
 
   test("rejects merge for active (non-shutdown) member", async () => {

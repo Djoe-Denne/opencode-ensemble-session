@@ -1,5 +1,6 @@
 import type { PluginClient } from "./types"
 import { runCommand } from "./process"
+import { attachWorktreeBranch } from "./worktree-branches"
 import { createV2Continuity, type V2ContinuityOptions } from "./v2-continuity"
 
 /** V2 plugin context subset Ensemble needs (structural, mock-friendly). */
@@ -44,6 +45,8 @@ export interface V2ClientDeps extends V2ContinuityOptions {
   gitBranch?: (directory: string) => Promise<string | null>
   /** Worktree directory currently on a branch, or null when none. */
   gitDir?: (branch: string) => Promise<string | null>
+  /** Attach a verified detached worktree to a new Ensemble-owned branch. */
+  attachBranch?: (directory: string, source: string) => Promise<string>
   /** RPC emitter for companion events (team_view navigation). */
   rpcEmitter?: { events: { emit(name: string, data: unknown): Promise<unknown> } }
 }
@@ -84,7 +87,7 @@ function joinParts(parts: Array<{ type: "text"; text: string }>): string {
  * - tui.*: no-op. Toasts and session-select move to the CLI (`./tui`) plugin
  *   in a later phase — the server plugin must not depend on a TUI.
  * - worktree.create: V2 reports only the directory, so the branch is read
- *   back via git. An empty `git branch --show-current` is a failure.
+ *   back via git. A verified detached worktree gets a unique Ensemble branch.
  * - worktree.list: V2 entries carry directory only; name is the basename
  *   (recovery filters on the `ensemble-` prefix — a non-matching dir is
  *   skipped, never wrongly deleted). reset has no production callers and
@@ -204,8 +207,14 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
       create: async (options) => {
         const name = (options.worktreeCreateInput as { name?: string } | undefined)?.name ?? "ensemble-worktree"
         const created = await ctx.worktree.create({ name, ...project, ...(ctx.location ? { from: ctx.location.directory } : {}) })
-        const branch = await gitBranch(created.directory)
+        const discovered = await gitBranch(created.directory)
+        const branch = discovered ?? (ctx.location
+          ? await (deps.attachBranch ?? attachWorktreeBranch)(created.directory, ctx.location.directory)
+          : null)
         if (!branch) throw new Error(`Refusing worktree ${created.directory}: git branch --show-current is empty`)
+        if (!discovered && await gitBranch(created.directory) !== branch) {
+          throw new Error(`Refusing worktree ${created.directory}: branch attachment was not verified`)
+        }
         worktreeDirectories.set(branch, created.directory)
         return { data: { name, branch, directory: created.directory } }
       },

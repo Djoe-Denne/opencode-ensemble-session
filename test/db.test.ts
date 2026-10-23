@@ -182,8 +182,8 @@ describe("schema migrations", () => {
     expect(project.name).toBe("Default Project")
     const team = db.query("SELECT name, project_id, lead_agent FROM team WHERE id = 't1'").get() as { name: string; project_id: string; lead_agent: string }
     expect(team).toEqual({ name: "legacy-team", project_id: "default", lead_agent: "build" })
-    const member = db.query("SELECT prompt, workspace_id, reported_to_lead FROM team_member WHERE team_id = 't1' AND name = 'alice'").get() as { prompt: string; workspace_id: string; reported_to_lead: number }
-    expect(member).toEqual({ prompt: "legacy prompt", workspace_id: "ws-1", reported_to_lead: 0 })
+    const member = db.query("SELECT prompt, workspace_id, reported_to_lead, merge_applied FROM team_member WHERE team_id = 't1' AND name = 'alice'").get() as { prompt: string; workspace_id: string; reported_to_lead: number; merge_applied: number }
+    expect(member).toEqual({ prompt: "legacy prompt", workspace_id: "ws-1", reported_to_lead: 0, merge_applied: 0 })
     const task = db.query("SELECT content FROM team_task WHERE id = 'task-1'").get() as { content: string }
     expect(task.content).toBe("legacy task")
     const message = db.query("SELECT content, read FROM team_message WHERE id = 'msg-1'").get() as { content: string; read: number }
