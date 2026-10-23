@@ -22,6 +22,14 @@ Check:
 
 Record runtime checks as **verified**, **configured only**, or **unavailable** with evidence. If no server/catalog is available, continue with a filesystem proposal and preserve that distinction in the final report.
 
+Inspect `businessProfiles.extensions` and `businessProfiles.byAgent` in the
+global `~/.config/opencode/ensemble.json` and project `.opencode/ensemble.json`.
+These are Ensemble settings, separate from native OpenCode JSON/JSONC agents.
+Confirm support in the selected plugin's shipped contract, not merely the
+presence of a config key. Missing support or unknown compatibility is a blocker
+to applying mappings, not permission to upgrade or edit global configuration.
+Record the effective merge and origin of each mapping; preserve custom categories.
+
 ## Agent Definitions and Project Instructions
 
 Read `.opencode/agents/*.md` plus any other native agent sources confirmed by the configuration/catalog. Markdown frontmatter carries native agent options; the body is the system prompt. Include applicable `AGENTS.md` files and the project's own documented verification commands.
@@ -33,6 +41,14 @@ For each relevant profile, note its actual ID/source, mode, specialty, write res
 - **Unknown:** effective permissions unavailable, duplicate IDs unresolved, whether a native subagent-only profile should become a handoff target.
 
 A role label does not establish permissions or leadership. A read-only prompt is not native permission enforcement. Native `mode: subagent` is different from an Ensemble member; prefer `primary`/`all` for a requested session-level handoff profile, but change the mode only after a specific developer decision.
+
+For each native ID being created/adapted or explicitly inventoried for
+categorization, record its declared business profile (or none), responsibility
+evidence, proposed category when missing, and unresolved ambiguities. Include
+inline/inherited/built-in definitions when relevant, without inventing a Markdown
+file. Keep exact IDs: no case folding, trimming, rename or name-based assignment.
+An association is configuration evidence only: report disk presence and native
+availability separately; an unavailable runtime catalog remains unverified.
 
 ## Existing Ensemble Policy
 

@@ -1,6 +1,6 @@
 ---
 name: ensemble-project-setup
-description: "Analyzes an existing OpenCode project's agents and instructions, proposes an Ensemble integration for developer confirmation, and applies minimal approved changes. Use when asked to install, set up, integrate, configure, or reconcile Ensemble in a project, adapt existing Markdown agents for team coordination, or rerun project onboarding. Ordinary team execution uses opencode-ensemble instead."
+description: "Analyzes an OpenCode project's agents and instructions, proposes an Ensemble integration and explicit business-profile categories for developer confirmation, and applies minimal approved changes. Use when asked to install, set up, integrate, configure, or reconcile Ensemble, create or adapt agent profiles, categorize project agents, or rerun onboarding. Ordinary team execution uses opencode-ensemble instead."
 license: MIT
 compatibility: "OpenCode V2 project configuration; file read/edit tools and an interactive question tool or conversation. Native capability checks are optional when no server is available."
 metadata:
@@ -29,6 +29,7 @@ Read [inventory](references/inventory.md) for the bounded discovery procedure. C
 - Existing native agent Markdown definitions and their intended use, modes, permissions, and expertise. Account for inline/global definitions and duplicate IDs; a file alone is not proof of the effective profile.
 - Whether a compatible Ensemble plugin and the `opencode-ensemble` skill are configured and actually discoverable. Distinguish configured, found on disk, and verified in the active catalog.
 - Any existing integration policy or managed blocks from a previous run.
+- Existing `businessProfiles` in project/global Ensemble configuration and whether the selected plugin supports it; distinguish inherited mappings, local mappings and agents with no declared category.
 - When agent Markdown is present, run `bun scripts/lint-agent-profiles.ts <agents-dir>`. Show the JSON report. Propose a permission diff as a separate change and do not apply it without approval. See [profile lint](references/profile-lint.md) and [teammate profile](references/teammate-profile.md).
 
 Prefer native resolved catalogs when available through public tools. Otherwise mark runtime status **unverified** and use filesystem evidence. Do not invent a plugin version, capability, agent API, or successful installation check.
@@ -38,6 +39,14 @@ Prefer native resolved catalogs when available through public tools. Otherwise m
 Explain the inferred behavior in a few sentences with supporting file paths. Separate explicit project rules from hypotheses. Agent names suggest specialties; permissions and instructions determine actual constraints.
 
 Determine only durable project preferences: when coordination is useful, ownership/verification conventions, whether some reusable profiles are intended to coordinate, and whether reviews should be independent. Choose no permanent team size or mandatory explorer/architect/implementer sequence.
+
+When creating or adapting an agent, include a proposed principal business profile
+in the setup proposal, even if no current harness behavior consumes it. Read the
+[business-profile recipe](references/patch-recipes.md#business-profile-associations).
+Use responsibilities and existing instructions as evidence, not an automatic
+mapping from the agent name. Preserve explicit existing categories; resolve only
+ambiguous or conflicting choices with the developer. A category neither grants
+permissions nor makes an agent lead; do not require all eight initial profiles.
 
 QA depth is a mission choice through `/ensemble-mission config`, not a permanent
 agent pipeline. Diagnose any project obligations that conflict with light,
@@ -72,6 +81,13 @@ Use [patch recipes](references/patch-recipes.md). Present:
 3. Remaining assumptions, including any unverified runtime capability.
 4. A clear choice to apply, revise, or keep diagnosis only.
 
+For agent creation/adaptation or categorization requests, include the proposed
+`businessProfiles.byAgent` entries in `.opencode/ensemble.json`, any approved
+custom extensions, and the reason for each category. Report existing/inherited,
+proposed and unresolved categories separately. The exact association is part of
+the approved diff, not an implicit consequence of creating an agent. Do not add
+this metadata to OpenCode agent frontmatter or its native configuration schema.
+
 Usually the proposal is just a discoverable operational skill and a short `AGENTS.md` policy. Keep reusable protocol in `opencode-ensemble`; put durable expertise/permissions in optional native profiles and changing missions in spawn prompts. Existing agent bodies often need no edit.
 
 Add a profile-specific reminder only if it has a concrete purpose and is approved. Reuse equivalent existing guidance. Offer a new profile only for an identified recurring specialty requested by the developer, not to complete an example topology.
@@ -87,6 +103,7 @@ Resolve plugin and skill sources deliberately. Prefer an existing compatible ins
 - Use the stable block markers in the recipes only for newly inserted setup-owned guidance. On subsequent runs, reconcile that block in place. User edits inside a marker remain user work, not permission to overwrite them.
 - When equivalent unmarked guidance already exists, keep it or propose a focused edit instead of appending another block.
 - Avoid blanket directory copies over an existing skill installation. Compare the selected source/version and affected files first. Keep project configuration, secrets, and other profiles out of copied skill assets.
+- Apply approved business-profile mappings project-locally, preserving unrelated settings, custom extensions and inherited associations. Reuse a matching inherited mapping instead of duplicating it. If businessProfiles is unsupported or compatibility is unknown, report that blocker and propose compatibility verification; do not silently upgrade the plugin or claim the category was registered.
 
 ## 5. Verify and Report
 
@@ -97,6 +114,7 @@ Repeat the inventory comparison without applying more changes. A second setup ru
 Report briefly:
 
 - Adopted coordination policy and changed files, or why no edits were needed.
+- Business categories retained/registered, agents still unresolved, and configured versus runtime-verified evidence; categorization does not imply the harness uses it.
 - Validation actually performed and any runtime checks still unverified.
 - How to invoke `@opencode-ensemble` for future missions.
 

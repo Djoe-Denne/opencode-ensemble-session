@@ -40,6 +40,34 @@
         "Recognizes and preserves developer customization inside managed markers and explicit-request-only delegation.",
         "Reports no necessary changes with filesystem evidence and does not claim unavailable native runtime verification."
       ]
+    },
+    {
+      "id": 4,
+      "name": "business-profile-approved-creation-and-adaptation",
+      "prompt": "The fixture plugin's support for the current businessProfiles contract is verified from its shipped code; native runtime availability is not. Apply this exact approved project change: associate api-specialist with developer; keep docs-reviewer's existing reviewer mapping; create security-reader.md with the approved read-only native definition supplied by the evaluator and associate it with the security-reviewer extension (description: Review security boundaries and threats). Add the extension if absent. Only the project ensemble.json and the new native agent file may change. Preserve the existing project settings, custom profiles, native names/models/modes/permissions and global files. Re-evaluate the intended state without writing a second time. Do not run a team or server.",
+      "expected_output": "One project-local categorization patch and one explicitly approved agent creation. Existing mappings and native definitions are preserved; no OpenCode metadata field, implied lead rights or runtime discovery claim. Repeated state needs no change.",
+      "files": ["files/api-specialist.md", "files/docs-reviewer.md", "files/internal-skill.md"],
+      "expectations": [
+        "Writes only the approved project ensemble.json entries and supplied security-reader native definition; does not edit existing native agents or global files.",
+        "Uses developer, reviewer and security-reviewer as explicit exact-ID mappings; validates the non-empty extension description and merged references.",
+        "Preserves existing custom extensions, mappings, unrelated config, models, permissions and modes; does not put business metadata in OpenCode frontmatter.",
+        "Reports categorization as declared metadata, not runtime availability or a change in model, lead authority, direct execution or QA pipeline.",
+        "The effective second-run comparison proposes no duplicate entries, extension or agent."
+      ]
+    },
+    {
+      "id": 5,
+      "name": "business-profile-inherited-and-ambiguous",
+      "prompt": "Propose categories for all agents declared in this fixture, including the inline/global agents described in the evaluator inventory. Do not apply any changes yet. The effective global businessProfiles maps api-specialist to developer; project docs-reviewer already has the custom editorial-review profile. A mixed coordinator named supervisor handles both product priorities and coordination; its intended principal category is unspecified. Preserve existing choices and native fields. Present compatibility-verified and compatibility-unknown plugin cases separately. Native catalogs are unavailable, so distinguish file/config evidence from runtime availability. Do not write global config, contact a server, run a team or infer a category solely from a name.",
+      "expected_output": "Byte-identical fixture files; inherited and custom associations preserved, responsibility-based proposals and one grouped question for the mixed role. Unknown support blocks mapping application, not diagnosis. No blanket eight-profile generation or runtime claim.",
+      "files": ["files/api-specialist.md", "files/docs-reviewer.md", "files/project-opencode.jsonc"],
+      "expectations": [
+        "Leaves all fixture files byte-identical and proposes no duplicate local mapping for the inherited developer association.",
+        "Preserves editorial-review and global configuration; includes inline/global IDs without fabricating native Markdown files.",
+        "Explains responsibility evidence and the unresolved supervisor-versus-pm choice before a grouped question instead of name-based assignment.",
+        "Distinguishes configuration, disk presence and unverified native availability, and blocks applying mappings when plugin support is unknown.",
+        "Proposes only requested metadata; no eight-agent topology, mode/model/permission change or runtime behavior is implied."
+      ]
     }
   ]
 }

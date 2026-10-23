@@ -67,6 +67,68 @@ Approval is mandatory before this block is written. It is a distinct change from
 
 If a developer specifically wants a changed mode/model/permission, make that a distinct proposed change with its rationale. For example, a subagent-only profile cannot simply be assumed suitable for a session handoff. A profile called reviewer is not automatically read-only; a read-only body and write-capable native permissions are an inconsistency to discuss, not silently repair.
 
+## Business Profile Associations
+
+Agent creation/adaptation includes a category proposal, even if the harness does
+not consume it yet. First verify the selected Ensemble plugin supports
+`businessProfiles`; if unknown/unsupported, leave target files unchanged for this
+part and explain the compatibility decision needed. Do not silently upgrade.
+
+The initial categories are `supervisor`, `pm`, `architect`, `developer`, `qa`,
+`reviewer`, `researcher`, and `documentalist`. They describe mission supervision,
+requirements/priorities, design/contracts, implementation/tests, acceptance and
+regressions, critical review, sourced research, and knowledge maintenance,
+respectively. They are not a required team topology or eight agents to create.
+
+Propose one principal category per exact native agent ID, based on its actual
+responsibilities. Several agents may share a category. Preserve an existing
+explicit mapping even if its name suggests another role. For a genuinely mixed
+or unclear specialty, ask one grouped consequential question (after the setup
+report), or retain it as unresolved in a proposal-only run. Do not silently assign
+a default or overwrite the user's category. Approval of a new agent alone does
+not approve an unseen categorization; include both in the same concrete proposal.
+
+Merge only the approved entries into the project's `.opencode/ensemble.json`:
+
+```json
+{
+  "businessProfiles": {
+    "extensions": {
+      "security-reviewer": { "description": "Review security boundaries and threats" }
+    },
+    "byAgent": {
+      "api-specialist": "developer",
+      "docs-reviewer": "reviewer",
+      "security-reader": "security-reviewer"
+    }
+  }
+}
+```
+
+These are examples, not instructions to create agents or infer roles from names.
+Only declare a custom extension for an approved need; reuse existing ones.
+Extensions use lower-kebab-case IDs and non-empty descriptions, cannot replace
+the eight initial IDs, and cannot carry execution settings. Keep all unrelated
+config and native agent permissions, models, modes and bodies unchanged unless
+those separate edits were approved. Do not invent a `businessProfile` field in
+agent frontmatter, `opencode.json` or an extra setup-state file.
+
+Global then project maps merge per entry; the project replaces matching keys.
+Reuse an identical inherited mapping without adding a local duplicate. An empty
+map does not delete inherited entries. Validate the final references after
+merging, while rejecting malformed explicit layers; unknown references must
+produce a diagnostic, not silently revive an old mapping. Use the selected
+plugin's existing validator/pure helper when available; syntax alone does not
+validate the business contract. Keep project writes local: overriding a global
+mapping needs an explicit project decision, not an edit to the global file.
+
+Declaration, disk presence and native availability are independent. Report the
+exact native ID, chosen category, origin and validation evidence; never claim a
+native agent exists or is available because a mapping was written. No model
+routing, permissions, lead authority, direct admission or automatic QA pipeline
+is enabled by a category, including supervisor/researcher/documentalist. Missing
+mappings preserve behavior, and an identical second setup run is a no-op.
+
 ## Approval and Repeat Runs
 
 Before applying, show a compact diff or exact per-file changes. Offer apply, revise, or diagnosis only through the question tool when available. If this same proposal was already approved and its target files are unchanged, proceed without asking again.

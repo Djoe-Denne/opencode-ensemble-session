@@ -9,6 +9,7 @@
 - Check `AGENTS.md` policy for consistency with existing delegation and verification requirements. Required roles or a fixed team size should come from explicit project policy, not a template.
 - Inspect ignored status for new files intended to be shared. Report it and propose a narrow ignore-rule change if wanted; do not silently change repository ignore policy.
 - Re-evaluate the desired state after applying: no duplicate skill paths, policy blocks, agent reminders, or unnecessary profiles should be proposed by a second run.
+- Validate `businessProfiles` with the supported plugin contract after global/project merge: exact native IDs, one principal category, existing mappings/extensions preserved, invalid references diagnosed and no duplicate inherited entries. Compare native modes/models/permissions before and after; category changes are not execution changes. A second run must not add mappings or profiles when the approved effective associations already exist.
 
 Use the active skill/agent/tool catalogs when available to verify discovery after the host's normal reload. A valid file on disk does not prove runtime activation. If runtime access or reload is unavailable, report exactly what was checked and what remains unverified. Do not restart a service or run model-backed team operations merely to make validation look complete.
 
@@ -40,6 +41,24 @@ A native `mode: subagent` profile with a fixed model is requested as a session-l
 
 Expected: identify the exact conflict and ask for a targeted decision. Do not change mode/model/permissions merely to satisfy inferred behavior.
 
+### Categorize created or adapted agents
+
+A developer approves an existing API agent's developer mapping, preserves a
+custom reviewer mapping, and approves a new security research agent and its
+extension. Expected: only the approved agent/config changes, explicit mappings
+in Ensemble's project configuration, schema-valid extensions, no new native
+metadata fields or permissions. No runtime availability is inferred from files.
+
+### Inherited mapping or unclear responsibility
+
+A relevant global association already matches the desired category, another
+agent has an explicit custom category, and a mixed coordinator's role is unclear.
+Expected: preserve/reuse the existing effective mappings, no duplicate local
+entry or global write, explain the unresolved choice before asking. If support
+is unknown or absent, do not write a purportedly working businessProfiles config.
+No missing category silently defaults from a name. Proposal-only or narrowly
+approved older setups must not acquire unapproved categorization writes.
+
 ## Final Report Shape
 
 Use concise prose in the developer's language:
@@ -47,6 +66,7 @@ Use concise prose in the developer's language:
 ```text
 Policy: <the confirmed coordination behavior>
 Changes: <actual files, or no changes needed>
+Categories: <retained/inherited, registered, proposed or unresolved; exact IDs>
 Verified: <syntax, preservation, links, repeated-state comparison, catalogs actually checked>
 Still unverified: <only concrete remaining checks, if any>
 Usage: @opencode-ensemble <the next mission>

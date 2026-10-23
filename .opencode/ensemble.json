@@ -1,0 +1,12 @@
+{
+  "businessProfiles": {
+    "byAgent": {
+      "architect": "architect",
+      "code-reviewer": "reviewer",
+      "dev-reader": "researcher",
+      "implementer": "developer",
+      "orchestrator": "supervisor",
+      "qa": "qa"
+    }
+  }
+}

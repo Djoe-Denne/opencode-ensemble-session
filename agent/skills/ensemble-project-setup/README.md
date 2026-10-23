@@ -2,6 +2,13 @@
 
 Interactive onboarding for an existing OpenCode project: inspect its agents/configuration, infer a coordination policy, propose a small diff, apply approved changes, and verify. It preserves existing profiles, permissions, models, and user edits by default. Repeating setup can legitimately produce no changes.
 
+Creating or adapting agents also proposes an explicit principal business category
+in Ensemble's `.opencode/ensemble.json` (`businessProfiles.byAgent`). This works
+as declarative metadata even before the harness uses categories. Existing and
+inherited associations are preserved; unclear roles are discussed, never inferred
+automatically from names. No permission, model or lead authority follows from a
+category. The selected plugin must support this configuration before it is applied.
+
 ## Use
 
 In a project where this skill is available:
@@ -17,6 +24,14 @@ To verify an existing integration:
 ```text
 @ensemble-project-setup Check whether our current Ensemble setup still matches
 our project instructions. Preserve customizations and propose only necessary changes.
+```
+
+To include categorization of existing project agents:
+
+```text
+@ensemble-project-setup Propose business categories for our declared agents.
+Preserve existing associations, native names, models and permissions. Show the
+project ensemble.json diff for approval; do not change global configuration.
 ```
 
 The Ensemble repository exposes `skills/` through its root `opencode.json`, so both `ensemble-project-setup` and `opencode-ensemble` are discoverable from its root. For another project, expose that verified shared directory in V2's `skills` configuration or copy this whole skill directory into `.opencode/skills/ensemble-project-setup/`.
