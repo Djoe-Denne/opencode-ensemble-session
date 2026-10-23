@@ -125,3 +125,16 @@ What it looks like:
 
 Better approach:
 - Inspect task/project model policy. Use explicit overrides deliberately; otherwise retain the native/configured selection. Handoff and model selection are separate operations.
+
+## Anti-Pattern: Folding Discovery into One Shared Worktree
+
+What it looks like:
+- A preparation document uses `type: "planning"`, puts `model` or `kind` in the JSON, or addresses a question to a teammate.
+- Two dependent tasks share a parallel group, or two writers are told to edit one checkout.
+- A read-only PM writes files, or a worker command runs against the user's main checkout.
+
+Why it fails:
+- The parser rejects the illegal document, or the import holds direct code on version 2. Coupled edits lose the reconciliation note that separate branches are there to provide.
+
+Better approach:
+- Follow [preparation](preparation.md): supervisor questions, documentary handoffs with sources, `planning.required` for a local plan, and `isolation: "separate-worktrees"` only for tasks that do not depend on each other. Keep `start` as the user's execution gate.

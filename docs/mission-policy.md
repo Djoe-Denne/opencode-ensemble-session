@@ -34,6 +34,18 @@ This is not a global provider reconfiguration. It controls calls orchestrated by
 Ensemble for this mission; the existing supervisor conversation keeps its native
 OpenCode model.
 
+## Optional PM preparation
+
+The simple draft above stays the default. Optional discovery before `start` is
+specified in [preparation](preparation.md):
+`/ensemble-mission prepare [--pm <agent>] <mandat>`. A new session requires the
+mandate. An existing draft may omit it and keep the stored objective. After the
+initial candidate and five PM corrections are exhausted, only the lead may run
+`/ensemble-mission prepare --accept <json>`. `--pm` and `--accept` are mutually
+exclusive. The parser and the import are integrated. The commands, the
+executable reference PM, and its admission are not verified here. `start`
+remains the user's execution gate.
+
 ## Supervisor reports
 
 The lead receives a checkpoint/decision reporting instruction during preparation,

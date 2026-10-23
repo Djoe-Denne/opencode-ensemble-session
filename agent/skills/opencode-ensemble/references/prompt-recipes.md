@@ -2,6 +2,8 @@
 
 Good teammate prompts are short, scoped, and verifiable. Include the task, boundaries, and task-specific verification needs. Do not paste a tool list or full reporting format into the prompt; the plugin already injects role context, allowed tools, worktree context, commit/report instructions, and blocker handling.
 
+These recipes are worker prompts after a task exists. A pre-start discovery document is a different artifact: see [preparation](preparation.md). There, research, review, and qa stay separate tasks, and a local plan is `planning.required` rather than a task type.
+
 These are optional mission templates, not required roles. Choose an available native profile separately from the current mission. Native profile files hold durable expertise and permissions; spawn prompts hold changing ownership and success criteria.
 
 ## Any Bounded Mission

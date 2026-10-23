@@ -49,7 +49,10 @@ ambiguous or conflicting choices with the developer. A category neither grants
 permissions nor makes an agent lead; do not require all eight initial profiles.
 
 QA depth is a mission choice through `/ensemble-mission config`, not a permanent
-agent pipeline. Diagnose any project obligations that conflict with light,
+agent pipeline. Optional PM discovery (`/ensemble-mission prepare`) is an
+operational command documented by `opencode-ensemble`, not a setup action.
+Setup does not install that command. The reference PM is a native executable
+agent implemented by the runtime, not a profile generated here. Diagnose any project obligations that conflict with light,
 proportionate (default), or reinforced verification. Surface conflicts for human
 arbitration; never silently weaken security, data integrity or accepted ADRs.
 When generating/adapting QA profiles, use [mission verification](references/mission-verification.md).

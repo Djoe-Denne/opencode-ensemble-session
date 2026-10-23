@@ -29,6 +29,9 @@ opencode-ensemble/
 ├── SKILL.md
 └── references/
     ├── project-integration.md
+    ├── mission-policy.md
+    ├── mission-reporting.md
+    ├── preparation.md
     ├── context-continuity.md
     ├── coordination-patterns.md
     ├── prompt-recipes.md

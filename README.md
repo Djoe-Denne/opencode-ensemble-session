@@ -277,6 +277,22 @@ Configure the worktree as a local plugin (v2 loads the source entry; v1 uses the
 
 No build step needed for local testing — but run `bun run typecheck && bun test && bun run build` before committing. Restart OpenCode (or wait for hot-reload) to pick up changes.
 
+## Optional mission preparation
+
+Simple `/ensemble-mission <objective>`, then `config`, then the user's `start`,
+is unchanged. Optional discovery is
+`/ensemble-mission prepare [--pm <agent>] <mandat>`. A new session requires the
+mandate; an existing draft may omit it and keep the stored objective. After the
+initial candidate and five PM corrections, only the lead may run
+`/ensemble-mission prepare --accept <json>`. `--pm` and `--accept` are mutually
+exclusive. The parser, the generic intervention contract, and the deterministic
+import are in the plugin. The commands are not a verified runtime, and they add
+no sixteenth team tool. The reference PM is a native executable agent
+implemented by the runtime, not a prompt in this README. Public `session.prompt`
+has no structured-output field, so the document is ordinary JSON. `start` remains
+the execution gate. Field rules, examples, and counterexamples:
+[preparation](docs/preparation.md).
+
 ## Tools
 
 15 tools. Teammates can use messaging, tasks, inspection, and V2 `team_handoff` (10 tools); spawning, shutdown, and merging remain lead-only. V1 keeps the original 14 operations and reports an explicit unsupported-capability error for handoff or inherited spawning.
@@ -655,6 +671,7 @@ provenance, user-approved policy updates and restart recovery.
 - **Session switching is opt-in (v2).** `team_view` reports the teammate's session ID by default; it switches the user's client only when asked for with `navigate: true` — agents never hijack the client unprompted. The live sidebar (terminal only) shows member status on every client's dashboard at `http://localhost:4747`.
 - **Per-session shell env is unavailable (v2).** The v2 shell hook carries no session ID, so `ENSEMBLE_*` variables are not injected into teammate shells. Team identity travels in prompts and tool calls instead.
 - **Native continuity has explicit boundaries (v2).** `compact_fork` requires a distinct idle source; cross-directory inheritance requires clean, matching Git HEADs. Lost native creation acknowledgements can leave resources whose IDs were never received; see the [recovery limits](docs/native-session-continuity.md#remaining-limits).
+- **`/ensemble-mission prepare` is specified, not smoked.** The preparation document and its import are implemented. `prepare [--pm <agent>] <mandat>` and lead-only `prepare --accept <json>` are the validated command lines. Their runtime, the executable reference PM, and that PM's admission are not verified in this commit. See [preparation](docs/preparation.md).
 
 ## How this differs from Claude Code agent teams
 

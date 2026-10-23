@@ -32,8 +32,16 @@ later `team_handoff({ reasoning: "<allowed variant>" })` may raise or lower effo
 Write chat corrections to the mission draft rather than retaining them only in
 context. Do not invoke `start` on the user's behalf. Read
 [mission policy](references/mission-policy.md) for the approval and revision flow.
-Direct V2 `team_create` also freezes this catalogue policy when configured;
-V1/no-catalogue teams retain the legacy assignment workflow below.
+Optional PM discovery before `start` uses
+`/ensemble-mission prepare [--pm <agent>] <mandat>`. A new session requires the
+mandate; an existing draft may omit it and keep the stored objective. After the
+initial candidate and five PM corrections are exhausted, only the lead may run
+`/ensemble-mission prepare --accept <json>`. `--pm` and `--accept` are mutually
+exclusive. The document contract is integrated. The command runtime, the
+executable reference PM, and its admission are not verified here. Read
+[preparation](references/preparation.md). Direct V2 `team_create`
+also freezes this catalogue policy when configured; V1/no-catalogue teams
+retain the legacy assignment workflow below.
 
 ## Lead Workflow
 
@@ -93,6 +101,7 @@ For setup, copyable `AGENTS.md` guidance, and an optional agent profile, read [p
 
 - Installing or integrating into project/agent instructions: [project integration](references/project-integration.md).
 - Preparing and configuring a command-governed mission: [mission policy](references/mission-policy.md).
+- Writing an optional pre-start discovery document: [preparation](references/preparation.md).
 - Reusing native history or changing profiles: [context continuity](references/context-continuity.md).
 - Choosing an optional team shape: [coordination patterns](references/coordination-patterns.md).
 - Writing a mission prompt: [prompt recipes](references/prompt-recipes.md).

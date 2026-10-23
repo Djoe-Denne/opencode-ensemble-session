@@ -1,0 +1,959 @@
+# Optional mission preparation
+
+The plugin can record a versioned discovery document and turn it into task
+rows before anyone executes them. The parser and the import are integrated.
+The commands below are the syntax validated with the runtime owner. This
+commit does not execute them.
+
+| Piece | State |
+| --- | --- |
+| Intervention contract, document parser, deterministic import | Delivered in `src/intervention-contract.ts`, `src/preparation-document.ts`, and `src/preparation-import.ts` |
+| `/ensemble-mission <objective>` | Unchanged simple draft |
+| `/ensemble-mission prepare [--pm <agent>] <mandat>` | Syntax validated. Command execution is not verified in this commit |
+| `/ensemble-mission prepare --accept <json>` | Syntax validated. Used only after the initial candidate and five PM corrections are exhausted. Not verified here |
+| Native structured output on public `session.prompt` | Not available. The path is a JSON text fallback |
+| Executable reference PM and its admission | The runtime implements the native agent. Admission is still being designed. Not verified here |
+| Live PM session or smoke of either command | Not claimed by this document |
+
+Simple preparation stays valid. On a V2 host that exposes the command API:
+
+```text
+/ensemble-mission <objective>
+/ensemble-mission config
+/ensemble-mission start
+```
+
+`config` still presents the draft. Only the user's `start` approves that draft
+and opens execution. Publishing tasks early does not start workers. See
+[command-prepared missions](mission-policy.md) and
+[autonomous execution](autonomous-execution.md).
+
+## Command syntax
+
+`/ensemble-mission <objective>` is unchanged. Optional discovery uses:
+
+```text
+/ensemble-mission prepare [--pm <agent>] <mandat>
+```
+
+- On a new session, `<mandat>` is required.
+- On an existing draft, `<mandat>` is optional. Omitting it keeps the stored
+  objective.
+- `--pm <agent>` names the exact native agent whose declared profile is `pm`
+  and whose native availability is available. A homonym is not enough.
+  `architect` and `qa` stay available to the supervisor under their own
+  categories. No permission is added.
+- If no agent qualifies, or several qualify and none is the appropriate
+  default, the supervisor arbitrates. Do not pick one silently. The reference
+  is a native Ensemble PM that must actually run. The runtime lot implements
+  that agent. Its admission is still being designed. This commit does not
+  register the agent, and a markdown prompt is not a substitute for it.
+- The discovery helper runs before `start`. It does not call `team_spawn`,
+  does not insert a team member, and does not claim a task. It does not admit
+  executing workers.
+- Code imports automatically on the first document that parses. Invalid JSON
+  is not repaired in place.
+
+Only after the initial candidate and five PM corrections are exhausted, the
+lead may submit one corrected document:
+
+```text
+/ensemble-mission prepare --accept <json>
+```
+
+- Lead only. `--pm` and `--accept` cannot be used together.
+- `<json>` is one preparation document. `parsePreparationDocument` is the only
+  validator.
+- This is the supervisor's single correction, not another PM turn and not a
+  silent rewrite.
+
+`start` remains the user's execution gate after a successful import. Neither
+command is a verified runtime in this commit.
+
+## Two objects
+
+The PM does not author both objects.
+
+The **intervention contract** is the plugin's mandate around a native agent.
+It is generic: any business category can have one. PM discovery is the first
+built case, via `pmDiscoveryContract`. The contract carries no tool, permission,
+model, or reasoning effort. `composeIntervention` copies the native permission
+list and the read-only flag. It refuses the composition when the declared
+profile is not the contract category, and when native availability is
+`unavailable`. Availability `unverified` can still compose, and the prompt says
+that availability is not confirmed. A read-only agent is told to stay
+read-only and to return documentary handoffs for the plugin to persist. This
+function does not spawn, does not change permissions, and does not admit tasks.
+
+The **preparation document** is the JSON the discovery agent returns. Code
+parses it with `parsePreparationDocument` and imports it with
+`importPreparationDocument`. The supervisor does not create those initial rows.
+
+### Intervention contract
+
+`pmDiscoveryContract` fixes `version` to `1`, `id` to `pm-discovery`, and
+`category` to `pm`. The ensemble text tells the agent to apply only that
+mandate and its native profile, to add nothing, and not to launch tasks or
+workers.
+
+A hand-built contract uses the same checks. Text is trimmed. Empty text and
+text over the maximum both fail as "must be a non-empty string". Identifiers
+are lower kebab-case (`pm`, `pm-discovery`). Underscores, capitals, and a
+trailing hyphen are rejected. Unknown keys are rejected.
+
+| Field | Bound after trim |
+| --- | --- |
+| `id`, `category` | 1 to 64 characters, lower kebab-case |
+| `mandate.objective`, `mandate.instructions`, `ensemble` | 1 to 4000 characters |
+| `target.agent` | 1 to 128 characters |
+| `target.declaredProfile` | profile id, or `null` |
+| `target.nativeAvailability` | `available`, `unavailable`, or `unverified` |
+| `target.permissions` | array of non-empty strings, copied as-is |
+
+There is no minimum such as 20, 40, or 400 characters. One non-whitespace
+character is enough. `"  map the webhook  "` is stored as `map the webhook`.
+
+Category mismatch keeps the native permissions and refuses composition. The
+refusal names the agent, the declared profile, and the required category, and
+it says that no permission was added. Native unavailability refuses the same
+way. Those refusals are return values, not spawned sessions.
+
+## Preparation document
+
+`parsePreparationDocument` accepts one JSON object of `version` `1`.
+
+| Field | Rule |
+| --- | --- |
+| Root keys | `version`, `context`, `openQuestions`, `tasks`, `parallelGroups` only |
+| `version` | number `1` |
+| `context` | string of 1 to 20000 characters after trim |
+| `openQuestions` | 0 to 50 questions |
+| `tasks` | 0 to 100 tasks |
+| `parallelGroups` | 0 to 50 groups |
+| Whole value | `JSON.stringify` length at most 200000 characters |
+
+Every stored string is trimmed. The minimum length is 1. The maxima above are
+the real limits. A field is not rejected for being shorter than 20, 40, or 400
+characters.
+
+Task ids and question ids match `^[A-Za-z][A-Za-z0-9_-]{0,63}$` after trim, so
+they are 1 to 64 characters, start with a letter, and then use letters, digits,
+underscore, or hyphen.
+
+### Tasks
+
+| Field | Rule |
+| --- | --- |
+| `id` | stable identifier, unique in `tasks` |
+| `title` | 1 to 200 characters |
+| `type` | `implementation`, `architecture`, `documentation`, `research`, `review`, or `qa` |
+| `goal` | 1 to 4000 characters |
+| `dependsOn` | 0 to 50 unique ids that exist in this document |
+| `planning.required` | boolean |
+| `planning.reason` | 1 to 2000 characters |
+| `acceptanceCriteria` | 1 to 50 strings, each 1 to 2000 characters |
+| `verification` | 1 to 50 strings, each 1 to 2000 characters |
+| `handoff.document` | 1 to 20000 characters, the finding itself |
+| `handoff.sources` | 1 to 50 objects `{ path, note }` |
+| `sources[].path` | 1 to 500 characters. The parser does not open the file |
+| `sources[].note` | 1 to 2000 characters saying what the path contributes |
+
+Unknown keys are rejected, including `kind`, `mode`, `model`, `variant`,
+`reason`, `priority`, and `agent`. The business type is the only type field.
+Execution kind and planned/direct mode are derived later. They are not JSON
+input.
+
+Dependencies must form a DAG. An unknown id, a duplicate id, a self-dependency,
+and a longer cycle are all rejected. The cycle message names the ids in order.
+
+### Questions stay with the supervisor
+
+Each question has `id`, `question` (1 to 2000 characters), and `audience`.
+The only accepted audience is `supervisor`. Questions are not worker tasks and
+are not rewritten into teammate notes. Zero questions is valid. Duplicate
+question ids are rejected.
+
+Ask here only for a decision the supervisor must make. Do not hide that
+question inside a task goal and leave `openQuestions` empty.
+
+### Handoffs
+
+`handoff.document` is the finding. `sources` are commented citations. A
+read-only PM does not write the worktree; the import persists the handoff on
+the task row and renders it into the task text. A note that only says "source"
+or a document that only says "see above" can still parse if it is non-empty.
+That is a bad handoff. The note has to say what was taken from the path.
+
+### Parallel groups are separate branches
+
+A group is work that may proceed on separate worktrees. The only isolation
+value is `separate-worktrees`. `taskIds` lists 1 to 50 known task ids. `reason`
+is 1 to 2000 characters. `integrationNotes` is 1 to 4000 characters and is the
+reconciliation note for the supervisor.
+
+The parser rejects a group that contains a direct or transitive dependency
+between its members. Two writers in one shared worktree are not a parallel
+group. Sequencing those tasks with `dependsOn` is the alternative.
+
+Imported groups are stored with the document. The import does not create
+worktrees. Existing spawn isolation remains the way a later, admitted worker
+gets its own branch.
+
+## Example that parses
+
+One non-empty character is valid. This is the lower bound, not a realistic
+mission:
+
+<!-- parse:ok -->
+```json
+{
+  "version": 1,
+  "context": "x",
+  "openQuestions": [],
+  "tasks": [
+    {
+      "id": "T",
+      "title": "T",
+      "type": "documentation",
+      "goal": "x",
+      "dependsOn": [],
+      "planning": { "required": false, "reason": "x" },
+      "acceptanceCriteria": ["x"],
+      "verification": ["x"],
+      "handoff": {
+        "document": "x",
+        "sources": [{ "path": "p", "note": "n" }]
+      }
+    }
+  ],
+  "parallelGroups": []
+}
+```
+
+A document with no tasks also parses. Context is still required:
+
+<!-- parse:ok -->
+```json
+{
+  "version": 1,
+  "context": "No split is justified yet.",
+  "openQuestions": [],
+  "tasks": [],
+  "parallelGroups": []
+}
+```
+
+This mission document is the shape to imitate. Research and documentation are
+direct. Architecture, implementation, QA, and review are planned. QA and review
+depend on the implementation and not on each other, so they can share a
+parallel group. The architecture task is not in that group.
+
+<!-- parse:ok -->
+```json
+{
+  "version": 1,
+  "context": "Duplicate Stripe events can create two orders. The webhook insert is the boundary.",
+  "openQuestions": [
+    {
+      "id": "stripe-owner",
+      "question": "Which service owns Stripe event deduplication?",
+      "audience": "supervisor"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "map-webhook",
+      "title": "Map the webhook path",
+      "type": "research",
+      "goal": "Name the function that inserts an order from a Stripe event.",
+      "dependsOn": [],
+      "planning": { "required": false, "reason": "The path is a bounded read." },
+      "acceptanceCriteria": ["The handoff names the insert function and its file."],
+      "verification": ["The cited path is present at the recorded revision."],
+      "handoff": {
+        "document": "Order creation is reached from the Stripe webhook handler.",
+        "sources": [{ "path": "src/webhooks/stripe.ts", "note": "Handler that calls the order insert." }]
+      }
+    },
+    {
+      "id": "shape-guard",
+      "title": "Decide the idempotency boundary",
+      "type": "architecture",
+      "goal": "Choose where a duplicate event id is rejected.",
+      "dependsOn": ["map-webhook"],
+      "planning": { "required": true, "reason": "The boundary is a contract other tasks will implement." },
+      "acceptanceCriteria": ["The handoff states the accepted boundary and one rejected alternative."],
+      "verification": ["The cited source supports the chosen boundary."],
+      "handoff": {
+        "document": "Reject the duplicate at the event-id insert. Do not dedupe later in the order reader.",
+        "sources": [{ "path": "src/webhooks/stripe.ts", "note": "Insert is the first durable write." }]
+      }
+    },
+    {
+      "id": "guard-insert",
+      "title": "Add the idempotency guard",
+      "type": "implementation",
+      "goal": "A repeated event id creates one order.",
+      "dependsOn": ["shape-guard"],
+      "planning": { "required": true, "reason": "The write changes persistence and needs a reviewed local plan." },
+      "acceptanceCriteria": ["A second delivery of the same event id does not create a second order."],
+      "verification": ["The focused webhook regression covers the duplicate event."],
+      "handoff": {
+        "document": "Implement the unique event-id insert decided by shape-guard.",
+        "sources": [{ "path": "src/webhooks/stripe.ts", "note": "Site of the event insert." }]
+      }
+    },
+    {
+      "id": "check-webhook",
+      "title": "Run the webhook regression",
+      "type": "qa",
+      "goal": "Execute the agreed webhook checks and report the actual result.",
+      "dependsOn": ["guard-insert"],
+      "planning": { "required": true, "reason": "The check follows the implementation and reports a command result." },
+      "acceptanceCriteria": ["The report quotes the command and its pass or fail result."],
+      "verification": ["The command is the repository webhook test, not a reread of the diff."],
+      "handoff": {
+        "document": "Run the webhook regression after guard-insert is integrated.",
+        "sources": [{ "path": "test/checkout-webhook.test.ts", "note": "Existing duplicate-delivery coverage to run." }]
+      }
+    },
+    {
+      "id": "read-diff",
+      "title": "Review the idempotency diff",
+      "type": "review",
+      "goal": "Inspect the merged guard for missed retries and scope drift.",
+      "dependsOn": ["guard-insert"],
+      "planning": { "required": true, "reason": "Review inspects the diff after the implementation exists." },
+      "acceptanceCriteria": ["Findings are ordered by severity, or the review says there are none."],
+      "verification": ["The review cites the diff and does not claim the test command was run."],
+      "handoff": {
+        "document": "Read the guard diff. A passing test is not a substitute for this review.",
+        "sources": [{ "path": "src/webhooks/stripe.ts", "note": "Implementation under review." }]
+      }
+    },
+    {
+      "id": "note-contract",
+      "title": "Document the idempotency rule",
+      "type": "documentation",
+      "goal": "Record that a duplicate event id creates one order.",
+      "dependsOn": [],
+      "planning": { "required": false, "reason": "The page change is local." },
+      "acceptanceCriteria": ["The page states that a duplicate event id creates one order."],
+      "verification": ["The linked contract page contains that statement."],
+      "handoff": {
+        "document": "Document the rule without changing the insert.",
+        "sources": [{ "path": "docs/webhooks.md", "note": "Contract page that should state the rule." }]
+      }
+    }
+  ],
+  "parallelGroups": [
+    {
+      "taskIds": ["check-webhook", "read-diff"],
+      "reason": "QA runs the checks and review reads the diff. Neither task depends on the other.",
+      "integrationNotes": "Keep the branches separate. If both touch the test file, the supervisor keeps the QA assertion and records review comments in the report.",
+      "isolation": "separate-worktrees"
+    }
+  ]
+}
+```
+
+Surrounding whitespace is removed before the limits are applied. The value
+below parses, and the stored context is `Bounded read.`:
+
+<!-- parse:ok trimmed-context -->
+```json
+{
+  "version": 1,
+  "context": "  Bounded read.  ",
+  "openQuestions": [],
+  "tasks": [],
+  "parallelGroups": []
+}
+```
+
+## Counterexamples
+
+Each snippet is otherwise aimed at one mistake. The parser reports every issue
+it sees; the line under the snippet is one issue the real parser produces.
+
+Blank text fails. There is no separate "too short but non-empty" error.
+
+<!-- parse:fail context must be a string of 1 to 20000 characters -->
+```json
+{
+  "version": 1,
+  "context": "   ",
+  "openQuestions": [],
+  "tasks": [],
+  "parallelGroups": []
+}
+```
+
+Expected issue: `context must be a string of 1 to 20000 characters`
+
+`version` is the number 1.
+
+<!-- parse:fail version must be 1 -->
+```json
+{
+  "version": "1",
+  "context": "Bounded read.",
+  "openQuestions": [],
+  "tasks": [],
+  "parallelGroups": []
+}
+```
+
+Expected issue: `version must be 1`
+
+An extra root key is not stored for later.
+
+<!-- parse:fail document.model is not supported -->
+```json
+{
+  "version": 1,
+  "context": "Bounded read.",
+  "model": "cursor/grok-4.7",
+  "openQuestions": [],
+  "tasks": [],
+  "parallelGroups": []
+}
+```
+
+Expected issue: `document.model is not supported`
+
+Questions are addressed to the supervisor only.
+
+<!-- parse:fail openQuestions[0].audience must be supervisor -->
+```json
+{
+  "version": 1,
+  "context": "Bounded read.",
+  "openQuestions": [
+    { "id": "owner", "question": "Who owns deduplication?", "audience": "lead" }
+  ],
+  "tasks": [],
+  "parallelGroups": []
+}
+```
+
+Expected issue: `openQuestions[0].audience must be supervisor`
+
+<!-- parse:fail openQuestions[1].id duplicate question id -->
+```json
+{
+  "version": 1,
+  "context": "Bounded read.",
+  "openQuestions": [
+    { "id": "owner", "question": "Who owns deduplication?", "audience": "supervisor" },
+    { "id": "owner", "question": "Who approves the boundary?", "audience": "supervisor" }
+  ],
+  "tasks": [],
+  "parallelGroups": []
+}
+```
+
+Expected issue: `openQuestions[1].id duplicate question id`
+
+`planning` is not a task type. A local plan is `planning.required` on the task
+that does the work.
+
+<!-- parse:fail tasks[0].type must be one of implementation, architecture, documentation, research, review, qa -->
+```json
+{
+  "version": 1,
+  "context": "Bounded read.",
+  "openQuestions": [],
+  "tasks": [
+    {
+      "id": "local-plan",
+      "title": "Plan the edit",
+      "type": "planning",
+      "goal": "Write the local plan.",
+      "dependsOn": [],
+      "planning": { "required": true, "reason": "The approach is not settled." },
+      "acceptanceCriteria": ["The plan names the file."],
+      "verification": ["The cited file exists."],
+      "handoff": {
+        "document": "Edit one guard.",
+        "sources": [{ "path": "src/webhooks/stripe.ts", "note": "File the plan would name." }]
+      }
+    }
+  ],
+  "parallelGroups": []
+}
+```
+
+Expected issue: `tasks[0].type must be one of implementation, architecture, documentation, research, review, qa`
+
+Kind, mode, and model are derived or chosen later. They are illegal document
+fields.
+
+<!-- parse:fail tasks[0].kind is not supported -->
+```json
+{
+  "version": 1,
+  "context": "Bounded read.",
+  "openQuestions": [],
+  "tasks": [
+    {
+      "id": "note-rule",
+      "title": "Note the rule",
+      "type": "documentation",
+      "kind": "documentation",
+      "goal": "Record the rule.",
+      "dependsOn": [],
+      "planning": { "required": false, "reason": "The page change is local." },
+      "acceptanceCriteria": ["The page states the rule."],
+      "verification": ["The page contains the sentence."],
+      "handoff": {
+        "document": "State the rule.",
+        "sources": [{ "path": "docs/webhooks.md", "note": "Page that should state the rule." }]
+      }
+    }
+  ],
+  "parallelGroups": []
+}
+```
+
+Expected issue: `tasks[0].kind is not supported`
+
+<!-- parse:fail tasks[0].planning.required must be a boolean -->
+```json
+{
+  "version": 1,
+  "context": "Bounded read.",
+  "openQuestions": [],
+  "tasks": [
+    {
+      "id": "note-rule",
+      "title": "Note the rule",
+      "type": "documentation",
+      "goal": "Record the rule.",
+      "dependsOn": [],
+      "planning": { "required": "false", "reason": "The page change is local." },
+      "acceptanceCriteria": ["The page states the rule."],
+      "verification": ["The page contains the sentence."],
+      "handoff": {
+        "document": "State the rule.",
+        "sources": [{ "path": "docs/webhooks.md", "note": "Page that should state the rule." }]
+      }
+    }
+  ],
+  "parallelGroups": []
+}
+```
+
+Expected issue: `tasks[0].planning.required must be a boolean`
+
+Ids start with a letter.
+
+<!-- parse:fail tasks[0].id must be a stable identifier -->
+```json
+{
+  "version": 1,
+  "context": "Bounded read.",
+  "openQuestions": [],
+  "tasks": [
+    {
+      "id": "1note",
+      "title": "Note the rule",
+      "type": "documentation",
+      "goal": "Record the rule.",
+      "dependsOn": [],
+      "planning": { "required": false, "reason": "The page change is local." },
+      "acceptanceCriteria": ["The page states the rule."],
+      "verification": ["The page contains the sentence."],
+      "handoff": {
+        "document": "State the rule.",
+        "sources": [{ "path": "docs/webhooks.md", "note": "Page that should state the rule." }]
+      }
+    }
+  ],
+  "parallelGroups": []
+}
+```
+
+Expected issue: `tasks[0].id must be a stable identifier`
+
+Acceptance criteria and sources cannot be empty lists. A missing file path is
+not the parser's check; an empty citation list is.
+
+<!-- parse:fail tasks[0].acceptanceCriteria must contain 1 to 50 strings -->
+```json
+{
+  "version": 1,
+  "context": "Bounded read.",
+  "openQuestions": [],
+  "tasks": [
+    {
+      "id": "note-rule",
+      "title": "Note the rule",
+      "type": "documentation",
+      "goal": "Record the rule.",
+      "dependsOn": [],
+      "planning": { "required": false, "reason": "The page change is local." },
+      "acceptanceCriteria": [],
+      "verification": ["The page contains the sentence."],
+      "handoff": {
+        "document": "State the rule.",
+        "sources": [{ "path": "docs/webhooks.md", "note": "Page that should state the rule." }]
+      }
+    }
+  ],
+  "parallelGroups": []
+}
+```
+
+Expected issue: `tasks[0].acceptanceCriteria must contain 1 to 50 strings`
+
+<!-- parse:fail tasks[0].handoff.sources must contain 1 to 50 commented sources -->
+```json
+{
+  "version": 1,
+  "context": "Bounded read.",
+  "openQuestions": [],
+  "tasks": [
+    {
+      "id": "note-rule",
+      "title": "Note the rule",
+      "type": "documentation",
+      "goal": "Record the rule.",
+      "dependsOn": [],
+      "planning": { "required": false, "reason": "The page change is local." },
+      "acceptanceCriteria": ["The page states the rule."],
+      "verification": ["The page contains the sentence."],
+      "handoff": { "document": "State the rule.", "sources": [] }
+    }
+  ],
+  "parallelGroups": []
+}
+```
+
+Expected issue: `tasks[0].handoff.sources must contain 1 to 50 commented sources`
+
+Unknown and cyclic dependencies fail.
+
+<!-- parse:fail tasks.dependsOn: unknown task ids missing-task -->
+```json
+{
+  "version": 1,
+  "context": "Bounded read.",
+  "openQuestions": [],
+  "tasks": [
+    {
+      "id": "note-rule",
+      "title": "Note the rule",
+      "type": "documentation",
+      "goal": "Record the rule.",
+      "dependsOn": ["missing-task"],
+      "planning": { "required": false, "reason": "The page change is local." },
+      "acceptanceCriteria": ["The page states the rule."],
+      "verification": ["The page contains the sentence."],
+      "handoff": {
+        "document": "State the rule.",
+        "sources": [{ "path": "docs/webhooks.md", "note": "Page that should state the rule." }]
+      }
+    }
+  ],
+  "parallelGroups": []
+}
+```
+
+Expected issue: `tasks.dependsOn: unknown task ids missing-task`
+
+<!-- parse:fail tasks: dependency cycle map-webhook -> shape-guard -> map-webhook -->
+```json
+{
+  "version": 1,
+  "context": "Bounded read.",
+  "openQuestions": [],
+  "tasks": [
+    {
+      "id": "map-webhook",
+      "title": "Map the webhook",
+      "type": "research",
+      "goal": "Name the insert.",
+      "dependsOn": ["shape-guard"],
+      "planning": { "required": false, "reason": "Bounded read." },
+      "acceptanceCriteria": ["The handoff names the function."],
+      "verification": ["The path exists."],
+      "handoff": {
+        "document": "The handler inserts the order.",
+        "sources": [{ "path": "src/webhooks/stripe.ts", "note": "Handler." }]
+      }
+    },
+    {
+      "id": "shape-guard",
+      "title": "Shape the guard",
+      "type": "architecture",
+      "goal": "Choose the boundary.",
+      "dependsOn": ["map-webhook"],
+      "planning": { "required": true, "reason": "The boundary is shared." },
+      "acceptanceCriteria": ["The handoff names the boundary."],
+      "verification": ["The source supports it."],
+      "handoff": {
+        "document": "Reject at the insert.",
+        "sources": [{ "path": "src/webhooks/stripe.ts", "note": "Insert site." }]
+      }
+    }
+  ],
+  "parallelGroups": []
+}
+```
+
+Expected issue: `tasks: dependency cycle map-webhook -> shape-guard -> map-webhook`
+
+A parallel group cannot contain a dependent pair. The dependency can be
+transitive: `guard-insert` depends on `shape-guard`, which depends on
+`map-webhook`, so `map-webhook` and `guard-insert` are still coupled.
+
+<!-- parse:fail parallelGroups[0].taskIds couples dependent tasks shape-guard and map-webhook -->
+```json
+{
+  "version": 1,
+  "context": "Bounded read.",
+  "openQuestions": [],
+  "tasks": [
+    {
+      "id": "map-webhook",
+      "title": "Map the webhook",
+      "type": "research",
+      "goal": "Name the insert.",
+      "dependsOn": [],
+      "planning": { "required": false, "reason": "Bounded read." },
+      "acceptanceCriteria": ["The handoff names the function."],
+      "verification": ["The path exists."],
+      "handoff": {
+        "document": "The handler inserts the order.",
+        "sources": [{ "path": "src/webhooks/stripe.ts", "note": "Handler." }]
+      }
+    },
+    {
+      "id": "shape-guard",
+      "title": "Shape the guard",
+      "type": "architecture",
+      "goal": "Choose the boundary.",
+      "dependsOn": ["map-webhook"],
+      "planning": { "required": true, "reason": "The boundary is shared." },
+      "acceptanceCriteria": ["The handoff names the boundary."],
+      "verification": ["The source supports it."],
+      "handoff": {
+        "document": "Reject at the insert.",
+        "sources": [{ "path": "src/webhooks/stripe.ts", "note": "Insert site." }]
+      }
+    }
+  ],
+  "parallelGroups": [
+    {
+      "taskIds": ["map-webhook", "shape-guard"],
+      "reason": "These look independent.",
+      "integrationNotes": "They are not independent: shape-guard depends on map-webhook.",
+      "isolation": "separate-worktrees"
+    }
+  ]
+}
+```
+
+Expected issue: `parallelGroups[0].taskIds couples dependent tasks shape-guard and map-webhook`
+
+<!-- parse:fail parallelGroups[0].isolation must be separate-worktrees -->
+```json
+{
+  "version": 1,
+  "context": "Bounded read.",
+  "openQuestions": [],
+  "tasks": [],
+  "parallelGroups": [
+    {
+      "taskIds": ["map-webhook"],
+      "reason": "One writer in the shared checkout.",
+      "integrationNotes": "No reconciliation because there is only one directory.",
+      "isolation": "shared-worktree"
+    }
+  ]
+}
+```
+
+Expected issue: `parallelGroups[0].isolation must be separate-worktrees`
+
+That last snippet also reports an unknown task id because `tasks` is empty.
+The isolation failure is enough to show the point.
+
+## Architecture and a local plan
+
+Use `type: "architecture"` when the deliverable is a boundary or contract that
+other tasks will implement. The derived kind is `mixed`. Set
+`planning.required` to `true` when that decision is not already settled. The
+handoff is the decision, including a rejected alternative. Implementation
+tasks depend on it. They do not share its parallel group.
+
+A local plan is not a task type. Set `planning.required` to `true` on the
+implementation task, and say why in `planning.reason`. The worker then follows
+the existing planned path: read and search first, then implementation. Set
+`planning.required` to `false` only when the approach is already fixed.
+
+Do not call a one-file change architecture. Do not call an unsettled
+cross-module write a direct implementation. On a missing policy or a version 2
+policy, direct implementation, architecture, review, and QA are held. Direct
+documentation and direct research are the version 2 direct kinds. Relabeling
+code as documentation so it will not be held is a false type. The lead still
+qualifies the real scope before admission.
+
+## Research, review, and QA
+
+These three types stay separate when their acceptance criteria differ.
+
+| Type | Derived kind | Use it for | Do not use it for |
+| --- | --- | --- | --- |
+| `research` | `research` | A finding. No code change is owned. Direct is allowed on version 2. | A known edit. That is `implementation`. |
+| `review` | `mixed` | Reading a deliverable for defects, missed cases, and scope drift. | Running the agreed commands. That is `qa`. |
+| `qa` | `mixed` | Running the agreed checks and reporting the actual result. | Only reading the diff. That is `review`. |
+| `documentation` | `documentation` | A document change. Direct is allowed on version 2. | Designing a subsystem. That is `architecture` or `implementation`. |
+| `architecture` | `mixed` | A boundary other tasks implement. | The local plan of one implementation task. |
+| `implementation` | `code` | The code change. | An open-ended survey. That is `research`. |
+
+Review and QA may sit in one parallel group when neither depends on the other,
+even if both depend on the implementation task. `integrationNotes` says how the
+supervisor reconciles those branches. A passing test does not close the review,
+and a review comment does not replace the QA command.
+
+## Planned and direct, without a model
+
+`preparationExecutionDecision` reads `planning.required` and the business type.
+
+| `planning.required` | Stored mode |
+| --- | --- |
+| `true` | `planned` |
+| `false` | `direct` |
+
+The decision object is `{ mode, kind }`. It has no `model`, `variant`, or
+`reason`. Putting those on the decision throws before authorization.
+Routing still happens later, from the approved mission policy, when a task is
+admitted. The discovery JSON does not choose a model or a reasoning effort.
+
+`authorizePreparationDecision` then applies the current policy:
+
+- A missing policy is treated like version 2 for this hold.
+- Version 2 direct work is authorized for `documentation` and `research`.
+- Version 2 direct `code`, `mixed`, and `unspecified` are held. The hold reason
+  comes from the policy check: direct execution needs a qualified kind, and
+  version 2 is limited to documentation or research.
+- Planned work does not carry a model, which is what version 2 requires.
+- Version 3 can authorize direct code and mixed work when that policy accepts
+  the decision. This page does not ship a version 3 catalogue fixture and does
+  not widen version 2.
+
+Held rows are still imported. They store the execution request and leave the
+decision empty. Claim then fails until the lead records a decision through the
+existing `execution_decisions` path: "Task execution proposal requires a
+supervisor decision before admission". Authorized rows store `mode`, `kind`,
+and the lead session as `authorizedBy`. The import does not spawn either kind.
+
+## Import by code
+
+`importPreparationDocument(db, teamId, value, policy?)` is the initial import.
+The supervisor does not call it to create the first tasks and does not type
+those rows by hand.
+
+The function parses the document, hashes the canonical parsed JSON, and writes
+one transaction:
+
+- The team must already exist, and a mission draft must already exist.
+- The first import must happen before `approved_hash` is set. After `start`,
+  the first import throws "Initial preparation import must happen before
+  mission start".
+- Each PM id is mapped to a new plugin task id. Dependencies are rewritten to
+  those ids. The returned mapping is the id list to show the user.
+- Tasks with dependencies are `blocked`. Tasks without dependencies are
+  `pending`. Priority is `medium`. The document has no priority field.
+- The same team and the same canonical document replay the original import id,
+  task ids, and decisions. Key order and trimmed whitespace do not create a
+  second import.
+- Replay does not read, fingerprint, or reauthorize the policy argument.
+  `policy_hash` remains the audit of the first import only. An omitted policy
+  is stored as an empty fingerprint.
+- A different document for that team throws "A different preparation document
+  was already imported for this mission". Later additions use the normal task
+  board. They are not a second preparation import.
+- A unique-constraint race replays the winning row when it is the same document.
+- Nothing is spawned or admitted.
+- The pre-start helper is not a teammate: no `team_spawn`, no team-member row,
+  and no claim. Executing workers stay unadmitted.
+- Import runs in code on the first document that parses. `--accept` is that
+  document only when the PM's initial candidate and five corrections produced
+  none. It does not replace a document already imported.
+
+The supervisor can add further tasks after this import with the existing board
+tools. That does not revise the stored preparation document.
+
+## JSON recovery
+
+Public V2 `session.prompt` accepts text, files, agents, skills, metadata,
+delivery, resume, and id. It sets `additionalProperties` to false and has no
+structured-output or JSON-schema field. Native structured output is not active
+on this host. A model metadata flag is not a public prompt parameter. The
+discovery session asks for one JSON object and parses the text with
+`parsePreparationDocument`. Do not send `format`, `json_schema`, or any other
+unpublished field.
+
+The recovery contract is:
+
+1. The PM returns an initial JSON candidate.
+2. The same parser validates it. On failure the PM may correct the candidate
+   at most five times. Each correction sees the candidate and the parser issues.
+3. Only after that initial candidate and those five corrections are exhausted,
+   the lead may run `/ensemble-mission prepare --accept <json>`.
+4. That document is validated by the same parser. There is no looser schema
+   and no silent repair.
+
+Resume and errors follow the migration already applied by `applyMigrations`
+(`PRAGMA user_version`). The preparation tables are migration 24 in
+`src/schema.ts`. A database newer than this plugin stops instead of guessing a
+schema. This page does not verify a live resume or a failed-command retry.
+The prompt loop itself is not verified here.
+
+## Serena and GrepAI
+
+Use each tool for the job it actually answers. A call that is not used in the
+handoff is not evidence. A canonical index does not prove what an uncommitted
+worktree contains.
+
+GrepAI locates behavior when the file is unknown. Use a descriptive English
+query and a small result set, then open the file. Exact renames, error strings,
+counts, and known symbol names belong to exact search. If the tool catalog has
+no GrepAI tool, say so and search exactly. An empty result means check the
+source root, exclusions, and index coverage before calling the behavior absent.
+A parent source root can be the real index even when the nested repo has no
+`.grepai/` directory. Do not initialize an index unless that was requested.
+
+Serena is for a known symbol: file overview, the function body, then references
+before changing a contract other code uses. Compare the active root with the
+expected source root once. A parent root can be correct. Do not call
+`activate_project` on a shared connection. Uncommitted worktree edits are read
+from the worktree. Serena on the canonical checkout does not see them.
+
+Good handoff source: `src/preparation-document.ts`, note "`parsePreparationDocument`
+rejects unknown keys and trims text". Bad handoff source: a path of `.` with a
+note of "searched the repo", or a Serena hit from `main` cited as the
+uncommitted worktree file.
+
+When a worker command runs, its working directory is that worker's worktree.
+Do not checkout, restore, or clean the user's main worktree to inspect a
+teammate branch.
+
+## What this commit does not change
+
+Preparation adds no sixteenth team tool. The public SDK surface stays the
+public SDK surface. Transport extraction still reads `._client`. `promptAsync`
+stays fire-and-forget. Every `session.abort()` path still preserves the branch
+first. Version 2 and version 3 execution policies stay in place. Tests for this
+contract use an in-memory database and do not open a live Ensemble database.
+
+## Verification boundary
+
+Examples on this page are checked by parsing them with `parsePreparationDocument`
+in this worktree. That check does not start a mission, select a PM, admit the
+reference PM, or prove `prepare` or `prepare --accept`. Those commands, the
+executable reference PM, and its admission stay unverified until the runtime
+lot lands. A green project gate on this tree does not mean either command ran.
