@@ -19,9 +19,10 @@ export function claimTask(db: Database, teamId: string, taskId: string, assignee
   assertMissionAdmission(db, teamId)
   const mission = db.query("SELECT mission_state FROM team WHERE id = ?").get(teamId) as { mission_state: string } | null
   if (mission?.mission_state === "critical") throw new Error("Mission is critical; resolve the classification safety/budget failure before claiming work")
-  const task = db.query("SELECT content, status, assignee, classification_status FROM team_task WHERE id = ? AND team_id = ?")
-    .get(taskId, teamId) as { content: string; status: string; assignee: string | null; classification_status: string } | null
+  const task = db.query("SELECT content, status, assignee, classification_status, execution_request, execution_decision FROM team_task WHERE id = ? AND team_id = ?")
+    .get(taskId, teamId) as { content: string; status: string; assignee: string | null; classification_status: string; execution_request: string | null; execution_decision: string | null } | null
   if (!task) throw new Error(`Task "${taskId}" not found`)
+  if (task.execution_request && !task.execution_decision) throw new Error("Task execution proposal requires a supervisor decision before admission")
   if (!["not_required", "completed"].includes(task.classification_status)) throw new Error(`Task "${taskId}" is awaiting classification (${task.classification_status})`)
   if (task.status === "blocked") throw new Error(`Task "${taskId}" is blocked by unresolved dependencies`)
   if (task.status !== "pending") throw new Error(`Task "${taskId}" is not pending (status: ${task.status})`)

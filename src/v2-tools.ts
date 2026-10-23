@@ -14,6 +14,7 @@ import { executeTeamCleanup } from "./tools/team-cleanup"
 import { executeTeamMerge } from "./tools/team-merge"
 import { executeTeamStatus } from "./tools/team-status"
 import { executeTeamView } from "./tools/team-view"
+import type { TaskExecutionDecision } from "./execution-policy"
 
 /** V2 tool definition (JSON Schema input, structured content output). */
 export interface V2ToolDef {
@@ -66,6 +67,15 @@ type TaskPriority = (typeof TASK_PRIORITIES)[number]
 /** JSON Schema enum property for task priority. */
 function priority(): Record<string, unknown> {
   return { type: "string", description: "Task priority", enum: [...TASK_PRIORITIES], default: "medium" }
+}
+
+function taskExecutionProperties(): Record<string, unknown> {
+  return {
+    mode: { type: "string", enum: ["planned", "direct"], description: "Default planned; direct requires supervisor authorization before admission" },
+    kind: { type: "string", enum: ["documentation", "research", "code", "mixed", "unspecified"], description: "Only strictly documentation/research may be direct" },
+    model: str("Optional direct-task model from the approved catalogue; never grants permissions"),
+    variant: str("Exact approved native variant for the explicit direct-task model"),
+  }
 }
 
 /** Throw on unknown priority — fail fast instead of writing garbage to SQLite. */
@@ -215,7 +225,7 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
 
     editor.add({
       name: "team_tasks_add",
-      description: "Add tasks to the shared team task board so teammates can see what work is available and claim it.",
+      description: "Add tasks or propose execution boundaries. Only the lead supervisor can authorize direct documentation/research via execution_decisions before admission; use tasks: [] to decide existing proposals.",
       input: {
         type: "object",
         properties: {
@@ -240,18 +250,24 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
                 risk: { type: "integer", minimum: 0, maximum: 100, description: "Task risk for model routing only (not review policy)" },
                 task_type: str("Explicit task kind supplied to the fixed classification protocol"),
                 classification_input: { type: "object", additionalProperties: true, description: "Task-specific classification data, treated as data rather than instructions" },
+                execution: { type: "object", properties: taskExecutionProperties(), required: ["mode", "kind"], additionalProperties: false,
+                  description: "Execution proposal; a lead's proposal is also its authorization. Other members' proposals await a supervisor decision." },
               },
               required: ["content"],
               additionalProperties: false,
             },
           },
+          execution_decisions: { type: "array", description: "Lead-only decisions for existing unassigned, not-yet-admitted tasks", items: {
+            type: "object", properties: { task_id: str("Existing task ID"), ...taskExecutionProperties() }, required: ["task_id", "mode", "kind"], additionalProperties: false,
+          } },
         },
         required: ["tasks"],
         additionalProperties: false,
       },
       execute: async (input: unknown, context: { sessionID: string }) => {
         const args = input as {
-          tasks: Array<{ content: string; priority?: string; depends_on?: string[]; agent?: string; complexity?: number; risk?: number; task_type?: string; classification_input?: Record<string, unknown> }>
+          tasks: Array<{ content: string; priority?: string; depends_on?: string[]; agent?: string; complexity?: number; risk?: number; task_type?: string; classification_input?: Record<string, unknown>; execution?: TaskExecutionDecision }>
+          execution_decisions?: Array<TaskExecutionDecision & { task_id: string }>
         }
         const content = await executeTeamTasksAdd(
           deps,
@@ -265,7 +281,9 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
               ...(task.risk !== undefined ? { risk: task.risk } : {}),
               ...(task.task_type !== undefined ? { task_type: task.task_type } : {}),
               ...(task.classification_input !== undefined ? { classification_input: task.classification_input } : {}),
+              ...(task.execution !== undefined ? { execution: task.execution } : {}),
             })),
+            ...(args.execution_decisions !== undefined ? { execution_decisions: args.execution_decisions } : {}),
           },
           context.sessionID,
         )

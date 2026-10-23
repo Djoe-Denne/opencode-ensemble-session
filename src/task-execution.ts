@@ -36,7 +36,10 @@ export function taskExecutionInstructions(deps: Pick<ToolDeps, "db">, sessionID:
   const verification = verificationInstructions(policy.verification)
   if (!route.execution || policy.version !== 2) return verification
   const variants = policy.models.filter(model => model.id === route.selected.id).map(model => model.reasoningEffort ?? "default")
-  return `${verification}\nTask phase: ${route.execution.phase}${route.execution.applying ? " (pending native application; retry the same choice or report the blocker)" : ""}; fixed model: ${route.selected.id}; reasoning: ${route.execution.variant ?? "default"}. Allowed reasoning: ${variants.join(", ")}. Plan read-only first. When ready, call team_handoff({ phase: "implementation", reasoning: "<allowed variant>" }); omit reasoning to keep it. During implementation, team_handoff({ reasoning: "<allowed variant>" }) raises or lowers effort. Model, profile and session remain fixed. General-purpose command execution is unavailable during planning; use permitted read/search tools.`
+  const boundary = route.execution.phase === "planning"
+    ? 'Plan read-only first. When ready, call team_handoff({ phase: "implementation", reasoning: "<allowed variant>" }); omit reasoning to keep it. General-purpose command execution is unavailable during planning; use permitted read/search tools.'
+    : route.authorization?.mode === "direct" ? `Supervisor-authorized direct ${route.authorization.kind} task: no separate planning phase. Native profile permissions and project safety/isolation rules still apply; this decision grants no additional permissions.` : "Planning is complete. Native profile permissions and project safety rules still apply."
+  return `${verification}\nTask phase: ${route.execution.phase}${route.execution.applying ? " (pending native application; retry the same choice or report the blocker)" : ""}; fixed model: ${route.selected.id}; reasoning: ${route.execution.variant ?? "default"}. Allowed reasoning: ${variants.join(", ")}. ${boundary} During implementation, team_handoff({ reasoning: "<allowed variant>" }) raises or lowers effort. Model, profile and session remain fixed.`
 }
 
 function assignment(deps: ToolDeps, teamId: string, memberName: string, initializing = false) {
@@ -68,7 +71,7 @@ function store(deps: ToolDeps, teamId: string, memberName: string, taskId: strin
   return json
 }
 
-/** Apply the initial planning boundary before any prompt or direct-claim continuation. */
+/** Apply the admitted initial boundary (planning by default, direct only when authorized). */
 export async function startTaskPlanning(deps: ToolDeps, teamId: string, memberName: string, sessionID: string): Promise<void> {
   if (!hasAutonomousAssignment(deps, sessionID)) return
   await transition(deps, teamId, memberName, sessionID, {}, true)
@@ -90,7 +93,7 @@ async function transition(deps: ToolDeps, teamId: string, memberName: string, se
   if (!starting && route.execution.phase === "planning" && args.phase !== "implementation") throw new Error("Choose the implementation phase before adjusting reasoning")
   const variant = args.reasoning === "default" ? undefined : args.reasoning ?? route.execution.variant
   if (!policy.models.some(model => model.id === member.model && (model.reasoningEffort === "default" ? undefined : model.reasoningEffort) === variant)) throw new Error("Requested reasoning is outside the approved catalogue")
-  const phase = starting ? "planning" : args.phase ?? route.execution.phase
+  const phase = starting ? route.execution.phase : args.phase ?? route.execution.phase
   if (route.execution.applying && (route.execution.phase !== phase || route.execution.variant !== variant)) throw new Error("A pending transition must be retried with the same phase and reasoning")
   if (!starting && !route.execution.applying && phase === route.execution.phase && variant === route.execution.variant) return
   const model = parseModelId(member.model)

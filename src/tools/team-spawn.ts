@@ -409,6 +409,7 @@ export async function executeTeamSpawn(
     try {
       const current = routeMissionTask(deps.db, teamInfo.teamId, args.claim_task, { complexity: args.complexity, risk: args.risk })
       if (current?.policyHash !== policyRouting.policyHash || current.policyRevision !== policyRouting.policyRevision) throw new Error("Mission policy changed during spawn allocation")
+      if (JSON.stringify(current) !== JSON.stringify(policyRouting)) throw new Error("Task execution decision changed during spawn allocation")
     } catch (error) { return rejectPolicySpawn(error) }
   }
   if (args.claim_task && (!isReadOnly || finalResponse)) {

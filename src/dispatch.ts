@@ -34,6 +34,7 @@ export function pickNextTask(db: Database, teamId: string, agentType: string, li
     `SELECT id, content, agent, priority FROM team_task
       WHERE team_id = ? AND status = 'pending' AND assignee IS NULL
         AND classification_status IN ('not_required', 'completed')
+        AND (execution_request IS NULL OR execution_decision IS NOT NULL)
         AND team_id IN (SELECT id FROM team WHERE mission_state != 'critical')
        AND (agent IS NULL OR agent = ?)
      ORDER BY time_created ASC`,
@@ -114,6 +115,7 @@ export function pumpTeam(deps: ToolDeps, teamId: string): Promise<void> {
     `SELECT id, content, agent FROM team_task
       WHERE team_id = ? AND status = 'pending' AND assignee IS NULL
         AND classification_status IN ('not_required', 'completed')
+        AND (execution_request IS NULL OR execution_decision IS NOT NULL)
         AND team_id IN (SELECT id FROM team WHERE mission_state != 'critical')
      ORDER BY (agent IS NULL OR agent = 'build') DESC,
        CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
@@ -203,7 +205,7 @@ export function dispatchNextTask(deps: ToolDeps, teamId: string, memberName: str
       if (autonomous) {
         deps.db.run("UPDATE team_member SET status = 'error', time_updated = ? WHERE team_id = ? AND name = ?", [Date.now(), teamId, memberName])
         deps.registry.unregister(entry.sessionId)
-        notifyLead(deps.client, deps.db, teamId, `Worker ${memberName} could not enter planning; task ${task.id} was released and the session retained for recovery: ${String(error)}`)
+        notifyLead(deps.client, deps.db, teamId, `Worker ${memberName} could not apply its execution boundary; task ${task.id} was released and the session retained for recovery: ${String(error)}`)
       }
       log(`dispatch:release team=${teamId} member=${memberName} task=${task.id}`)
     })

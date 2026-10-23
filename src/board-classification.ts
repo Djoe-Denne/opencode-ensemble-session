@@ -18,9 +18,19 @@ interface ClassificationTask {
   classification_input: string | null
   status: string
   assignee: string | null
+  classification_token: string | null
 }
 
 const inFlight = new WeakMap<Database, Map<string, Promise<void>>>()
+
+/** Retire classification leases for supervisor-authorized direct tasks without resetting safety budgets. */
+export function retireDirectClassifications(db: Database, teamId: string): void {
+  db.run(`UPDATE team_task SET classification_status = 'not_required', classification_token = NULL,
+    classification_until = NULL, classification_error = NULL, classification_result = NULL
+    WHERE team_id = ? AND status IN ('pending', 'blocked') AND assignee IS NULL
+      AND json_extract(execution_decision, '$.mode') = 'direct'
+      AND json_extract(execution_decision, '$.authorizedBy') = (SELECT lead_session_id FROM team WHERE id = ?)`, [teamId, teamId])
+}
 
 function fingerprint(task: ClassificationTask, policy: MissionClassificationPolicy): string {
   return createHash("sha256").update(JSON.stringify([task.content, task.complexity, task.risk, task.task_type, task.classification_input, policy])).digest("hex")
@@ -38,6 +48,8 @@ export function classifyBoardTasks(deps: ToolDeps, teamId: string): Promise<void
 }
 
 async function drain(deps: ToolDeps, teamId: string): Promise<void> {
+  // Revisions/recovery can requeue classifications; direct authorization still wins.
+  retireDirectClassifications(deps.db, teamId)
   const retained = deps.db.query("SELECT session_id FROM classification_helper WHERE team_id = ? AND lease_until <= ?").all(teamId, Date.now()) as Array<{ session_id: string }>
   for (const helper of retained) {
     try {
@@ -62,6 +74,7 @@ async function drain(deps: ToolDeps, teamId: string): Promise<void> {
   const current = (task: ClassificationTask, signature: string, token: string): boolean => {
     const team = deps.db.query("SELECT status FROM team WHERE id = ?").get(teamId) as { status: string } | null
     const latest = deps.db.query("SELECT * FROM team_task WHERE id = ? AND team_id = ?").get(task.id, teamId) as ClassificationTask | null
+    if (latest?.classification_token !== token) return false
     const policy = getMissionClassification(deps.db, teamId)
     if (team?.status === "active" && latest && ["pending", "blocked"].includes(latest.status) && !latest.assignee && policy && fingerprint(latest, policy) === signature) return true
     const attempts = (invalidations.get(task.id) ?? 0) + 1

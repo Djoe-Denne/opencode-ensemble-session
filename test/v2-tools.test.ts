@@ -81,6 +81,23 @@ async function run(defs: V2ToolDef[], name: string, input: unknown, sessionID: s
 }
 
 describe("v2-tools (issue #36, DRY: same execute fns as V1)", () => {
+  test("task execution proposals and supervisor decisions survive the V2 schema/normalizer", async () => {
+    const { defs, domain } = mockToolDomain()
+    const deps = mockDeps()
+    await registerV2Tools(domain, deps)
+    await run(defs, "team_create", { name: "execution-proposal" }, "lead")
+    const definition = defs.find(def => def.name === "team_tasks_add")
+    expect(definition?.input).toMatchObject({ properties: {
+      execution_decisions: { type: "array", items: { required: ["task_id", "mode", "kind"] } },
+      tasks: { items: { properties: { execution: { required: ["mode", "kind"] } } } },
+    } })
+    await run(defs, "team_tasks_add", { tasks: [{ content: "Plan docs", execution: { mode: "planned", kind: "documentation" } }] }, "lead")
+    const task = deps.db.query("SELECT id, execution_request FROM team_task").get() as { id: string; execution_request: string }
+    expect(JSON.parse(task.execution_request)).toMatchObject({ mode: "planned", kind: "documentation" })
+    await run(defs, "team_tasks_add", { tasks: [], execution_decisions: [{ task_id: task.id, mode: "planned", kind: "mixed" }] }, "lead")
+    const decision = deps.db.query("SELECT execution_decision FROM team_task").get() as { execution_decision: string }
+    expect(JSON.parse(decision.execution_decision)).toMatchObject({ mode: "planned", kind: "mixed", authorizedBy: "lead" })
+  })
   test("all 15 tools register with descriptions and input schemas", async () => {
     const { defs, domain } = mockToolDomain()
     await registerV2Tools(domain, mockDeps())

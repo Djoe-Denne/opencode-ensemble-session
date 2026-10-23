@@ -14,6 +14,19 @@ export interface ExecutionPolicy {
   verification?: VerificationPolicy
 }
 
+/** A proposed task boundary; only the supervisor can authorize it before admission. */
+export interface TaskExecutionDecision {
+  mode: "planned" | "direct"
+  kind: "documentation" | "research" | "code" | "mixed" | "unspecified"
+  model?: string
+  variant?: string
+}
+
+/** Durable supervisor provenance, copied into the immutable admitted assignment. */
+export interface AuthorizedTaskExecution extends TaskExecutionDecision {
+  authorizedBy: string
+}
+
 /** A task-bound assignment; the selected model never changes within the task. */
 export interface ExecutionRoute {
   assignmentID?: string
@@ -24,6 +37,7 @@ export interface ExecutionRoute {
   risk?: number
   complexityBand?: undefined
   riskBand?: undefined
+  authorization?: AuthorizedTaskExecution
   execution: { phase: "planning" | "implementation"; variant?: string; applying?: boolean }
 }
 
@@ -36,12 +50,16 @@ export function nativeExecutionCatalogue(models: readonly RoutingModel[], native
 }
 
 /** Select once per task/revision, reproducibly across preview, spawn, claim and restart. */
-export function routeExecution(policy: ExecutionPolicy, taskKey: string, selected?: MissionPolicyModel): ExecutionRoute {
-  const starts = executionStarts(policy).toSorted((a, b) => a.id.localeCompare(b.id) || (a.variant ?? "").localeCompare(b.variant ?? ""))
+export function routeExecution(policy: ExecutionPolicy, taskKey: string, selected?: MissionPolicyModel, authorization?: AuthorizedTaskExecution): ExecutionRoute {
+  if (authorization) validateTaskExecutionDecision(authorization)
+  const direct = authorization?.mode === "direct"
+  const starts = executionStarts(policy, direct ? "direct" : "planned").toSorted((a, b) => a.id.localeCompare(b.id) || (a.variant ?? "").localeCompare(b.variant ?? ""))
   const index = createHash("sha256").update(taskKey).digest().readUInt32BE(0) % starts.length
-  const choice = selected ?? starts[index]
+  const choice = direct && authorization.model ? { id: authorization.model, ...(authorization.variant ? { variant: authorization.variant } : {}) } : selected ?? starts[index]
   if (!choice) throw new Error("No initial execution candidate")
-  return { group: "autonomous", selected: { ...choice }, alternatives: [], execution: { phase: "planning", ...(choice.variant ? { variant: choice.variant } : {}) } }
+  if (!executionStarts(policy, "direct").some(model => model.id === choice.id && model.variant === choice.variant)) throw new Error("Task model/variant is outside the approved catalogue")
+  return { group: "autonomous", selected: { ...choice }, alternatives: [], ...(authorization ? { authorization: structuredClone(authorization) } : {}),
+    execution: { phase: direct ? "implementation" : "planning", ...(choice.variant ? { variant: choice.variant } : {}) } }
 }
 
 /** Build a policy from enabled catalogue entries, without evaluating any task. */
@@ -55,9 +73,21 @@ export function createExecutionPolicy(models: readonly RoutingModel[], startingI
 }
 
 /** Return the admissible initial model/variant pairs. */
-export function executionStarts(policy: ExecutionPolicy): MissionPolicyModel[] {
-  return policy.models.filter(model => model.available && model.intelligenceScore >= policy.startingIntelligence)
+export function executionStarts(policy: ExecutionPolicy, mode: "planned" | "direct" = "planned"): MissionPolicyModel[] {
+  return policy.models.filter(model => model.available && (mode === "direct" || model.intelligenceScore >= policy.startingIntelligence))
     .map(model => ({ id: model.id, ...(model.reasoningEffort && model.reasoningEffort !== "default" ? { variant: model.reasoningEffort } : {}) }))
+}
+
+/** Fail closed on ambiguous direct work or a model override disguised as a planned task. */
+export function validateTaskExecutionDecision(value: unknown): asserts value is TaskExecutionDecision {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid task execution decision")
+  const decision = value as TaskExecutionDecision
+  if (Object.keys(value).some(key => !["mode", "kind", "model", "variant", "authorizedBy"].includes(key)) ||
+    !["planned", "direct"].includes(decision.mode) || !["documentation", "research", "code", "mixed", "unspecified"].includes(decision.kind)) throw new Error("Invalid task execution mode or kind")
+  if (decision.mode === "direct" && !["documentation", "research"].includes(decision.kind)) throw new Error("Direct execution is restricted to documentation or research; code, mixed and ambiguous work require planning")
+  if (decision.mode === "planned" && (decision.model !== undefined || decision.variant !== undefined)) throw new Error("Planned execution cannot override the approved routing")
+  if (decision.model !== undefined && (typeof decision.model !== "string" || !/^[^\s/#]+\/[^\s#]+$/u.test(decision.model))) throw new Error("Invalid direct task model")
+  if (decision.variant !== undefined && (!decision.model || typeof decision.variant !== "string" || !decision.variant.trim())) throw new Error("A direct variant requires an explicit model and native variant")
 }
 
 /** Validate a persisted catalogue snapshot before approval or execution. */

@@ -8,7 +8,7 @@ import { executeTeamCreate } from "./tools/team-create"
 import { classificationReadiness, getMissionClassification, type MissionClassificationConfig } from "./mission-classification"
 import { routeMissionModel, validateMissionModelPolicy, type MissionModelPolicy, type MissionPolicyModel } from "./mission-model-policy"
 import { canonicalizeVariantLabel } from "./variant-effort"
-import { createExecutionPolicy, nativeExecutionCatalogue, routeExecution, validateExecutionPolicy, type ExecutionPolicy, type TaskModelRoute } from "./execution-policy"
+import { createExecutionPolicy, nativeExecutionCatalogue, routeExecution, validateExecutionPolicy, validateTaskExecutionDecision, type AuthorizedTaskExecution, type ExecutionPolicy, type TaskModelRoute } from "./execution-policy"
 import { routeNormalizedModel } from "./model-router"
 import { verificationInstructions } from "./verification-policy"
 
@@ -328,9 +328,21 @@ function normalizedScore(value: unknown, dimension: string): number | undefined 
 
 /** Preview using the same score normalization and pure resolver as real admission. */
 export function previewMissionTask(db: Database, snapshot: MissionPolicySnapshot, taskId?: string, scores: { complexity?: number; risk?: number } = {}): TaskModelRoute {
-  const task = taskId ? db.query("SELECT complexity, risk, classification_result FROM team_task WHERE id = ? AND team_id = ?").get(taskId, snapshot.teamId) as
-    { complexity: number | null; risk: number | null; classification_result: string | null } | null : undefined
+  const task = taskId ? db.query("SELECT complexity, risk, classification_result, execution_request, execution_decision FROM team_task WHERE id = ? AND team_id = ?").get(taskId, snapshot.teamId) as
+    { complexity: number | null; risk: number | null; classification_result: string | null; execution_request: string | null; execution_decision: string | null } | null : undefined
   if (taskId && !task) throw new Error(`Task ${taskId} not found in this mission`)
+  const authorization = task?.execution_decision ? JSON.parse(task.execution_decision) as AuthorizedTaskExecution : undefined
+  if (task?.execution_request && !authorization) throw new Error("Task execution proposal requires a supervisor decision before admission")
+  if (authorization) {
+    validateTaskExecutionDecision(authorization)
+    const lead = db.query("SELECT lead_session_id FROM team WHERE id = ?").get(snapshot.teamId) as { lead_session_id: string }
+    if (authorization.authorizedBy !== lead.lead_session_id) throw new Error("Task execution requires supervisor authorization")
+    if (authorization.mode === "direct") {
+      if (snapshot.policy.version !== 2) throw new Error("Direct tasks require an approved execution catalogue")
+      if (scores.complexity !== undefined || scores.risk !== undefined) throw new Error("Direct execution does not accept score overrides")
+      return routeExecution(snapshot.policy, `${snapshot.teamId}:${taskId}:${snapshot.hash}`, undefined, authorization)
+    }
+  }
   const classified = task?.classification_result ? JSON.parse(task.classification_result) as { complexity?: unknown; risk?: unknown } : undefined
   const complexity = task ? task.complexity ?? normalizedScore(classified?.complexity, "complexity") : scores.complexity
   const risk = task ? task.risk ?? normalizedScore(classified?.risk, "risk") : scores.risk

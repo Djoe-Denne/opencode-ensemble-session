@@ -1,5 +1,13 @@
 import type { ToolDeps } from "../types"
 import { requireTeamMember } from "./shared"
+import type { TaskExecutionDecision } from "../execution-policy"
+
+function executionSummary(task: Record<string, unknown>): string {
+  const raw = task.execution_decision ?? task.execution_request
+  if (typeof raw !== "string") return ""
+  const decision = JSON.parse(raw) as TaskExecutionDecision
+  return ` [execution:${task.execution_decision ? "authorized" : "proposed"} ${decision.mode} ${decision.kind}${decision.model ? ` ${decision.model}${decision.variant ? `#${decision.variant}` : ""}` : ""}]`
+}
 
 /**
  * Execute the team_tasks_list tool. Shows all tasks on the shared board.
@@ -20,6 +28,6 @@ export async function executeTeamTasksList(
     const result = t.classification_status === "completed" && typeof t.classification_result === "string"
       ? JSON.parse(t.classification_result) as { complexity: number; risk: number; method?: string; toolId?: string; model?: string } : undefined
     const scores = result ? ` [classified 0–1: complexity:${result.complexity} risk:${result.risk} via:${result.method ?? result.toolId ?? result.model ?? "classifier"}]` : ""
-    return `[${t.status}] ${t.content} (${t.id})${t.assignee ? ` → ${t.assignee}` : ""}${t.priority !== "medium" ? ` [${t.priority}]` : ""}${t.agent ? ` @${t.agent}` : ""}${t.complexity != null || t.risk != null ? ` [complexity:${t.complexity ?? 0} risk:${t.risk ?? 0}]` : ""}${t.classification_status !== "not_required" ? ` [classification:${t.classification_status}${t.classification_error ? `: ${t.classification_error}` : ""}]` : ""}${scores}`
+    return `[${t.status}] ${t.content} (${t.id})${t.assignee ? ` → ${t.assignee}` : ""}${t.priority !== "medium" ? ` [${t.priority}]` : ""}${t.agent ? ` @${t.agent}` : ""}${t.complexity != null || t.risk != null ? ` [complexity:${t.complexity ?? 0} risk:${t.risk ?? 0}]` : ""}${t.classification_status !== "not_required" ? ` [classification:${t.classification_status}${t.classification_error ? `: ${t.classification_error}` : ""}]` : ""}${scores}${executionSummary(t)}`
   }).join("\n")
 }

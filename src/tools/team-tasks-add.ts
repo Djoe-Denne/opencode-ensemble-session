@@ -4,8 +4,10 @@ import { generateId } from "../util"
 import { pumpTeam } from "../dispatch"
 import { validateTaskRoutingScores } from "../model-router"
 import { classificationReadiness, getMissionClassification } from "../mission-classification"
-import { classifyBoardTasks } from "../board-classification"
+import { classifyBoardTasks, retireDirectClassifications } from "../board-classification"
 import { log } from "../log"
+import { assertMissionAdmission } from "../mission-policy"
+import { executionStarts, validateTaskExecutionDecision, type AuthorizedTaskExecution, type TaskExecutionDecision } from "../execution-policy"
 
 interface TaskInput {
   content: string
@@ -17,6 +19,7 @@ interface TaskInput {
   risk?: number
   task_type?: string
   classification_input?: Record<string, unknown>
+  execution?: TaskExecutionDecision
 }
 
 /**
@@ -25,11 +28,38 @@ interface TaskInput {
  */
 export async function executeTeamTasksAdd(
   deps: ToolDeps,
-  args: { tasks: TaskInput[] },
+  args: { tasks: TaskInput[]; execution_decisions?: Array<TaskExecutionDecision & { task_id: string }> },
   sessionId: string,
 ): Promise<string> {
   const teamInfo = requireTeamMember(deps, sessionId)
   const policy = getMissionClassification(deps.db, teamInfo.teamId)
+  const decisions = args.execution_decisions ?? []
+  if (decisions.length && teamInfo.role !== "lead") throw new Error("Only the lead supervisor can authorize task execution decisions")
+  if (new Set(decisions.map(decision => decision.task_id)).size !== decisions.length) throw new Error("Duplicate task execution decisions")
+  const request = (input: TaskExecutionDecision): TaskExecutionDecision => {
+    const value = { mode: input.mode, kind: input.kind, ...(input.model !== undefined ? { model: input.model } : {}), ...(input.variant !== undefined ? { variant: input.variant } : {}) }
+    validateTaskExecutionDecision(value)
+    return value
+  }
+  const requests = args.tasks.map(task => task.execution === undefined ? undefined : request(task.execution))
+  const updates = decisions.map(decision => ({ taskID: decision.task_id, decision: request(decision) }))
+  updates.forEach(({ taskID }) => {
+    const row = deps.db.query("SELECT status, assignee, model_routing FROM team_task WHERE id=? AND team_id=?").get(taskID, teamInfo.teamId) as { status: string; assignee: string | null; model_routing: string | null } | null
+    if (!row || !["pending", "blocked"].includes(row.status) || row.assignee || row.model_routing) throw new Error("Execution decisions require an unassigned, not-yet-admitted pending or blocked task")
+  })
+  const authorizations = [...(teamInfo.role === "lead" ? requests.filter(value => value !== undefined) : []), ...updates.map(update => update.decision)]
+  const direct = authorizations.filter(decision => decision.mode === "direct")
+  if (direct.length) {
+    const snapshot = assertMissionAdmission(deps.db, teamInfo.teamId)
+    if (!snapshot || snapshot.policy.version !== 2) throw new Error("Direct tasks require an approved execution catalogue")
+    const catalogue = executionStarts(snapshot.policy, "direct")
+    const native = deps.nativeModels ? await deps.nativeModels() : []
+    direct.forEach(decision => {
+      const candidates = catalogue.filter(model => !decision.model || (model.id === decision.model && model.variant === decision.variant))
+      if (!candidates.length) throw new Error("Direct task selection is outside the approved catalogue")
+      if (!candidates.some(model => native.some(candidate => candidate.id === model.id && candidate.variant === model.variant))) throw new Error("Native model/variant unavailable for direct execution")
+    })
+  }
 
   const unknown = [...new Set(args.tasks.flatMap(task => task.depends_on ?? []))].filter(id =>
     !deps.db.query("SELECT id FROM team_task WHERE id = ? AND team_id = ?").get(id, teamInfo.teamId),
@@ -46,43 +76,56 @@ export async function executeTeamTasksAdd(
 
   const missionPolicy = deps.db.query("SELECT team_id FROM mission_policy WHERE team_id = ?").get(teamInfo.teamId) as { team_id: string } | null
   const readiness = classificationReadiness(policy)
-  if (!missionPolicy && !readiness.ready && args.tasks.some(task => task.complexity === undefined || task.risk === undefined)) {
+  if (!missionPolicy && !readiness.ready && args.tasks.some((task, index) =>
+    !(teamInfo.role === "lead" && requests[index]?.mode === "direct") && (task.complexity === undefined || task.risk === undefined))) {
     throw new Error(readiness.reason)
   }
 
-  const ids: string[] = []
   const now = Date.now()
 
-  for (const task of args.tasks) {
-    const id = generateId("task")
-    const depsJson = task.depends_on?.length ? JSON.stringify(task.depends_on) : null
-    const agent = task.agent?.trim() || null
-
-    // Determine initial status — blocked if has unresolved dependencies
-    let status = "pending"
-    if (task.depends_on?.length) {
-      const resolved = task.depends_on.every(depId => {
+  const ids = deps.db.transaction(() => {
+    updates.forEach(({ taskID, decision }) => {
+      const authorization: AuthorizedTaskExecution = { ...decision, authorizedBy: sessionId }
+      if (decision.mode === "planned" && policy && (policy.method !== "manual" || policy.specialized)) {
+        deps.db.run(`UPDATE team_task SET classification_status = 'pending'
+          WHERE id = ? AND team_id = ? AND status IN ('pending', 'blocked') AND assignee IS NULL AND model_routing IS NULL
+            AND json_extract(execution_decision, '$.mode') = 'direct' AND (complexity IS NULL OR risk IS NULL)
+            AND (? != 'manual' OR (? = 1 AND task_type = 'x86'))`, [taskID, teamInfo.teamId, policy.method, policy.specialized ? 1 : 0])
+      }
+      const changed = deps.db.run("UPDATE team_task SET execution_decision=?, time_updated=? WHERE id=? AND team_id=? AND status IN ('pending', 'blocked') AND assignee IS NULL AND model_routing IS NULL",
+        [JSON.stringify(authorization), now, taskID, teamInfo.teamId])
+      if (!changed.changes) throw new Error("Task was admitted during its execution decision")
+    })
+    const added = args.tasks.map((task, index) => {
+      const id = generateId("task")
+      const depsJson = task.depends_on?.length ? JSON.stringify(task.depends_on) : null
+      const agent = task.agent?.trim() || null
+      const resolved = task.depends_on?.every(depId => {
         const dep = deps.db.query("SELECT status FROM team_task WHERE id = ? AND team_id = ?")
           .get(depId, teamInfo.teamId) as { status: string } | null
         return dep && (dep.status === "completed" || dep.status === "cancelled")
-      })
-      if (!resolved) status = "blocked"
-    }
+      }) ?? true
 
-    deps.db.run(
-      "INSERT INTO team_task (id, team_id, content, status, priority, depends_on, agent, complexity, risk, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [id, teamInfo.teamId, task.content, status, task.priority, depsJson, agent, task.complexity ?? null, task.risk ?? null, now, now]
-    )
-    deps.db.run("UPDATE team_task SET task_type = ?, classification_input = ?, classification_status = ? WHERE id = ?",
-      [task.task_type ?? null, task.classification_input ? JSON.stringify(task.classification_input) : null,
-        policy && (policy.method !== "manual" || (policy.specialized && task.task_type === "x86")) && (task.complexity === undefined || task.risk === undefined) ? "pending" : "not_required", id])
-    ids.push(id)
-  }
+      deps.db.run(
+        "INSERT INTO team_task (id, team_id, content, status, priority, depends_on, agent, complexity, risk, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [id, teamInfo.teamId, task.content, resolved ? "pending" : "blocked", task.priority, depsJson, agent, task.complexity ?? null, task.risk ?? null, now, now]
+      )
+      deps.db.run("UPDATE team_task SET task_type = ?, classification_input = ?, classification_status = ? WHERE id = ?",
+        [task.task_type ?? null, task.classification_input ? JSON.stringify(task.classification_input) : null,
+          policy && (policy.method !== "manual" || (policy.specialized && task.task_type === "x86")) && (task.complexity === undefined || task.risk === undefined) ? "pending" : "not_required", id])
+      const execution = requests[index]
+      if (execution) deps.db.run("UPDATE team_task SET execution_request=?, execution_decision=? WHERE id=?",
+        [JSON.stringify(execution), teamInfo.role === "lead" ? JSON.stringify({ ...execution, authorizedBy: sessionId }) : null, id])
+      return id
+    })
+    retireDirectClassifications(deps.db, teamInfo.teamId)
+    return added
+  })()
 
   // Pull-based pool: newly added work may exceed idle capacity — feed idle
   // members, then scale up within the cap (opt-in — docs/task-pool.md).
   pumpTeam(deps, teamInfo.teamId)
   void classifyBoardTasks(deps, teamInfo.teamId).catch(error => { log(`classification:drain-failed ${String(error)}`) })
 
-  return `Added ${ids.length} task${ids.length !== 1 ? "s" : ""}: ${ids.join(", ")}`
+  return `Added ${ids.length} task${ids.length !== 1 ? "s" : ""}: ${ids.join(", ")}${updates.length ? `; recorded ${updates.length} supervisor execution decision(s)` : ""}`
 }

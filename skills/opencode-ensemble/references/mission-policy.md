@@ -60,6 +60,51 @@ required by this feature. Keep project verification requirements bounded to the
 actual deliverable. Report unsupported native controls instead of constructing
 an unrelated proof platform.
 
+### Direct documentation and research
+
+Planning remains the default for code, mixed work, and unclear scope. A member
+can propose an explicit task boundary through `team_tasks_add`:
+`execution: { mode: "direct", kind: "documentation" }` (or `"research"`).
+The board marks it proposed and holds admission until the supervisor decides.
+`task_type`, classification scores, affinity, and a worker's handoff do not
+authorize direct execution. The supervisor qualifies the actual scope; labels
+are not an automatic content classifier or permission grant.
+
+Only the lead can record `execution_decisions` for existing unassigned tasks:
+
+```ts
+team_tasks_add({
+  tasks: [],
+  execution_decisions: [{ task_id: taskID, mode: "direct", kind: "research",
+    model: approvedModelID, variant: approvedNativeVariant }],
+})
+```
+
+Use the actual task ID returned by `team_tasks_add`. Omit model/variant for
+deterministic selection within the approved catalogue; when providing a variant,
+provide its model too. The lead can instead require planning with
+`{ task_id: taskID, mode: "planned", kind: "mixed" }`, without model overrides.
+A lead's `execution` on a newly added task is already its decision. The same
+contract works for initial tasks and proposals added during execution, without
+adding a tool or changing the mission's approved model policy.
+
+Direct tasks start in implementation, without applying the planning intelligence
+threshold or inventing scores. Models and exact native variants must still be
+approved and available. Authorized direct tasks do not require classification,
+even when the mission opts into a classifier. Authorization retires any pending
+classification lease; late results cannot overwrite the decision. Classification
+budgets and mission-wide critical safety stops are not reset or bypassed.
+Spawn, claim, and dispatch apply the same decision and
+restore the native profile, not blanket edit/shell permissions. User instructions,
+read-only profiles, write isolation, QA, dependencies, and admission checks remain
+in force. Use an appropriate task-owning profile; the existing restriction on
+standalone built-in `plan`/`explore` workers is unchanged.
+
+Decisions cannot rewrite an admitted assignment, even if its task was later
+released. Running work retains its admitted policy revision and direct decision.
+New admissions still require the current mission approval; model availability or
+native application failures fail closed using the existing recovery paths.
+
 ## Revisions and running work
 
 Opening configuration pauses new admission. An edited file invalidates approval;

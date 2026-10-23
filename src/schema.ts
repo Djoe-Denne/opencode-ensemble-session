@@ -312,7 +312,10 @@ export const MIGRATIONS: string[] = [
      time_created INTEGER NOT NULL
    );
    ALTER TABLE member_result ADD COLUMN origin TEXT;
-   ALTER TABLE member_result ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0;`,
+    ALTER TABLE member_result ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0;`,
+  // Migration 22: proposals and supervisor decisions are separate from admitted assignments.
+  `ALTER TABLE team_task ADD COLUMN execution_request TEXT;
+   ALTER TABLE team_task ADD COLUMN execution_decision TEXT;`,
 ]
 
 /**

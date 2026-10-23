@@ -65,6 +65,15 @@ function missionClassificationSchema() {
   })
 }
 
+function taskExecutionSchema() {
+  return tool.schema.object({
+    mode: tool.schema.enum(["planned", "direct"]).describe("Direct requires supervisor authorization before admission"),
+    kind: tool.schema.enum(["documentation", "research", "code", "mixed", "unspecified"]).describe("Only strictly documentation/research may be direct"),
+    model: tool.schema.string().optional().describe("Optional approved direct-task model; never grants permissions"),
+    variant: tool.schema.string().optional().describe("Exact approved native variant for the explicit direct-task model"),
+  })
+}
+
 /**
  * opencode-ensemble plugin entry point.
  * Enables agent teams: multiple agents running in parallel with
@@ -605,7 +614,7 @@ const plugin: Plugin = async (input) => {
       }),
 
       team_tasks_add: tool({
-        description: "Add tasks to the shared team task board so teammates can see what work is available and claim it.",
+        description: "Add tasks or propose execution boundaries. Only the lead supervisor can authorize direct documentation/research via execution_decisions before admission; use tasks: [] to decide existing proposals.",
         args: {
           tasks: tool.schema.array(tool.schema.object({
             content: tool.schema.string().describe("Task description"),
@@ -616,7 +625,9 @@ const plugin: Plugin = async (input) => {
           risk: tool.schema.number().int().min(0).max(100).optional().describe("Task risk for model routing only (not review policy)"),
             task_type: tool.schema.string().optional().describe("Task kind for classification"),
             classification_input: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional().describe("Task-specific classification data"),
+            execution: taskExecutionSchema().optional().describe("Execution proposal; lead proposals are authorized, other members await a supervisor decision"),
           })).describe("Tasks to add"),
+          execution_decisions: tool.schema.array(taskExecutionSchema().extend({ task_id: tool.schema.string().describe("Existing unassigned, not-yet-admitted task ID") })).optional().describe("Lead-only decisions for existing tasks"),
         },
         async execute(args, ctx) {
           const result = await executeTeamTasksAdd(deps, args, ctx.sessionID)
