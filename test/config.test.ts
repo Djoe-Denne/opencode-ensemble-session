@@ -64,6 +64,69 @@ describe("config", () => {
     expect(config).toEqual(DEFAULT_CONFIG)
   })
 
+  test("business profiles default to no declarations, even for matching native names", () => {
+    expect(loadConfig(tmpDir)).toHaveProperty("businessProfiles", { extensions: {}, byAgent: {} })
+  })
+
+  test("business profile extensions and exact native mappings merge by key across config files", () => {
+    const globalDir = path.join(tmpDir, "home", ".config", "opencode")
+    const projectDir = path.join(tmpDir, ".opencode")
+    mkdirSync(globalDir, { recursive: true })
+    mkdirSync(projectDir, { recursive: true })
+    writeFileSync(path.join(globalDir, "ensemble.json"), JSON.stringify({ businessProfiles: {
+      extensions: { security: { description: "Global security review" } },
+      byAgent: { implementer: "developer", reviewer: "security", researcher: "project-expert" },
+    } }))
+    writeFileSync(path.join(projectDir, "ensemble.json"), JSON.stringify({
+      timeoutMs: 123, modelsByAgent: { implementer: "native/model" },
+      businessProfiles: {
+        extensions: { security: { description: "Project security review" }, "project-expert": { description: "Project evidence" } },
+        byAgent: { reviewer: "reviewer", "Code-Reviewer": "reviewer" },
+      },
+    }))
+    expect(loadConfig(tmpDir)).toMatchObject({
+      timeoutMs: 123, modelsByAgent: { implementer: "native/model" },
+      businessProfiles: {
+        extensions: { security: { description: "Project security review" }, "project-expert": { description: "Project evidence" } },
+        byAgent: { implementer: "developer", reviewer: "reviewer", researcher: "project-expert", "Code-Reviewer": "reviewer" },
+      },
+    })
+  })
+
+  test("invalid business profile references block config loading instead of reviving an inherited mapping", () => {
+    const globalDir = path.join(tmpDir, "home", ".config", "opencode")
+    const projectDir = path.join(tmpDir, ".opencode")
+    mkdirSync(globalDir, { recursive: true })
+    mkdirSync(projectDir, { recursive: true })
+    writeFileSync(path.join(globalDir, "ensemble.json"), JSON.stringify({ businessProfiles: { byAgent: { implementer: "developer" } } }))
+    writeFileSync(path.join(projectDir, "ensemble.json"), JSON.stringify({ businessProfiles: { byAgent: { implementer: "typo" } } }))
+    expect(() => loadConfig(tmpDir)).toThrow(/businessProfiles.*byAgent.*implementer.*typo/)
+    expect(() => loadConfig(tmpDir)).toThrow(path.join(projectDir, "ensemble.json"))
+  })
+
+  test.each([
+    { businessProfiles: null }, { businessProfiles: [] },
+    { businessProfiles: { extensions: { developer: { description: "Redefined" } } } },
+    { businessProfiles: { byAgent: { worker: ["qa", "reviewer"] } } },
+  ])(
+    "invalid explicit business profile structure cannot be swallowed by the JSON fallback: %j", ({ businessProfiles }) => {
+      const dir = path.join(tmpDir, ".opencode")
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(path.join(dir, "ensemble.json"), JSON.stringify({ timeoutMs: 123, businessProfiles }))
+      expect(() => loadConfig(tmpDir)).toThrow("businessProfiles")
+    },
+  )
+
+  test("invalid global business profile structure is not silently hidden by a project override", () => {
+    const globalDir = path.join(tmpDir, "home", ".config", "opencode")
+    const projectDir = path.join(tmpDir, ".opencode")
+    mkdirSync(globalDir, { recursive: true })
+    mkdirSync(projectDir, { recursive: true })
+    writeFileSync(path.join(globalDir, "ensemble.json"), JSON.stringify({ businessProfiles: null }))
+    writeFileSync(path.join(projectDir, "ensemble.json"), JSON.stringify({ businessProfiles: { byAgent: { implementer: "developer" } } }))
+    expect(() => loadConfig(tmpDir)).toThrow(path.join(globalDir, "ensemble.json"))
+  })
+
   test("loads routing catalogue and beta from plugin configuration", () => {
     const dir = path.join(tmpDir, ".opencode")
     mkdirSync(dir, { recursive: true })

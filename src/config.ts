@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs"
 import path from "node:path"
+import { resolveBusinessProfilesConfig, type BusinessProfilesConfig } from "./business-profiles"
 import { validateModelRoutingConfig, type ModelRoutingConfig } from "./model-router"
 import { validateMissionClassificationConfig, type MissionClassificationConfig } from "./mission-classification"
 import { validateMissionModelPolicy, type MissionModelPolicy } from "./mission-model-policy"
@@ -30,6 +31,8 @@ export interface EnsembleConfig {
   modelPool?: string[]
   /** Map agent type to specific model e.g. {"build": "anthropic/claude-opus-4-6"} */
   modelsByAgent?: Record<string, string>
+  /** Declarative business identities, independent of native names and execution policy. */
+  businessProfiles?: BusinessProfilesConfig
   /** How to assign models: "default" | "rotate" | "random" (default: "default") */
   modelAssignment?: "default" | "rotate" | "random"
   /** Lead asks user about model preferences before spawning (default: false) */
@@ -74,6 +77,7 @@ export const DEFAULT_CONFIG: Required<EnsembleConfig> = {
   defaultModel: "",
   modelPool: [],
   modelsByAgent: {},
+  businessProfiles: { extensions: {}, byAgent: {} },
   modelAssignment: "default",
   promptForModels: false,
   v2ApiUrl: "",
@@ -91,7 +95,7 @@ export const DEFAULT_CONFIG: Required<EnsembleConfig> = {
   initSubmodules: false,
 }
 
-type ConfigFile = Omit<Partial<EnsembleConfig>, "modelRouting" | "classification"> & { modelRouting?: Partial<ModelRoutingConfig>; classification?: Partial<MissionClassificationConfig> }
+type ConfigFile = Omit<Partial<EnsembleConfig>, "modelRouting" | "classification" | "businessProfiles"> & { modelRouting?: Partial<ModelRoutingConfig>; classification?: Partial<MissionClassificationConfig>; businessProfiles?: unknown }
 
 /** Read a JSON config file, returning an empty object on missing/invalid. */
 function readConfigFile(filePath: string): ConfigFile {
@@ -126,6 +130,9 @@ function readConfigFile(filePath: string): ConfigFile {
     if (typeof raw.windowsSubstLetters === "string") result.windowsSubstLetters = raw.windowsSubstLetters
     if (typeof raw.linkNodeModules === "boolean") result.linkNodeModules = raw.linkNodeModules
     if (typeof raw.initSubmodules === "boolean") result.initSubmodules = raw.initSubmodules
+    // Keep the raw declaration: invalid business profiles must fail after layering,
+    // outside this reader's existing missing/invalid-JSON compatibility fallback.
+    if (raw.businessProfiles !== undefined) result.businessProfiles = raw.businessProfiles
     // Validate after merging, outside this reader's compatibility fallback: an
     // invalid explicit mission policy must never silently become a looser one.
     if (raw.missionPolicy !== undefined) result.missionPolicy = raw.missionPolicy as MissionModelPolicy | null
@@ -171,11 +178,19 @@ export function loadConfig(projectDir: string): Required<EnsembleConfig> {
 
   const global = readConfigFile(globalPath)
   const project = readConfigFile(projectPath)
+  const businessProfiles = (() => {
+    try {
+      return resolveBusinessProfilesConfig(global.businessProfiles, project.businessProfiles)
+    } catch (error) {
+      throw new Error(`[ensemble] Invalid businessProfiles (${globalPath} → ${projectPath}): ${error instanceof Error ? error.message : String(error)}`)
+    }
+  })()
   const merged = {
     ...DEFAULT_CONFIG, ...global, ...project,
     modelRouting: { ...DEFAULT_CONFIG.modelRouting, ...global.modelRouting, ...project.modelRouting },
     classification: { ...DEFAULT_CONFIG.classification, ...global.classification, ...project.classification,
       limits: { ...global.classification?.limits, ...project.classification?.limits } },
+    businessProfiles,
   }
   if (merged.missionPolicy !== null) validateMissionModelPolicy(merged.missionPolicy)
   if (!Number.isFinite(merged.startingIntelligence) || merged.startingIntelligence < 0) throw new Error("Invalid starting intelligence threshold")

@@ -493,6 +493,75 @@ All fields are optional. Missing fields use defaults.
 | `modelRouting` | `{ "beta": 0.35, "models": [] }` | Deterministic minimum-cost routing from task complexity/risk and a scored model/effort catalogue. Explicit `model` wins; no scores preserves existing selection. |
 | `missionPolicy` | `null` | Complete default 2D policy for command-prepared missions. Null seeds a reviewable draft from the available catalogue; approval is still required. |
 
+### Declarative business profiles
+
+Business profiles identify a kind of work, separately from an OpenCode native
+agent's exact name and its Ensemble lead/member identity. The initial catalogue is:
+
+- `supervisor` — mission coordination, scope arbitration, evidence and user decisions.
+- `pm` — requirements, priorities, work decomposition and tracking.
+- `architect` — contracts, boundaries and design decisions.
+- `developer` — implementation and associated tests.
+- `qa` — acceptance verification, reproduction and regression checks.
+- `reviewer` — critical examination of changes, defects and risks.
+- `researcher` — exploration, research and sourced evidence.
+- `documentalist` — structuring, integrating and maintaining documentation and knowledge.
+
+Configure explicit associations in **Ensemble's** `.opencode/ensemble.json`
+(or `~/.config/opencode/ensemble.json`), not as a new OpenCode agent field:
+
+```json
+{
+  "businessProfiles": {
+    "extensions": {
+      "security-reviewer": { "description": "Review security boundaries and threats" }
+    },
+    "byAgent": {
+      "orchestrator": "supervisor",
+      "implementer": "developer",
+      "second-builder": "developer",
+      "code-reviewer": "reviewer",
+      "security-reader": "security-reviewer"
+    }
+  }
+}
+```
+
+These native names are examples, not agents created or renamed by the plugin.
+Each native agent has at most one declared principal profile; several agents may
+share one. Associations are exact and case-sensitive: even an agent named `qa`
+has no business profile unless explicitly mapped. Omitting `businessProfiles`,
+`extensions` or `byAgent` adds no declarations and preserves existing execution.
+Projects need not provide an agent for every catalogue entry.
+
+Extensions use a lower-kebab-case ID matching `[a-z][a-z0-9]*(-[a-z0-9]+)*` and a
+non-empty `description`. They cannot redefine an initial ID or contain execution
+settings. Global and project `extensions` and `byAgent` merge **per entry**; the
+project replaces same-key custom definitions and mappings. Empty maps do not
+delete inherited entries. References are checked after merging, so an inherited
+mapping can reference an extension supplied by the project. Malformed explicit
+declarations and unknown profile references **block configuration loading with a
+diagnostic** identifying the field and config paths; they never revive an old
+mapping or substitute an agent. The existing invalid-JSON fallback is unchanged.
+
+Profiles grant no permissions, select no model, change no native identity or
+lead authority, and trigger no specialized behavior, automatic phases or QA/review
+pipeline. In particular, `supervisor` and `pm` do not make an agent the Ensemble
+lead. Model settings such as `modelsByAgent` still use native agent names.
+
+For future consumers, `src/business-profiles.ts` provides the immutable
+`INITIAL_BUSINESS_PROFILES` catalogue, `resolveBusinessProfilesConfig(...layers)`
+and the pure `inspectAgentBusinessProfile(config, nativeName, evidence?)` helper.
+The helper reports declaration (`declaredProfile`/`profile`), `diskPresence` and
+`nativeAvailability` independently. Optional `evidence.diskAgents` and
+`evidence.nativeAgents` are **complete name inventories obtained independently**
+by the caller. Omit an inventory when it has not been checked: the result is
+`unverified`, not absent or unavailable. A disk inventory can prove file presence
+but never native availability; built-in or JSON-defined agents can be available
+without a project Markdown file. Only supply `nativeAgents` from a verified native
+inventory for the relevant host/location. This helper performs no filesystem scan
+or host call, and its results/config copies do not mutate the shared catalogue.
+
 ### Environment variables
 
 Env vars override config file values. Useful for CI or one-off overrides.
