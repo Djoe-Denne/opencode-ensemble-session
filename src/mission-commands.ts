@@ -13,6 +13,8 @@ import { verificationInstructions } from "./verification-policy"
 import { missionReportingInstructions } from "./mission-reporting"
 import { dirname, join } from "node:path"
 import { executionStarts, planningCatalogue } from "./execution-policy"
+import { PreparationAdmissionError } from "./preparation-admission"
+import { executePreparation, type PreparationPort, type PreparationRunResult } from "./preparation-runtime"
 
 const QA_CONFIG_GUIDANCE = 'Discuss mission QA interactively: light (targeted checks), proportionate (risk-based checks; default), or reinforced (explicit verification plan and independent review). Offer the current/default choice for confirmation, not a new questionnaire per task. Ask only for consequential commands and acceptance criteria. Persist corrections in verification: { level, commands?, acceptance? } before presenting config again. Project safety/mandatory rules cannot be silently waived; surface conflicts for explicit arbitration. Do not impose a fixed QA agent pipeline.'
 
@@ -20,6 +22,28 @@ const QA_CONFIG_GUIDANCE = 'Discuss mission QA interactively: light (targeted ch
 export interface MissionCommand {
   action: "prepare" | "config" | "start"
   text: string
+  preparation?: { kind: "pm" | "accept"; pm?: string }
+}
+
+function parsePrepareRequest(text: string): MissionCommand {
+  const rest = text.slice("prepare".length).trim()
+  const tokens = rest.split(/\s+/).filter(token => token.length > 0)
+  const acceptAt = tokens.indexOf("--accept")
+  const pmAt = tokens.indexOf("--pm")
+  if (acceptAt >= 0 && pmAt >= 0) throw new Error("prepare --pm and prepare --accept are exclusive")
+  if (acceptAt === 0) {
+    const json = rest.slice("--accept".length).trim()
+    if (!json) throw new Error("prepare --accept requires the supervisor JSON")
+    return { action: "prepare", text: json, preparation: { kind: "accept" } }
+  }
+  if (pmAt === 0) {
+    const pm = tokens[1]
+    const mandate = tokens.slice(2).join(" ")
+    if (!pm || pm.startsWith("--") || !mandate) throw new Error("prepare --pm requires an agent and a mandate")
+    return { action: "prepare", text: mandate, preparation: { kind: "pm", pm } }
+  }
+  if (!rest) throw new Error("prepare requires a mandate")
+  return { action: "prepare", text: rest, preparation: { kind: "pm" } }
 }
 
 /** Parse the single command namespace without interpreting user preferences. */
@@ -30,6 +54,7 @@ export function parseMissionCommand(input: string): MissionCommand {
   if (/^start\s/.test(text)) throw new Error("start accepts no extra arguments; configure the proposal first")
   if (text === "config") return { action: "config", text: "" }
   if (/^config\s/.test(text)) return { action: "config", text: text.slice(6).trim() }
+  if (text === "prepare" || /^prepare\s/.test(text)) return parsePrepareRequest(text)
   return { action: "prepare", text }
 }
 
@@ -50,8 +75,29 @@ export interface MissionCommandHost {
   session: { prompt(input: Parameters<Plugin.Context["session"]["prompt"]>[0]): Promise<unknown> }
 }
 
+function formatPreparation(result: PreparationRunResult): string {
+  if (result.status === "cancelled") return "Preparation stopped because the mission is already approved. No document was imported."
+  if (result.status === "exhausted") return "Preparation used the initial reply and five corrections without a valid document. Submit one correction with /ensemble-mission prepare --accept <json>."
+  const questions = result.questions.map(item => `- ${item.id}: ${item.question}`).join("\n")
+  const tasks = (result.mapping ?? []).map(item => `- ${item.pmId} → ${item.taskId}`).join("\n")
+  return [`Preparation imported for ${result.agent} on ${result.model.id}.`, "Supervisor questions:", questions || "- none", "Imported tasks:", tasks || "- none"].join("\n")
+}
+
+async function deliverPreparation(host: MissionCommandHost, deps: ToolDeps, input: MissionCommandInvocation, command: MissionCommand, preparation: PreparationPort | undefined): Promise<void> {
+  const request = command.preparation
+  if (!request) return
+  if (!preparation) throw new Error("Preparation runtime is not available on this host")
+  try {
+    const result = await executePreparation(deps, input.sessionID, { kind: request.kind, text: command.text, ...(request.pm ? { pm: request.pm } : {}) }, preparation)
+    await host.session.prompt({ ...input.prompt, sessionID: input.sessionID, delivery: input.delivery, text: formatPreparation(result) })
+  } catch (error) {
+    if (!(error instanceof PreparationAdmissionError)) throw error
+    await host.session.prompt({ ...input.prompt, sessionID: input.sessionID, delivery: input.delivery, text: error.message })
+  }
+}
+
 /** Register the generic mission command on supported V2 hosts. */
-export async function registerMissionCommands(host: MissionCommandHost, deps: ToolDeps, availableModels?: () => Promise<readonly MissionPolicyModel[]>): Promise<MissionCommandRegistration | undefined> {
+export async function registerMissionCommands(host: MissionCommandHost, deps: ToolDeps, availableModels?: () => Promise<readonly MissionPolicyModel[]>, preparation?: PreparationPort): Promise<MissionCommandRegistration | undefined> {
   if (!host.command) return undefined
   return host.command.transform(editor => {
     editor.add({
@@ -60,6 +106,10 @@ export async function registerMissionCommands(host: MissionCommandHost, deps: To
       execute: async input => {
         checkToolIsolation(deps.registry, deps.tracker, "team_create", input.sessionID, deps.db)
         const command = parseMissionCommand(input.prompt.text)
+        if (command.action === "prepare" && command.preparation) {
+          await deliverPreparation(host, deps, input, command, preparation)
+          return
+        }
         if (command.action === "prepare") {
           const mission = await prepareMission(deps, input.sessionID, command.text)
           const proposal = openMissionConfiguration(deps, mission.teamId, input.sessionID, true)

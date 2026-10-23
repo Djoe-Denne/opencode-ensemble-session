@@ -349,6 +349,23 @@ export const MIGRATIONS: string[] = [
       PRIMARY KEY (import_id, pm_id),
       UNIQUE (team_id, pm_id)
     );`,
+  // Migration 25: one bounded preparation session per mission, before admission.
+  `CREATE TABLE preparation_run (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL UNIQUE REFERENCES team(id) ON DELETE CASCADE,
+      session_id TEXT,
+      agent TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      variant TEXT,
+      mandate TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('running', 'exhausted', 'imported', 'cancelled')),
+      attempts INTEGER NOT NULL,
+      supervisor_used INTEGER NOT NULL DEFAULT 0 CHECK(supervisor_used IN (0, 1)),
+      candidate_json TEXT,
+      errors_json TEXT,
+      time_created INTEGER NOT NULL,
+      time_updated INTEGER NOT NULL
+    );`,
 ]
 
 /**

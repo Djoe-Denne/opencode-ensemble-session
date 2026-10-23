@@ -34,6 +34,8 @@ import type { MissionCommandHost } from "./mission-commands"
 import type { NativeMissionModel } from "./mission-native-models"
 import { nativeMissionModels } from "./mission-native-models"
 import { registerMissionCommands } from "./mission-commands"
+import { preparationContextText } from "./preparation-runtime"
+import { createPreparationPort } from "./v2-preparation"
 import { bundledSkillsDir, registerPluginSkills, type SkillDefinition } from "./plugin-skills"
 
 /** V2 setup context subset (structural, mock-friendly). */
@@ -338,6 +340,8 @@ export async function setupEnsemble(
     if (preparing?.spawn_pending && (preparing.spawn_pending === 1 || !JSON.stringify(event.messages ?? []).includes(`[Ensemble task ${event.sessionID}]`))) {
       throw new Error("Ensemble teammate initialization is still in progress")
     }
+    const preparation = preparationContextText(db, event.sessionID)
+    if (preparation) event.system.push({ type: "text", text: preparation })
     const teamInfo = findTeamBySession(db, registry, event.sessionID)
     if (!teamInfo) return
     const prompt =
@@ -365,6 +369,8 @@ export async function setupEnsemble(
       system: Array<{ type: string; text: string }>
     }
     if (!event.sessionID) return
+    const preparation = preparationContextText(db, event.sessionID)
+    if (preparation) event.system.push({ type: "text", text: preparation })
     const teamInfo = findTeamBySession(db, registry, event.sessionID)
     if (!teamInfo) return
     const context = buildTeamCompactionContext(db, teamInfo.teamId, teamInfo.role, teamInfo.memberName)
@@ -406,7 +412,8 @@ export async function setupEnsemble(
   const listMissionModels = ctx.model?.list.bind(ctx.model)
   if (listMissionModels) deps.nativeModels = async () => nativeMissionModels((await listMissionModels({ location: { directory: ctx.location.directory } })).data)
   await registerV2Tools(ctx.tool, deps)
-  const missionCommands = await registerMissionCommands(ctx, deps, deps.nativeModels)
+  const preparationPort = createPreparationPort(ctx, true, async () => deps.nativeModels ? await deps.nativeModels() : [])
+  const missionCommands = await registerMissionCommands(ctx, deps, deps.nativeModels, preparationPort)
   // Self-register the shipped skills so instructions follow the running
   // revision even when an external skills pointer lags behind a deployment.
   try {
