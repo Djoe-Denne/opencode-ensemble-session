@@ -72,9 +72,10 @@ function priority(): Record<string, unknown> {
 function taskExecutionProperties(): Record<string, unknown> {
   return {
     mode: { type: "string", enum: ["planned", "direct"], description: "Default planned; direct requires supervisor authorization before admission" },
-    kind: { type: "string", enum: ["documentation", "research", "code", "mixed", "unspecified"], description: "Only strictly documentation/research may be direct" },
-    model: str("Optional direct-task model from the approved catalogue; never grants permissions"),
-    variant: str("Exact approved native variant for the explicit direct-task model"),
+    kind: { type: "string", enum: ["documentation", "research", "code", "mixed", "unspecified"], description: "Lead qualifies scope; v3 permits direct code/mixed, v2 only documentation/research" },
+    model: str("Approved direct model, or v3 planned model within its planning range; never grants permissions"),
+    variant: str("Exact approved native variant; requires model"),
+    reason: str("Required justification for an explicit planned model; at most 2000 characters"),
   }
 }
 
@@ -225,7 +226,7 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
 
     editor.add({
       name: "team_tasks_add",
-      description: "Add tasks or propose execution boundaries. Only the lead supervisor can authorize direct documentation/research via execution_decisions before admission; use tasks: [] to decide existing proposals.",
+      description: "Add tasks or propose execution boundaries. Only the lead authorizes execution_decisions before admission: direct scope, or v3 planned model/variant within its approved range with a reason. Use tasks: [] for existing proposals.",
       input: {
         type: "object",
         properties: {

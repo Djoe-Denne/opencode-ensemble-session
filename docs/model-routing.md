@@ -56,6 +56,12 @@ is initially declared true and must be maintained by the user/maintenance skill.
 
 ## Spawn priority and task board
 
+This priority order describes the legacy, non-governed routing path. An approved
+catalogue mission instead enforces its persisted task selection across spawn,
+claim and dispatch. Opt-in version 3 accepts explicit planned choices through
+lead-authorized `team_tasks_add.execution_decisions`, **not** a spawn/message
+override; see [autonomous execution](autonomous-execution.md).
+
 1. Explicit `team_spawn.model` (with optional native `variant`).
 2. Complexity/risk routing, when either score is supplied and the configured
    catalogue is nonempty. A missing dimension defaults to zero.

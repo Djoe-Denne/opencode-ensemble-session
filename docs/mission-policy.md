@@ -1,5 +1,12 @@
 # Command-prepared missions
 
+For the current catalogue policies (versions 2 and opt-in 3), see
+[autonomous execution](autonomous-execution.md). Version 3 adds an approved
+planning range and lead-authorized per-task model choices, without changing the
+automatic starting threshold. The grid/cell and mandatory-score rules below
+describe historical version 1, not unclassified catalogue tasks. Direct V2 teams
+also freeze catalogue policies at creation when the native capabilities exist.
+
 New V2 missions default to [autonomous task execution](autonomous-execution.md):
 a strong catalogue start, one session/model per task, and worker-controlled
 reasoning. Classification is opt-in. The grid sections below describe explicitly

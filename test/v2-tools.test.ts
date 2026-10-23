@@ -81,6 +81,27 @@ async function run(defs: V2ToolDef[], name: string, input: unknown, sessionID: s
 }
 
 describe("v2-tools (issue #36, DRY: same execute fns as V1)", () => {
+  test("planned model selection and its reason survive the V2 schema and normalizer", async () => {
+    const { defs, domain } = mockToolDomain()
+    const deps = mockDeps()
+    Object.assign(deps.config, { planningIntelligenceRange: { min: 35 }, modelRouting: { beta: 0.35, models: [
+      { id: "fixture/luna", intelligenceScore: 40, averageCostPerTask: 1, available: true },
+      { id: "fixture/strong", intelligenceScore: 60, averageCostPerTask: 2, available: true },
+    ] } })
+    deps.nativeModels = async () => [{ id: "fixture/luna" }, { id: "fixture/strong" }]
+    await registerV2Tools(domain, deps)
+    await run(defs, "team_create", { name: "planning-selection" }, "lead")
+    expect(defs.find(def => def.name === "team_tasks_add")?.input).toMatchObject({ properties: {
+      execution_decisions: { items: { properties: { reason: { type: "string" } } } },
+      tasks: { items: { properties: { execution: { properties: { reason: { type: "string" } } } } } },
+    } })
+    await run(defs, "team_tasks_add", { tasks: [{ content: "Simple task", execution: { mode: "planned", kind: "code", model: "fixture/luna", reason: "User request" } }] }, "lead")
+    const task = deps.db.query("SELECT id, execution_decision FROM team_task").get() as { id: string; execution_decision: string }
+    expect(JSON.parse(task.execution_decision)).toMatchObject({ model: "fixture/luna", reason: "User request", authorizedBy: "lead" })
+    await run(defs, "team_tasks_add", { tasks: [], execution_decisions: [{ task_id: task.id, mode: "planned", kind: "code", model: "fixture/luna", reason: "Confirmed user request" }] }, "lead")
+    const updated = deps.db.query("SELECT execution_decision FROM team_task").get() as { execution_decision: string }
+    expect(JSON.parse(updated.execution_decision).reason).toBe("Confirmed user request")
+  })
   test("task execution proposals and supervisor decisions survive the V2 schema/normalizer", async () => {
     const { defs, domain } = mockToolDomain()
     const deps = mockDeps()

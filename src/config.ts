@@ -4,6 +4,7 @@ import { resolveBusinessProfilesConfig, type BusinessProfilesConfig } from "./bu
 import { validateModelRoutingConfig, type ModelRoutingConfig } from "./model-router"
 import { validateMissionClassificationConfig, type MissionClassificationConfig } from "./mission-classification"
 import { validateMissionModelPolicy, type MissionModelPolicy } from "./mission-model-policy"
+import { validatePlanningIntelligenceRange, type PlanningIntelligenceRange } from "./execution-policy"
 
 /** Plugin configuration shape. All fields optional — defaults applied. */
 export interface EnsembleConfig {
@@ -49,6 +50,8 @@ export interface EnsembleConfig {
   modelRouting?: ModelRoutingConfig
   /** Minimum catalogue intelligence for default planning starts (default: 50). */
   startingIntelligence?: number
+  /** Opt into policy v3 planning choices; null keeps historical v2 behavior. */
+  planningIntelligenceRange?: PlanningIntelligenceRange | null
   /** Opt-in classification; helper model is explicitly user-selected. */
   classification?: MissionClassificationConfig
   /** Default explicit policy for command-prepared missions; null seeds a draft from the catalogue. */
@@ -86,6 +89,7 @@ export const DEFAULT_CONFIG: Required<EnsembleConfig> = {
   autoScale: false,
   modelRouting: { beta: 0.35, models: [] },
   startingIntelligence: 50,
+  planningIntelligenceRange: null,
   missionPolicy: null,
   classification: { mode: "off", helperModel: "", helperVariant: "", toolId: "", timeoutMs: 30_000,
     missionMode: "supervised", generalModel: "", generalVariant: "", specialized: false, x86ToolId: "", fallbacks: [], limits: {} },
@@ -126,6 +130,8 @@ function readConfigFile(filePath: string): ConfigFile {
     if (typeof raw.autoDispatch === "boolean") result.autoDispatch = raw.autoDispatch
     if (typeof raw.autoScale === "boolean") result.autoScale = raw.autoScale
     if (typeof raw.startingIntelligence === "number") result.startingIntelligence = raw.startingIntelligence
+    // Validate after layering, never silently remove an explicit safety boundary.
+    if (raw.planningIntelligenceRange !== undefined) result.planningIntelligenceRange = raw.planningIntelligenceRange as PlanningIntelligenceRange | null
     if (typeof raw.worktreePathBudget === "number") result.worktreePathBudget = raw.worktreePathBudget
     if (typeof raw.windowsSubstLetters === "string") result.windowsSubstLetters = raw.windowsSubstLetters
     if (typeof raw.linkNodeModules === "boolean") result.linkNodeModules = raw.linkNodeModules
@@ -194,6 +200,7 @@ export function loadConfig(projectDir: string): Required<EnsembleConfig> {
   }
   if (merged.missionPolicy !== null) validateMissionModelPolicy(merged.missionPolicy)
   if (!Number.isFinite(merged.startingIntelligence) || merged.startingIntelligence < 0) throw new Error("Invalid starting intelligence threshold")
+  if (merged.planningIntelligenceRange !== null) validatePlanningIntelligenceRange(merged.planningIntelligenceRange, merged.startingIntelligence)
   if (process.env.OPENCODE_ENSEMBLE_V2_API_URL !== undefined) merged.v2ApiUrl = process.env.OPENCODE_ENSEMBLE_V2_API_URL
 
   const maxMembers = process.env.OPENCODE_ENSEMBLE_MAX_MEMBERS

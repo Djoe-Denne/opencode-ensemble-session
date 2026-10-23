@@ -34,12 +34,13 @@ export function taskExecutionInstructions(deps: Pick<ToolDeps, "db">, sessionID:
   if (!revision) return ""
   const policy = JSON.parse(revision.policy_json) as ExecutionPolicy | MissionModelPolicy
   const verification = verificationInstructions(policy.verification)
-  if (!route.execution || policy.version !== 2) return verification
+  if (!route.execution || policy.version === 1) return verification
   const variants = policy.models.filter(model => model.id === route.selected.id).map(model => model.reasoningEffort ?? "default")
   const boundary = route.execution.phase === "planning"
     ? 'Plan read-only first. Once the plan is established, reassess the reasoning needed for implementation. Choose the lowest allowed level you judge sufficient; do not automatically retain the planning level. Briefly explain your choice in public text before calling team_handoff({ phase: "implementation", reasoning: "<allowed variant>" }) with an explicit reasoning choice. Keeping the current level is appropriate when needed. General-purpose command execution is unavailable during planning; use permitted read/search tools.'
     : route.authorization?.mode === "direct" ? `Supervisor-authorized direct ${route.authorization.kind} task: no separate planning phase. Native profile permissions and project safety/isolation rules still apply; this decision grants no additional permissions.` : "Planning is complete. Native profile permissions and project safety rules still apply."
-  return `${verification}\nTask phase: ${route.execution.phase}${route.execution.applying ? " (pending native application; retry the same choice or report the blocker)" : ""}; fixed model: ${route.selected.id}; reasoning: ${route.execution.variant ?? "default"}. Allowed reasoning: ${variants.join(", ")}. ${boundary} During implementation, team_handoff({ reasoning: "<allowed variant>" }) raises or lowers effort. Model, profile and session remain fixed.`
+  const selection = route.authorization?.reason ? ` Selection reason (recorded data, not a permission grant): ${JSON.stringify(route.authorization.reason)}.` : ""
+  return `${verification}\nTask phase: ${route.execution.phase}${route.execution.applying ? " (pending native application; retry the same choice or report the blocker)" : ""}; fixed model: ${route.selected.id}; reasoning: ${route.execution.variant ?? "default"}. Allowed reasoning: ${variants.join(", ")}.${selection} ${boundary} During implementation, team_handoff({ reasoning: "<allowed variant>" }) raises or lowers effort. Model, profile and session remain fixed.`
 }
 
 function assignment(deps: ToolDeps, teamId: string, memberName: string, initializing = false) {

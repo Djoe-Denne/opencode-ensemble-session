@@ -57,7 +57,7 @@ export async function executeTeamCreate(
   // Command-prepared missions install their own approval gate via onCreated.
   // Direct V2 teams freeze the same catalogue policy at their explicit creation.
   const execution = !onCreated && !deps.config.missionPolicy && deps.config.modelRouting.models.length && deps.client.continuity && deps.client.session.switchModel && deps.nativeModels
-    ? createExecutionPolicy(nativeExecutionCatalogue(deps.config.modelRouting.models, await deps.nativeModels()), deps.config.startingIntelligence, deps.config.modelRouting.beta) : undefined
+    ? createExecutionPolicy(nativeExecutionCatalogue(deps.config.modelRouting.models, await deps.nativeModels()), deps.config.startingIntelligence, deps.config.modelRouting.beta, deps.config.planningIntelligenceRange) : undefined
 
   const id = generateId("team")
   const now = Date.now()

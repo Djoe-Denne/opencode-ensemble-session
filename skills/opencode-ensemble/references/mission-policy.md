@@ -50,6 +50,41 @@ Running tasks retain their admitted QA revision; changed QA applies to new tasks
 
 ## Worker execution
 
+### Opt-in version 3 model choices
+
+A configured `planningIntelligenceRange: { min, max? }` seeds new catalogue
+missions/direct V2 teams with version 3; null/absent keeps version 2. The range
+contains `startingIntelligence`, has inclusive bounds on the catalogue scale,
+and no maximum by default. `config` must present any edited draft before `start`.
+Never migrate an approved revision or change the lead's native model.
+
+Version 3 keeps the strong automatic threshold. The supervisor can authorize an
+explicit planned `model`/`variant` within the range on an unadmitted task using
+`execution_decisions` (or `execution` on its own new task), with a non-empty
+`reason` of at most 2000 characters. Follow an applicable user model directive
+through this contract; outside-range/unapproved choices need policy correction,
+not a spawn override. A member's proposal is not authorization. A variant needs
+its model; omitted variant means the exact native-default pair.
+
+An explicit choice wins over automatic classified selection, but does not clear
+classification readiness or safety stops. Without that choice, classification
+in version 3 considers only the planning range. An unclassified automatic start
+also meets startingIntelligence. Implementation may use other approved variants
+of the same fixed model, even below the planning range.
+
+The supervisor may qualify documentation, research, code or mixed tasks for
+direct execution in version 3, selecting from the full approved catalogue
+without the planning threshold. `unspecified` cannot be direct; planning remains
+the default. Native profile permissions, isolation, dependencies and QA remain
+mandatory. Version 2 retains its documentation/research-only direct contract
+and forbids explicit planned models. The version 2 restrictions in the section
+below must not be applied to opt-in version 3 choices.
+
+Already-admitted decisions are immutable, including after release. Pending
+native application is not success. Do not use message/handoff/spawn overrides
+to change the initial task model. Abort/finish missions before downgrading to a
+plugin that cannot read version 3; do not edit stored revisions as a workaround.
+
 Each default task uses one session/model. The worker plans with read/search and
 messaging permissions, then chooses its implementation reasoning with
 `team_handoff({ phase: "implementation", reasoning: "<allowed native variant>" })`.

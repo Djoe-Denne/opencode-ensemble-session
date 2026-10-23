@@ -7,7 +7,7 @@ import { classificationReadiness, getMissionClassification } from "../mission-cl
 import { classifyBoardTasks, retireDirectClassifications } from "../board-classification"
 import { log } from "../log"
 import { assertMissionAdmission } from "../mission-policy"
-import { executionStarts, validateTaskExecutionDecision, type AuthorizedTaskExecution, type TaskExecutionDecision } from "../execution-policy"
+import { executionStarts, routeExecution, validateTaskExecutionDecision, type AuthorizedTaskExecution, type TaskExecutionDecision } from "../execution-policy"
 
 interface TaskInput {
   content: string
@@ -37,7 +37,7 @@ export async function executeTeamTasksAdd(
   if (decisions.length && teamInfo.role !== "lead") throw new Error("Only the lead supervisor can authorize task execution decisions")
   if (new Set(decisions.map(decision => decision.task_id)).size !== decisions.length) throw new Error("Duplicate task execution decisions")
   const request = (input: TaskExecutionDecision): TaskExecutionDecision => {
-    const value = { mode: input.mode, kind: input.kind, ...(input.model !== undefined ? { model: input.model } : {}), ...(input.variant !== undefined ? { variant: input.variant } : {}) }
+    const value = { mode: input.mode, kind: input.kind, ...(input.model !== undefined ? { model: input.model } : {}), ...(input.variant !== undefined ? { variant: input.variant } : {}), ...(input.reason !== undefined ? { reason: input.reason } : {}) }
     validateTaskExecutionDecision(value)
     return value
   }
@@ -48,16 +48,22 @@ export async function executeTeamTasksAdd(
     if (!row || !["pending", "blocked"].includes(row.status) || row.assignee || row.model_routing) throw new Error("Execution decisions require an unassigned, not-yet-admitted pending or blocked task")
   })
   const authorizations = [...(teamInfo.role === "lead" ? requests.filter(value => value !== undefined) : []), ...updates.map(update => update.decision)]
-  const direct = authorizations.filter(decision => decision.mode === "direct")
-  if (direct.length) {
+  const routed = authorizations.filter(decision => decision.mode === "direct" || decision.model !== undefined)
+  const admittedPolicy = (() => {
+    if (!routed.length) return undefined
     const snapshot = assertMissionAdmission(deps.db, teamInfo.teamId)
-    if (!snapshot || snapshot.policy.version !== 2) throw new Error("Direct tasks require an approved execution catalogue")
-    const catalogue = executionStarts(snapshot.policy, "direct")
+    if (!snapshot || snapshot.policy.version === 1) throw new Error("Explicit execution choices require an approved execution catalogue")
+    return snapshot
+  })()
+  if (admittedPolicy && admittedPolicy.policy.version !== 1) {
+    const executionPolicy = admittedPolicy.policy
+    const catalogue = executionStarts(executionPolicy, "direct")
     const native = deps.nativeModels ? await deps.nativeModels() : []
-    direct.forEach(decision => {
+    routed.forEach(decision => {
+      routeExecution(executionPolicy, "decision-preflight", undefined, { ...decision, authorizedBy: sessionId })
       const candidates = catalogue.filter(model => !decision.model || (model.id === decision.model && model.variant === decision.variant))
-      if (!candidates.length) throw new Error("Direct task selection is outside the approved catalogue")
-      if (!candidates.some(model => native.some(candidate => candidate.id === model.id && candidate.variant === model.variant))) throw new Error("Native model/variant unavailable for direct execution")
+      if (!candidates.length) throw new Error("Task selection is outside the approved catalogue")
+      if (!candidates.some(model => native.some(candidate => candidate.id === model.id && candidate.variant === model.variant))) throw new Error("Native model/variant unavailable for task execution")
     })
   }
 
@@ -84,6 +90,10 @@ export async function executeTeamTasksAdd(
   const now = Date.now()
 
   const ids = deps.db.transaction(() => {
+    if (admittedPolicy) {
+      const current = assertMissionAdmission(deps.db, teamInfo.teamId)
+      if (current?.hash !== admittedPolicy.hash || current.revision !== admittedPolicy.revision) throw new Error("Mission approval changed during execution decision")
+    }
     updates.forEach(({ taskID, decision }) => {
       const authorization: AuthorizedTaskExecution = { ...decision, authorizedBy: sessionId }
       if (decision.mode === "planned" && policy && (policy.method !== "manual" || policy.specialized)) {

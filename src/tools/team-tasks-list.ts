@@ -6,7 +6,7 @@ function executionSummary(task: Record<string, unknown>): string {
   const raw = task.execution_decision ?? task.execution_request
   if (typeof raw !== "string") return ""
   const decision = JSON.parse(raw) as TaskExecutionDecision
-  return ` [execution:${task.execution_decision ? "authorized" : "proposed"} ${decision.mode} ${decision.kind}${decision.model ? ` ${decision.model}${decision.variant ? `#${decision.variant}` : ""}` : ""}]`
+  return ` [execution:${task.execution_decision ? "authorized" : "proposed"} ${decision.mode} ${decision.kind}${decision.model ? ` ${decision.model}${decision.variant ? `#${decision.variant}` : ""}` : ""}${decision.reason ? ` reason:${JSON.stringify(decision.reason)}` : ""}]`
 }
 
 /**

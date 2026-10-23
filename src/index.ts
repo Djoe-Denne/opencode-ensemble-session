@@ -68,9 +68,10 @@ function missionClassificationSchema() {
 function taskExecutionSchema() {
   return tool.schema.object({
     mode: tool.schema.enum(["planned", "direct"]).describe("Direct requires supervisor authorization before admission"),
-    kind: tool.schema.enum(["documentation", "research", "code", "mixed", "unspecified"]).describe("Only strictly documentation/research may be direct"),
-    model: tool.schema.string().optional().describe("Optional approved direct-task model; never grants permissions"),
-    variant: tool.schema.string().optional().describe("Exact approved native variant for the explicit direct-task model"),
+    kind: tool.schema.enum(["documentation", "research", "code", "mixed", "unspecified"]).describe("Lead qualifies scope; v3 permits direct code/mixed, v2 only documentation/research"),
+    model: tool.schema.string().optional().describe("Approved direct model, or v3 planned model within its planning range; never grants permissions"),
+    variant: tool.schema.string().optional().describe("Exact approved native variant; requires model"),
+    reason: tool.schema.string().optional().describe("Required justification for an explicit planned model; at most 2000 characters"),
   })
 }
 
@@ -614,7 +615,7 @@ const plugin: Plugin = async (input) => {
       }),
 
       team_tasks_add: tool({
-        description: "Add tasks or propose execution boundaries. Only the lead supervisor can authorize direct documentation/research via execution_decisions before admission; use tasks: [] to decide existing proposals.",
+        description: "Add tasks or propose execution boundaries. Only the lead authorizes execution_decisions before admission: direct scope, or v3 planned model/variant within its approved range with a reason. Use tasks: [] for existing proposals.",
         args: {
           tasks: tool.schema.array(tool.schema.object({
             content: tool.schema.string().describe("Task description"),

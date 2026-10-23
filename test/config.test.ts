@@ -64,6 +64,26 @@ describe("config", () => {
     expect(config).toEqual(DEFAULT_CONFIG)
   })
 
+  test("planning range is opt-in, layered atomically and can be disabled locally", () => {
+    const globalDir = path.join(tmpDir, "home", ".config", "opencode")
+    const projectDir = path.join(tmpDir, ".opencode")
+    mkdirSync(globalDir, { recursive: true })
+    mkdirSync(projectDir, { recursive: true })
+    writeFileSync(path.join(globalDir, "ensemble.json"), JSON.stringify({ planningIntelligenceRange: { min: 30, max: 70 } }))
+    expect(loadConfig(tmpDir)).toHaveProperty("planningIntelligenceRange", { min: 30, max: 70 })
+    writeFileSync(path.join(projectDir, "ensemble.json"), JSON.stringify({ planningIntelligenceRange: { min: 35 } }))
+    expect(loadConfig(tmpDir)).toHaveProperty("planningIntelligenceRange", { min: 35 })
+    writeFileSync(path.join(projectDir, "ensemble.json"), JSON.stringify({ planningIntelligenceRange: null }))
+    expect(loadConfig(tmpDir)).toHaveProperty("planningIntelligenceRange", null)
+  })
+
+  test.each([false, "35", [], {}, { min: 51 }, { min: 35, max: 49 }, { min: 35, max: "60" }].map(range => ({ range })))("invalid explicit planning range fails closed: %p", ({ range }) => {
+    const configDir = path.join(tmpDir, ".opencode")
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(path.join(configDir, "ensemble.json"), JSON.stringify({ planningIntelligenceRange: range }))
+    expect(() => loadConfig(tmpDir)).toThrow(/range/i)
+  })
+
   test("business profiles default to no declarations, even for matching native names", () => {
     expect(loadConfig(tmpDir)).toHaveProperty("businessProfiles", { extensions: {}, byAgent: {} })
   })

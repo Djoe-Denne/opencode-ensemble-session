@@ -57,6 +57,21 @@ describe("mission command parsing", () => {
 })
 
 describe("native mission command", () => {
+  test("presents version 3 bounds and distinct explicit/automatic planning candidates", async () => {
+    const f = commandFixture()
+    Object.assign(f.deps.config, { missionPolicy: null, startingIntelligence: 20, planningIntelligenceRange: { min: 10, max: 30 }, classification: { ...f.deps.config.classification, mode: "off" } })
+    await registerMissionCommands(f.host, f.deps, f.models)
+    await f.invoke("Use light for simple tasks")
+    const initial = f.prompts.at(-1) as { text: string }
+    expect(initial.text).toContain("Approved planning range: 10–30")
+    expect(initial.text).toContain("Explicit planning candidates: fixture/light (default), fixture/strong (high)")
+    expect(initial.text).toContain("Automatic planning candidates: fixture/strong (high)")
+    await f.invoke("config keep this range")
+    expect((f.prompts.at(-1) as { text: string }).text).toContain("planningIntelligenceRange")
+    await f.invoke("config")
+    await f.invoke("start")
+    expect((f.prompts.at(-1) as { text: string }).text).toContain("catalogue policy")
+  })
   test("supplies the report directory and pre-question contract through preparation, config and start", async () => {
     const f = commandFixture()
     await registerMissionCommands(f.host, f.deps, f.models)
