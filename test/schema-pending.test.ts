@@ -4,9 +4,11 @@ import { MIGRATIONS, WORKTREE_STATE_BACKFILL_SQL } from "../src/schema"
 
 describe("checkout schema bridge", () => {
   test("registers the no-op bridge and the additive worktree migration", () => {
-    expect(MIGRATIONS).toHaveLength(23)
+    expect(MIGRATIONS).toHaveLength(24)
     const db = setupDb()
-    expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 23 })
+    expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 24 })
+    expect(db.query("SELECT name FROM sqlite_master WHERE name = 'preparation_import'").get()).toEqual({ name: "preparation_import" })
+    expect(db.query("SELECT name FROM sqlite_master WHERE name = 'preparation_task'").get()).toEqual({ name: "preparation_task" })
     expect(db.query("SELECT name FROM sqlite_master WHERE name = 'member_provider_attempt'").get()).toEqual({ name: "member_provider_attempt" })
     const columns = db.query("PRAGMA table_info(team_member)").all() as Array<{ name: string }>
     expect(columns.map(column => column.name)).toEqual(expect.arrayContaining(["worktree_state", "checkout_branch", "preserved_branch", "short_path", "toolchain_link", "merge_applied"]))

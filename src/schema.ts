@@ -318,6 +318,37 @@ export const MIGRATIONS: string[] = [
    ALTER TABLE team_task ADD COLUMN execution_decision TEXT;`,
   // Migration 23: a cleanup retry must not squash-merge the same changes again.
   `ALTER TABLE team_member ADD COLUMN merge_applied INTEGER NOT NULL DEFAULT 0 CHECK(merge_applied IN (0, 1));`,
+  // Migration 24: one initial preparation import per mission, kept apart from admission.
+  `CREATE TABLE preparation_import (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL UNIQUE REFERENCES team(id) ON DELETE CASCADE,
+      document_hash TEXT NOT NULL,
+      policy_hash TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      context TEXT NOT NULL,
+      open_questions_json TEXT NOT NULL,
+      parallel_groups_json TEXT NOT NULL,
+      time_created INTEGER NOT NULL
+    );
+    CREATE TABLE preparation_task (
+      import_id TEXT NOT NULL REFERENCES preparation_import(id) ON DELETE CASCADE,
+      team_id TEXT NOT NULL REFERENCES team(id) ON DELETE CASCADE,
+      pm_id TEXT NOT NULL,
+      task_id TEXT NOT NULL UNIQUE,
+      position INTEGER NOT NULL,
+      task_type TEXT NOT NULL,
+      goal TEXT NOT NULL,
+      planning_required INTEGER NOT NULL CHECK(planning_required IN (0, 1)),
+      planning_reason TEXT NOT NULL,
+      acceptance_json TEXT NOT NULL,
+      verification_json TEXT NOT NULL,
+      handoff_json TEXT NOT NULL,
+      disposition TEXT NOT NULL CHECK(disposition IN ('authorized', 'held')),
+      decision_json TEXT NOT NULL,
+      hold_reason TEXT,
+      PRIMARY KEY (import_id, pm_id),
+      UNIQUE (team_id, pm_id)
+    );`,
 ]
 
 /**
