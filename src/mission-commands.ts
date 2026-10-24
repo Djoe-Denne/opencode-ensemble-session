@@ -14,7 +14,7 @@ import { missionReportingInstructions } from "./mission-reporting"
 import { dirname, join } from "node:path"
 import { executionStarts, planningCatalogue } from "./execution-policy"
 import { PreparationAdmissionError } from "./preparation-admission"
-import { executePreparation, PREPARATION_SESSION_TITLE, type PreparationPort, type PreparationRunResult } from "./preparation-runtime"
+import { executePreparation, PREPARATION_SESSION_TITLE, preparationSessionReference, type PreparationPort, type PreparationRunResult } from "./preparation-runtime"
 
 const QA_CONFIG_GUIDANCE = 'Discuss mission QA interactively: light (targeted checks), proportionate (risk-based checks; default), or reinforced (explicit verification plan and independent review). Offer the current/default choice for confirmation, not a new questionnaire per task. Ask only for consequential commands and acceptance criteria. Persist corrections in verification: { level, commands?, acceptance? } before presenting config again. Project safety/mandatory rules cannot be silently waived; surface conflicts for explicit arbitration. Do not impose a fixed QA agent pipeline.'
 
@@ -103,28 +103,38 @@ function formatPreparation(result: PreparationRunResult): string {
   ].join("\n")
 }
 
-function preparationAck(sessionID: string): string {
-  return `${PREPARATION_SESSION_TITLE} session ${sessionID} is running. Its result or error will be delivered to this supervisor session when the PM finishes.`
+function appendSessionReference(text: string, sessionId: string | null | undefined): string {
+  const reference = preparationSessionReference(sessionId)
+  return reference ? `${text}\n${reference}` : text
 }
 
-function runningPreparationSession(deps: ToolDeps, sessionID: string): string | undefined {
+function preparationAck(sessionID: string): string {
+  return appendSessionReference(
+    `${PREPARATION_SESSION_TITLE} session was queued. Its result or error will be delivered to this supervisor session when the PM finishes.`,
+    sessionID,
+  )
+}
+
+function storedPreparationSession(deps: ToolDeps, sessionID: string): string | undefined {
   const team = findTeamBySession(deps.db, deps.registry, sessionID)
   if (!team) return undefined
-  const row = deps.db.query("SELECT session_id FROM preparation_run WHERE team_id = ? AND status = 'running'").get(team.teamId) as { session_id: string | null } | undefined
+  const row = deps.db.query("SELECT session_id FROM preparation_run WHERE team_id = ?").get(team.teamId) as { session_id: string | null } | undefined
   return row?.session_id ?? undefined
 }
 
 function preparationPending(sessionID: string | undefined): string {
-  const target = sessionID ? `session ${sessionID}` : "the existing session"
-  return `${PREPARATION_SESSION_TITLE} ${target} is still running. This prepare kept that session.`
+  return appendSessionReference([
+    `${PREPARATION_SESSION_TITLE} kept the existing session and its history. This prepare did not create, retry, or clone another session.`,
+    "The stored preparation record is still open. That record is not a native session status.",
+  ].join("\n"), sessionID)
 }
 
 async function promptLead(host: MissionCommandHost, input: MissionCommandInvocation, text: string): Promise<void> {
   await host.session.prompt({ ...input.prompt, sessionID: input.sessionID, delivery: input.delivery, text })
 }
 
-async function deliverPreparationResult(host: MissionCommandHost, input: MissionCommandInvocation, result: PreparationRunResult): Promise<void> {
-  const text = formatPreparation(result)
+async function deliverPreparationResult(host: MissionCommandHost, deps: ToolDeps, input: MissionCommandInvocation, result: PreparationRunResult): Promise<void> {
+  const text = appendSessionReference(formatPreparation(result), storedPreparationSession(deps, input.sessionID))
   try {
     await promptLead(host, input, text)
   } catch (error) {
@@ -137,11 +147,12 @@ async function deliverPreparationResult(host: MissionCommandHost, input: Mission
 async function deliverPreparationFailure(host: MissionCommandHost, deps: ToolDeps, input: MissionCommandInvocation, error: unknown, background: boolean): Promise<void> {
   if (!(error instanceof PreparationAdmissionError)) {
     if (!background) throw error
-    const text = error instanceof Error ? error.message : String(error)
+    const text = appendSessionReference(error instanceof Error ? error.message : String(error), storedPreparationSession(deps, input.sessionID))
     await promptLead(host, input, text).catch(failure => { log(`preparation:background ${failure instanceof Error ? failure.message : String(failure)}`) })
     return
   }
-  const text = error.code === "running" ? preparationPending(runningPreparationSession(deps, input.sessionID)) : error.message
+  const sessionId = storedPreparationSession(deps, input.sessionID)
+  const text = error.code === "running" ? preparationPending(sessionId) : appendSessionReference(error.message, sessionId)
   try {
     await promptLead(host, input, text)
   } catch (failure) {
@@ -178,7 +189,7 @@ async function deliverPreparation(host: MissionCommandHost, deps: ToolDeps, inpu
     ),
   ])
   if (outcome.kind === "done") {
-    await deliverPreparationResult(host, input, outcome.result)
+    await deliverPreparationResult(host, deps, input, outcome.result)
     return
   }
   if (outcome.kind === "error") {
@@ -188,7 +199,7 @@ async function deliverPreparation(host: MissionCommandHost, deps: ToolDeps, inpu
   await new Promise<void>(resolve => { setTimeout(resolve, 0) })
   const current = settled
   if (current?.ok === true) {
-    await deliverPreparationResult(host, input, current.result)
+    await deliverPreparationResult(host, deps, input, current.result)
     return
   }
   if (current?.ok === false) {
@@ -200,7 +211,7 @@ async function deliverPreparation(host: MissionCommandHost, deps: ToolDeps, inpu
     result => {
       if (posted) return undefined
       posted = true
-      return deliverPreparationResult(host, input, result)
+      return deliverPreparationResult(host, deps, input, result)
     },
     (error: unknown) => {
       if (posted) return undefined
@@ -208,9 +219,9 @@ async function deliverPreparation(host: MissionCommandHost, deps: ToolDeps, inpu
       return deliverPreparationFailure(host, deps, input, error, true)
     },
   ).catch(error => {
-    const text = error instanceof Error ? error.message : String(error)
-    log(`preparation:background ${text}`)
-    return promptLead(host, input, text).catch(() => undefined)
+    const reason = error instanceof Error ? error.message : String(error)
+    log(`preparation:background ${reason}`)
+    return promptLead(host, input, appendSessionReference(reason, storedPreparationSession(deps, input.sessionID))).catch(() => undefined)
   })
   void owned
   try {

@@ -96,6 +96,28 @@ promise a permanent tool card: final questions and imported task mappings belong
 in the supervisor's durable conversation. Sessions created by an older version
 are not automatically reparented, restarted, or replaced by this change.
 
+### Open an existing PM from the supervisor's reply
+
+V2 Desktop can turn a complete native session ID into an open-session button in
+**assistant Markdown**. The supervisor should repeat the PM's actual ID as a
+standalone inline-code value in its current reply, including for a resumed,
+independent, idle, or completed PM. The ID must be exactly `ses_` followed by
+26 alphanumeric characters. Use the stored ID; never invent or shorten it.
+
+The initial command acknowledgement is a **user** message. Showing an ID there
+alone does not create this button. Preserve the access reference in the
+supervisor's normal response and durable context, not just a sentence saying
+that the PM is running. Do not wrap the ID in a URL, a Markdown link, or a
+fenced code block. The native click resolves and opens the same session on the
+current server; a missing or archived target is refused by the client.
+
+This uses the supervisor response that the command already requests. It does
+not need a second PM prompt, a replacement session, a synthetic completion
+notice, or another model turn solely to manufacture an assistant message. The
+server supplies response instructions; it does not inject assistant text or
+mechanically add a Desktop button itself. A reference in the assistant's
+reply remains useful even when the running-work menu no longer shows the PM.
+
 ## Two objects
 
 The PM does not author both objects.

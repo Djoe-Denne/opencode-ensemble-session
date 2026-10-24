@@ -8,7 +8,7 @@ import { prepareMission } from "../src/mission-policy"
 import { admitPreparationAgent, ENSEMBLE_PM_AGENT, preparationBusinessProfiles, PreparationAdmissionError } from "../src/preparation-admission"
 import { parsePreparationDocument } from "../src/preparation-document"
 import { PREPARATION_JSON_FALLBACK, PREPARATION_PM_INSTRUCTIONS } from "../src/preparation-instructions"
-import { executePreparation, preparationContextText, selectPreparationModel, type PreparationPort, type PreparationPromptCall } from "../src/preparation-runtime"
+import { executePreparation, preparationContextText, preparationSessionReference, selectPreparationModel, type PreparationPort, type PreparationPromptCall } from "../src/preparation-runtime"
 import { MIGRATIONS } from "../src/schema"
 import { claimTask } from "../src/tools/team-claim"
 import { executeTeamSpawn } from "../src/tools/team-spawn"
@@ -46,7 +46,7 @@ function document(tasks?: Array<Record<string, unknown>>): Record<string, unknow
 function nativeCatalogue() {
   return [{ id: "fixture/a" }, { id: "fixture/b", variant: "high" }, { id: "supervisor/hidden" }]
 }
-function runtimeFixture(replies: string[], hooksReady = true) {
+function runtimeFixture(replies: string[], hooksReady = true, sessionId = "pm-session") {
   const deps = setupDeps()
   deps.directory = mkdtempSync(join(tmpdir(), "ensemble-preparation-"))
   directories.push(deps.directory)
@@ -78,7 +78,7 @@ function runtimeFixture(replies: string[], hooksReady = true) {
     nativeModels: async () => nativeCatalogue(),
     createSession: async input => {
       calls.push({ method: "create", args: input })
-      return { id: "pm-session" }
+      return { id: sessionId }
     },
     replacePermissions: async input => { calls.push({ method: "replacePermissions", args: input }) },
     switchAgent: async input => { calls.push({ method: "switchAgent", args: input }) },
@@ -87,7 +87,7 @@ function runtimeFixture(replies: string[], hooksReady = true) {
       calls.push({ method: "prompt", args: input })
       prompts.push(input)
       const row = deps.db.query("SELECT session_id FROM preparation_run").get() as { session_id: string | null }
-      if (row?.session_id !== "pm-session") throw new Error("prompt ran before preparation tracking")
+      if (row?.session_id !== sessionId) throw new Error("prompt ran before preparation tracking")
     },
     wait: async () => { calls.push({ method: "wait", args: null }) },
     readAssistant: async () => {
@@ -100,8 +100,8 @@ function runtimeFixture(replies: string[], hooksReady = true) {
   return { deps, port, prompts, calls }
 }
 
-function commandFixture(replies: string[]) {
-  const f = runtimeFixture(replies)
+function commandFixture(replies: string[], sessionId = "pm-session") {
+  const f = runtimeFixture(replies, true, sessionId)
   f.deps.config.missionPolicy = historicalModelPolicy(f.deps)
   const commands: MissionCommandDefinition[] = []
   const prompts: unknown[] = []
@@ -122,6 +122,16 @@ function commandFixture(replies: string[]) {
 
 function leadText(entry: unknown): string {
   return (entry as { text?: string }).text ?? ""
+}
+
+const NATIVE_PM_SESSION = "ses_e92b9c673ffeSBVgmNz1tVkES4"
+
+function hasAutonomousSessionInline(text: string, sessionId: string): boolean {
+  return text.split("\n").some(line => line.trim() === `\`${sessionId}\``)
+}
+
+function buttonSpans(text: string): string[] {
+  return [...text.matchAll(/`([^`\n]+)`/g)].map(match => match[1] ?? "")
 }
 
 async function waitForLead(prompts: unknown[], includes: string): Promise<void> {
@@ -577,7 +587,7 @@ describe("preparation command", () => {
     f.port.wait = async () => { await gate }
     f.host.session.prompt = async (input: unknown) => {
       f.leadPrompts.push(input)
-      if (leadText(input).includes("is running")) throw new Error("ack rejected")
+      if (leadText(input).includes("will be delivered to this supervisor session")) throw new Error("ack rejected")
     }
     await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/light" }], f.port)
     const pending = f.invoke("prepare --pm ensemble-pm Ship the cache boundary")
@@ -609,7 +619,7 @@ describe("preparation command", () => {
     }
     f.host.session.prompt = async (input: unknown) => {
       f.leadPrompts.push(input)
-      if (leadText(input).includes("is running")) throw new Error("ack rejected")
+      if (leadText(input).includes("will be delivered to this supervisor session")) throw new Error("ack rejected")
     }
     await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/light" }], f.port)
     const pending = f.invoke("prepare --pm ensemble-pm Ship the cache boundary")
@@ -1236,5 +1246,205 @@ describe("preparation QA blockers", () => {
     expect(f.calls.filter(call => call.method === "create")).toHaveLength(0)
     expect(f.calls.filter(call => call.method === "prompt")).toHaveLength(0)
     expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 0 })
+  })
+})
+
+describe("preparation PM session restitution", () => {
+  test("returns autonomous inline code only for an exact native session id", () => {
+    const text = preparationSessionReference(NATIVE_PM_SESSION) ?? ""
+    expect(hasAutonomousSessionInline(text, NATIVE_PM_SESSION)).toBe(true)
+    expect(text).toContain("current reply")
+    expect(text).toContain("inline code")
+    expect(text.toLowerCase()).not.toContain("child")
+    expect(text).not.toMatch(/\bis running\b/)
+    expect(text).not.toMatch(/https?:|opencode:|file:/)
+  })
+
+  test("does not promote fixture or near-miss ids into a session button", () => {
+    const unsafe = `ses_${"a".repeat(27)}`
+    for (const id of ["pm-session", "fixturefake", `ses_${"b".repeat(25)}`, unsafe, `SES_${"c".repeat(26)}`, `ses_${"d".repeat(25)}_`]) {
+      const text = preparationSessionReference(id) ?? ""
+      expect(buttonSpans(text).some(span => /^ses_[0-9A-Za-z]{26}$/.test(span))).toBe(false)
+      expect(buttonSpans(text)).not.toContain(id)
+      if (/ses_[0-9A-Za-z]{26}/.test(id)) expect(text).not.toMatch(/ses_[0-9A-Za-z]{26}/)
+    }
+    expect(preparationSessionReference(undefined)).toBeUndefined()
+    expect(preparationSessionReference(null)).toBeUndefined()
+    expect(preparationSessionReference("")).toBeUndefined()
+  })
+
+  test("shows the native id in the queued ack, active resume, and lead context without extra host calls", async () => {
+    const f = commandFixture([JSON.stringify(document())], NATIVE_PM_SESSION)
+    let release: () => void = () => undefined
+    const gate = new Promise<void>(resolve => { release = resolve })
+    f.port.wait = async () => { await gate }
+    await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/light" }], f.port)
+    const pending = f.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    const winner = await Promise.race([
+      pending.then(() => "returned" as const),
+      new Promise<"blocked">(resolve => { setTimeout(() => resolve("blocked"), 300) }),
+    ])
+    try {
+      expect(winner).toBe("returned")
+      const ack = leadText(f.leadPrompts.at(-1))
+      expect(hasAutonomousSessionInline(ack, NATIVE_PM_SESSION)).toBe(true)
+      expect(ack).toContain("current reply")
+      expect(ack).toContain("will be delivered to this supervisor session")
+      expect(ack.toLowerCase()).not.toContain("child")
+      expect(ack).not.toMatch(/\bis running\b/)
+      expect(ack).not.toMatch(/https?:|opencode:|file:/)
+      expect(f.calls.filter(call => call.method === "create")).toHaveLength(1)
+      expect(f.calls.filter(call => call.method === "prompt")).toHaveLength(1)
+      expect(f.calls.filter(call => call.method === "switchModel")).toHaveLength(1)
+      const context = preparationContextText(f.deps.db, "lead") ?? ""
+      expect(hasAutonomousSessionInline(context, NATIVE_PM_SESSION)).toBe(true)
+      expect(context.toLowerCase()).not.toContain("child")
+      expect(context).not.toMatch(/\bis running\b/)
+      const pm = preparationContextText(f.deps.db, NATIVE_PM_SESSION) ?? ""
+      expect(pm).toContain("GrepAI")
+      expect(pm).not.toContain("current reply")
+      await f.invoke("prepare --pm ensemble-pm Again")
+      const resumed = leadText(f.leadPrompts.at(-1))
+      expect(hasAutonomousSessionInline(resumed, NATIVE_PM_SESSION)).toBe(true)
+      expect(resumed).not.toMatch(/\bis running\b/)
+      expect(resumed.toLowerCase()).not.toContain("child")
+      expect(f.calls.filter(call => call.method === "create")).toHaveLength(1)
+      expect(f.calls.filter(call => call.method === "prompt")).toHaveLength(1)
+      expect(f.calls.filter(call => call.method === "switchModel")).toHaveLength(1)
+    } finally {
+      release()
+      await pending
+    }
+  })
+
+  test("keeps the native id on the result, replay, and exhausted error while preserving mapping", async () => {
+    const f = commandFixture([JSON.stringify(document())], NATIVE_PM_SESSION)
+    await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/a" }], f.port)
+    await f.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    const imported = f.leadPrompts.filter(entry => leadText(entry).includes("Which boundary owns the schema?"))
+    expect(imported.length).toBeGreaterThan(0)
+    for (const entry of imported) {
+      const text = leadText(entry)
+      expect(hasAutonomousSessionInline(text, NATIVE_PM_SESSION)).toBe(true)
+      expect(text).toContain("Reconcile on the lead branch after each isolated worktree lands.")
+    }
+    const context = preparationContextText(f.deps.db, "lead") ?? ""
+    expect(hasAutonomousSessionInline(context, NATIVE_PM_SESSION)).toBe(true)
+    expect(context).toContain("Which boundary owns the schema?")
+    expect(context).toContain("Reconcile on the lead branch after each isolated worktree lands.")
+    await f.invoke("prepare --pm ensemble-pm Again")
+    const replay = leadText(f.leadPrompts.at(-1))
+    expect(hasAutonomousSessionInline(replay, NATIVE_PM_SESSION)).toBe(true)
+    expect(replay).toContain("code")
+    expect(replay).toContain("docs")
+    expect(replay).toContain("Reconcile on the lead branch after each isolated worktree lands.")
+    expect(f.calls.filter(call => call.method === "create")).toHaveLength(1)
+    expect(f.calls.filter(call => call.method === "prompt")).toHaveLength(1)
+    expect(f.calls.filter(call => call.method === "switchModel")).toHaveLength(1)
+
+    const exhausted = commandFixture(Array.from({ length: 6 }, () => "not a document"), NATIVE_PM_SESSION)
+    await registerMissionCommands(exhausted.host, exhausted.deps, async () => [{ id: "fixture/a" }], exhausted.port)
+    await exhausted.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    const failure = leadText(exhausted.leadPrompts.find(entry => leadText(entry).includes("five corrections")))
+    expect(hasAutonomousSessionInline(failure, NATIVE_PM_SESSION)).toBe(true)
+    expect(exhausted.calls.filter(call => call.method === "create")).toHaveLength(1)
+    expect(exhausted.calls.filter(call => call.method === "prompt")).toHaveLength(6)
+    expect(exhausted.calls.filter(call => call.method === "switchModel")).toHaveLength(1)
+    const exhaustedContext = preparationContextText(exhausted.deps.db, "lead") ?? ""
+    expect(hasAutonomousSessionInline(exhaustedContext, NATIVE_PM_SESSION)).toBe(true)
+  })
+
+  test("keeps the native id on a delivered PM error without another create, prompt, or model call", async () => {
+    const f = commandFixture([JSON.stringify(document())], NATIVE_PM_SESSION)
+    let release: () => void = () => undefined
+    const gate = new Promise<void>(resolve => { release = resolve })
+    f.port.wait = async () => {
+      await gate
+      throw new Error("provider unavailable")
+    }
+    await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/light" }], f.port)
+    const pending = f.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    const winner = await Promise.race([
+      pending.then(() => "returned" as const),
+      new Promise<"blocked">(resolve => { setTimeout(() => resolve("blocked"), 300) }),
+    ])
+    expect(winner).toBe("returned")
+    release()
+    await waitForLead(f.leadPrompts, "provider unavailable")
+    const error = f.leadPrompts.filter(entry => leadText(entry).includes("provider unavailable"))
+    expect(error).toHaveLength(1)
+    expect(hasAutonomousSessionInline(leadText(error[0]), NATIVE_PM_SESSION)).toBe(true)
+    expect(f.calls.filter(call => call.method === "create")).toHaveLength(1)
+    expect(f.calls.filter(call => call.method === "prompt")).toHaveLength(1)
+    expect(f.calls.filter(call => call.method === "switchModel")).toHaveLength(1)
+    await pending
+  })
+
+  test("leaves fixture ids visible and keeps an overlong id out of the button pattern", async () => {
+    const fixture = commandFixture([JSON.stringify(document())], "fixturefake")
+    let releaseFixture: () => void = () => undefined
+    const fixtureGate = new Promise<void>(resolve => { releaseFixture = resolve })
+    fixture.port.wait = async () => { await fixtureGate }
+    await registerMissionCommands(fixture.host, fixture.deps, async () => [{ id: "fixture/light" }], fixture.port)
+    const fixturePending = fixture.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    await Promise.race([
+      fixturePending.then(() => undefined),
+      new Promise(resolve => { setTimeout(resolve, 300) }),
+    ])
+    try {
+      const ack = leadText(fixture.leadPrompts.at(-1))
+      expect(ack).toContain("fixturefake")
+      expect(ack).not.toMatch(/ses_[0-9A-Za-z]{26}/)
+      expect(buttonSpans(ack).some(span => /^ses_[0-9A-Za-z]{26}$/.test(span))).toBe(false)
+      expect(buttonSpans(ack)).not.toContain("fixturefake")
+      expect(fixture.calls.filter(call => call.method === "create")).toHaveLength(1)
+      expect(fixture.calls.filter(call => call.method === "prompt")).toHaveLength(1)
+      expect(fixture.calls.filter(call => call.method === "switchModel")).toHaveLength(1)
+    } finally {
+      releaseFixture()
+      await fixturePending
+    }
+
+    const overlong = `ses_${"a".repeat(27)}`
+    const unsafe = commandFixture([JSON.stringify(document())], overlong)
+    let releaseUnsafe: () => void = () => undefined
+    const unsafeGate = new Promise<void>(resolve => { releaseUnsafe = resolve })
+    unsafe.port.wait = async () => { await unsafeGate }
+    await registerMissionCommands(unsafe.host, unsafe.deps, async () => [{ id: "fixture/light" }], unsafe.port)
+    const unsafePending = unsafe.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    await Promise.race([
+      unsafePending.then(() => undefined),
+      new Promise(resolve => { setTimeout(resolve, 300) }),
+    ])
+    try {
+      const ack = leadText(unsafe.leadPrompts.at(-1))
+      expect(ack).not.toMatch(/ses_[0-9A-Za-z]{26}/)
+      expect(ack).not.toContain(overlong)
+      expect(unsafe.calls.filter(call => call.method === "create")).toHaveLength(1)
+      expect(unsafe.calls.filter(call => call.method === "prompt")).toHaveLength(1)
+    } finally {
+      releaseUnsafe()
+      await unsafePending
+    }
+  })
+
+  test("does not restitute a PM id before a session exists", async () => {
+    const f = commandFixture([])
+    f.deps.config.businessProfiles = { extensions: {}, byAgent: {} }
+    await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/light" }], f.port)
+    await f.invoke("prepare Decompose the cache")
+    const text = leadText(f.leadPrompts.at(-1))
+    expect(f.calls.filter(call => call.method === "create")).toHaveLength(0)
+    expect(text).not.toMatch(/ses_[0-9A-Za-z]{26}/)
+    expect(text).not.toContain("Preparation PM session id")
+    expect(preparationContextText(f.deps.db, "lead")).toBeUndefined()
+
+    const stored = runtimeFixture([])
+    const mission = await prepareMission(stored.deps, "lead", "Stored objective")
+    stored.deps.db.run(
+      "INSERT INTO preparation_run (id, team_id, session_id, agent, model_id, mandate, status, attempts, supervisor_used, time_created, time_updated) VALUES ('run-unborn', ?, NULL, 'ensemble-pm', 'fixture/a', 'mandate', 'running', 0, 0, 1, 1)",
+      [mission.teamId],
+    )
+    expect(preparationContextText(stored.deps.db, "lead")).toBeUndefined()
   })
 })

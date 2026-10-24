@@ -47,6 +47,17 @@ The running-work menu need not retain an idle child after completion. Report
 the final mapping/questions in the supervisor's conversation. Older independent
 PM sessions are not silently reparented or restarted.
 
+In your current assistant reply, also reproduce the PM's actual native session
+ID as a standalone inline-code value. V2 Desktop renders a full `ses_` plus
+26-alphanumeric ID in assistant Markdown as an open-session button, without
+requiring a parent link or a running PM. The acknowledgement is a user message,
+so its ID alone is not sufficient. Keep this reference on resume, result, error,
+and after compaction. Never invent/shorten an ID, put it in a fenced block or
+construct a URL. Do not trigger another PM or model turn just to display it.
+The server provides these reply instructions, not an injected assistant message
+or a mechanically guaranteed button. The native client refuses missing or
+archived sessions when the user clicks.
+
 Only after the initial JSON candidate and five PM corrections are exhausted,
 the lead may submit one document:
 

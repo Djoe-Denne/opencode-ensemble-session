@@ -40,8 +40,31 @@ export interface PreparationPort {
   abort(input: { sessionID: string }): Promise<void>
 }
 
-/** Native title of the preparatory PM child session. */
+/** Native title of the preparatory PM session. */
 export const PREPARATION_SESSION_TITLE = "Ensemble preparation PM"
+
+/**
+ * Supervisor-facing reference for one existing preparation PM session.
+ * An exact native id (`ses_` plus 26 alphanumerics) is returned as its own inline code span.
+ * Any other id is not promoted to that button form. An absent id returns undefined.
+ */
+export function preparationSessionReference(sessionId: string | null | undefined): string | undefined {
+  if (!sessionId) return undefined
+  if (/^ses_[0-9A-Za-z]{26}$/.test(sessionId)) {
+    return [
+      "Existing preparation PM session.",
+      "Tracked preparation state is not a native session status.",
+      "In this current reply, reproduce the session ID as its own inline code span containing exactly the ID and no other characters:",
+      `\`${sessionId}\``,
+    ].join("\n")
+  }
+  if (/ses_[0-9A-Za-z]{26}/.test(sessionId)) return undefined
+  return [
+    "Existing preparation PM session.",
+    "Tracked preparation state is not a native session status.",
+    `Preparation PM session id: ${sessionId}`,
+  ].join("\n")
+}
 
 /** Fires once the PM prompt is queued, before the host wait. */
 export interface PreparationObserver {
@@ -641,7 +664,10 @@ function leadContext(db: Database, row: ContextRow): string {
     decision_json: string
   }>
   const groups = parallelGroupLines(row.parallel_groups_json)
+  const reference = preparationSessionReference(row.session_id)
   return [
+    ...(reference ? [reference] : []),
+    `Tracked preparation record: ${row.status}. That record is not a native session status.`,
     `Mandate:\n${row.mandate ?? ""}`,
     questions ?? "Supervisor questions:\n- none",
     "Imported tasks:",
@@ -660,7 +686,8 @@ export function preparationContextText(db: Database, sessionId: string): string 
     ORDER BY r.time_updated DESC LIMIT 1`).get(sessionId, sessionId) as ContextRow | undefined
   if (!row || row.status === "cancelled" || row.approved_hash) return undefined
   if (row.session_id === sessionId && (row.status === "running" || row.status === "exhausted" || row.status === "imported")) return pmContext(row)
-  if (row.status !== "imported") return undefined
+  if (row.status !== "imported" && row.status !== "running" && row.status !== "exhausted") return undefined
+  if (!row.session_id && row.status !== "imported") return undefined
   const lead = db.query("SELECT id FROM team WHERE id = ? AND lead_session_id = ? AND status = 'active'").get(row.team_id, sessionId) as { id: string } | undefined
   return lead ? leadContext(db, row) : undefined
 }
