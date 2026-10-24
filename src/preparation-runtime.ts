@@ -23,6 +23,9 @@ export interface PreparationPromptCall {
 export interface PreparationPort {
   hooksReady: boolean
   confirmedStructuredOutput?: { prompt(input: PreparationPromptCall): Promise<unknown> }
+  /** Test override for the host wait deadline. Production uses ten minutes. */
+  waitBoundMs?: number
+  assertCapabilities(): Promise<void>
   probeAgent(agent: string): Promise<"available" | "unavailable">
   describeAgent(agent: string): Promise<{ readOnly: boolean; permissions: readonly string[] }>
   nativeModels(): Promise<readonly MissionPolicyModel[]>
@@ -30,7 +33,7 @@ export interface PreparationPort {
   switchAgent(input: { sessionID: string; agent: string }): Promise<void>
   switchModel(input: { sessionID: string; providerID: string; modelID: string; variant?: string }): Promise<void>
   prompt(input: PreparationPromptCall): Promise<unknown>
-  wait(input: { sessionID: string }): Promise<void>
+  wait(input: { sessionID: string; signal: AbortSignal }): Promise<void>
   readAssistant(input: { sessionID: string }): Promise<string>
   abort(input: { sessionID: string }): Promise<void>
 }
@@ -47,9 +50,12 @@ export interface PreparationRunResult {
   teamId: string
   status: "imported" | "exhausted" | "cancelled"
   questions: Array<{ id: string; question: string }>
-  mapping?: Array<{ pmId: string; taskId: string }>
+  mapping?: PreparationImportResult["mapping"]
+  parallelGroups?: PreparationImportResult["parallelGroups"]
   model: { id: string; variant?: string }
   agent: string
+  issues?: string[]
+  candidate?: string
 }
 
 interface RunRow {
@@ -59,19 +65,29 @@ interface RunRow {
   agent: string
   model_id: string
   variant: string | null
+  mandate: string
   status: "running" | "exhausted" | "imported" | "cancelled"
   supervisor_used: number
+  candidate_json: string | null
+  errors_json: string | null
 }
 
 interface ContextRow {
   session_id: string | null
   status: string
   team_id: string
+  mandate: string | null
+  candidate_json: string | null
+  errors_json: string | null
   approved_hash: string | null
   open_questions_json: string | null
+  parallel_groups_json: string | null
 }
 
 const PREPARATION_ATTEMPTS = 6
+const PREPARATION_WAIT_MS = 10 * 60 * 1000
+const NO_ASSISTANT_REPLY = "Preparation received no new assistant reply"
+const activePreparationLoops = new Set<string>()
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -106,22 +122,23 @@ function modelIdentity(id: string): { providerID: string; modelID: string } {
   return { providerID: id.slice(0, slash), modelID: id.slice(slash + 1) }
 }
 
+function tryParse(text: string): unknown | undefined {
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    return undefined
+  }
+}
+
+/** Parse one JSON document, or the single fenced block that contains it. Prose around a bare object is rejected. */
 function parseJson(text: string): unknown {
   const trimmed = text.trim()
-  try {
-    return JSON.parse(trimmed) as unknown
-  } catch {
-    const start = trimmed.indexOf("{")
-    const end = trimmed.lastIndexOf("}")
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(trimmed.slice(start, end + 1)) as unknown
-      } catch {
-        // The fenced or surrounding reply is still not one JSON object.
-      }
-    }
-    throw new PreparationDocumentError(["Preparation document must be one JSON object"])
-  }
+  const whole = tryParse(trimmed)
+  if (whole !== undefined) return whole
+  const fence = trimmed.match(/```(?:json)?[^\n]*\n([\s\S]*?)\n```/)
+  const fenced = fence?.[1] ? tryParse(fence[1].trim()) : undefined
+  if (fenced !== undefined) return fenced
+  throw new PreparationDocumentError(["Preparation document must be one JSON object"])
 }
 
 function openingPrompt(mandate: string, readOnly: boolean): string {
@@ -135,10 +152,12 @@ function openingPrompt(mandate: string, readOnly: boolean): string {
   ].join("\n\n")
 }
 
-function correctionPrompt(mandate: string, issue: string): string {
+function correctionPrompt(mandate: string, issue: string, candidate: string): string {
   return [
     "The previous preparation document was rejected.",
     issue,
+    "Rejected candidate:",
+    candidate,
     PREPARATION_JSON_FALLBACK,
     `Mandate:\n${mandate}`,
   ].join("\n\n")
@@ -151,7 +170,30 @@ function runStatusError(status: string): PreparationAdmissionError {
 }
 
 function loadRun(db: Database, teamId: string): RunRow | undefined {
-  return db.query("SELECT id, team_id, session_id, agent, model_id, variant, status, supervisor_used FROM preparation_run WHERE team_id = ?").get(teamId) as RunRow | undefined
+  return db.query("SELECT id, team_id, session_id, agent, model_id, variant, mandate, status, supervisor_used, candidate_json, errors_json FROM preparation_run WHERE team_id = ?").get(teamId) as RunRow | undefined
+}
+
+function readIssues(raw: string | null): string[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    return Array.isArray(parsed) && parsed.every(item => typeof item === "string") ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function storedObjective(db: Database, teamId: string): string {
+  const row = db.query("SELECT objective FROM mission_policy WHERE team_id = ?").get(teamId) as { objective: string } | undefined
+  return row?.objective.trim() ?? ""
+}
+
+function resolveMandate(db: Database, teamId: string | undefined, text: string): string {
+  const explicit = text.trim()
+  if (explicit) return explicit
+  const objective = teamId ? storedObjective(db, teamId) : ""
+  if (objective) return objective
+  throw new PreparationAdmissionError("mandate", "prepare requires a mandate to open a mission draft")
 }
 
 function missionApproved(db: Database, teamId: string): boolean {
@@ -181,7 +223,49 @@ function importedResult(teamId: string, agent: string, model: { id: string; vari
     agent,
     model,
     questions: imported.openQuestions.map(item => ({ id: item.id, question: item.question })),
-    mapping: imported.mapping.map(item => ({ pmId: item.pmId, taskId: item.taskId })),
+    mapping: imported.mapping,
+    parallelGroups: imported.parallelGroups,
+  }
+}
+
+const DECISION_KINDS = ["documentation", "research", "code", "mixed", "unspecified"] as const
+
+function persistedPreparation(db: Database, teamId: string): PreparationImportResult | undefined {
+  const head = db.query("SELECT id, document_hash, open_questions_json, parallel_groups_json FROM preparation_import WHERE team_id = ?").get(teamId) as {
+    id: string
+    document_hash: string
+    open_questions_json: string
+    parallel_groups_json: string
+  } | undefined
+  if (!head) return undefined
+  const rows = db.query("SELECT pm_id, task_id, disposition, decision_json, hold_reason FROM preparation_task WHERE import_id = ? ORDER BY position ASC").all(head.id) as Array<{
+    pm_id: string
+    task_id: string
+    disposition: string
+    decision_json: string
+    hold_reason: string | null
+  }>
+  return {
+    importId: head.id,
+    replayed: true,
+    documentHash: head.document_hash,
+    openQuestions: JSON.parse(head.open_questions_json) as PreparationImportResult["openQuestions"],
+    parallelGroups: JSON.parse(head.parallel_groups_json) as PreparationImportResult["parallelGroups"],
+    mapping: rows.map(row => {
+      const decision = JSON.parse(row.decision_json) as { mode?: unknown; kind?: unknown }
+      const kind = DECISION_KINDS.find(item => item === decision.kind)
+      if ((row.disposition !== "authorized" && row.disposition !== "held") || (decision.mode !== "planned" && decision.mode !== "direct") || !kind) {
+        throw new Error("Preparation import record is corrupt")
+      }
+      return {
+        pmId: row.pm_id,
+        taskId: row.task_id,
+        disposition: row.disposition,
+        mode: decision.mode,
+        kind,
+        ...(row.hold_reason ? { holdReason: row.hold_reason } : {}),
+      }
+    }),
   }
 }
 
@@ -270,8 +354,8 @@ function claimRun(deps: ToolDeps, teamId: string, agent: string, model: { id: st
     deps.db.run(`INSERT INTO preparation_run (
       id, team_id, session_id, agent, model_id, variant, mandate, status, attempts,
       supervisor_used, candidate_json, errors_json, time_created, time_updated
-    ) VALUES (?, ?, NULL, ?, ?, ?, ?, 'running', 0, 0, ?, '[]', ?, ?)`, [
-      id, teamId, agent, model.id, model.variant ?? null, mandate, JSON.stringify(model), now, now,
+    ) VALUES (?, ?, NULL, ?, ?, ?, ?, 'running', 0, 0, NULL, '[]', ?, ?)`, [
+      id, teamId, agent, model.id, model.variant ?? null, mandate, now, now,
     ])
   } catch (error) {
     if (!(error instanceof Error) || !/UNIQUE constraint failed/i.test(error.message)) throw error
@@ -306,28 +390,81 @@ async function importReply(deps: ToolDeps, port: PreparationPort, runId: string,
   }
 }
 
+function waitLimit(port: PreparationPort): number {
+  return typeof port.waitBoundMs === "number" && Number.isFinite(port.waitBoundMs) && port.waitBoundMs > 0 ? port.waitBoundMs : PREPARATION_WAIT_MS
+}
+
+async function boundedWait(port: PreparationPort, sessionId: string): Promise<void> {
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let rejectTimeout: (error: Error) => void = () => undefined
+  const timeout = new Promise<never>((_, reject) => {
+    rejectTimeout = reject
+    timer = setTimeout(() => {
+      controller.abort()
+      reject(new Error("Preparation wait timed out"))
+    }, waitLimit(port))
+  })
+  const waiting = port.wait({ sessionID: sessionId, signal: controller.signal }).then(() => undefined)
+  waiting.catch(() => undefined)
+  timeout.catch(() => undefined)
+  try {
+    await Promise.race([waiting, timeout])
+  } catch (error) {
+    if (controller.signal.aborted || (error instanceof Error && /timed out/i.test(error.message))) {
+      await port.abort({ sessionID: sessionId }).catch(() => undefined)
+      throw new Error("Preparation wait timed out")
+    }
+    throw error
+  } finally {
+    if (timer) clearTimeout(timer)
+    rejectTimeout(new Error("Preparation wait finished"))
+  }
+}
+
+function documentIssue(reply: string): string {
+  try {
+    parsePreparationDocument(parseJson(reply))
+  } catch (error) {
+    return error instanceof PreparationDocumentError ? error.message : messageOf(error)
+  }
+  return "Preparation document is invalid"
+}
+
 async function boundedLoop(deps: ToolDeps, port: PreparationPort, runId: string, sessionId: string, teamId: string, agent: string, model: { id: string; variant?: string }, policy: ExecutionPolicy, mandate: string, readOnly: boolean): Promise<PreparationRunResult> {
-  const issues: string[] = []
-  for (const attempt of [1, 2, 3, 4, 5, 6] as const) {
-    const text = attempt === 1 ? openingPrompt(mandate, readOnly) : correctionPrompt(mandate, issues[issues.length - 1] ?? "Preparation document is invalid")
-    deps.db.run("UPDATE preparation_run SET attempts = ?, errors_json = ?, time_updated = ? WHERE id = ?", [attempt, JSON.stringify(issues), Date.now(), runId])
+  if (activePreparationLoops.has(runId)) throw runStatusError("running")
+  activePreparationLoops.add(runId)
+  try {
+    return await runBoundedLoop(deps, port, runId, sessionId, teamId, agent, model, policy, mandate, readOnly)
+  } finally {
+    activePreparationLoops.delete(runId)
+  }
+}
+
+async function runBoundedLoop(deps: ToolDeps, port: PreparationPort, runId: string, sessionId: string, teamId: string, agent: string, model: { id: string; variant?: string }, policy: ExecutionPolicy, mandate: string, readOnly: boolean): Promise<PreparationRunResult> {
+  const current = loadRun(deps.db, teamId)
+  let issues = readIssues(current?.errors_json ?? null)
+  let candidate = current?.candidate_json ?? ""
+  while (issues.length < PREPARATION_ATTEMPTS) {
+    const text = issues.length === 0
+      ? openingPrompt(mandate, readOnly)
+      : correctionPrompt(mandate, issues[issues.length - 1] ?? "Preparation document is invalid", candidate)
     await port.prompt({ sessionID: sessionId, text, delivery: "queue" })
-    await port.wait({ sessionID: sessionId })
+    await boundedWait(port, sessionId)
     const reply = await port.readAssistant({ sessionID: sessionId })
+    if (!reply.trim()) throw new Error(NO_ASSISTANT_REPLY)
     const imported = await importReply(deps, port, runId, sessionId, teamId, agent, model, policy, reply)
     if (imported) return imported
-    const latest = issues.length
-    if (issues.length === latest) {
-      try {
-        parsePreparationDocument(parseJson(reply))
-      } catch (error) {
-        issues.push(error instanceof PreparationDocumentError ? error.message : messageOf(error))
-      }
-    }
-    if (attempt === PREPARATION_ATTEMPTS) break
+    candidate = reply
+    issues = [...issues, documentIssue(reply)]
+    deps.db.run("UPDATE preparation_run SET attempts = ?, errors_json = ?, candidate_json = ?, time_updated = ? WHERE id = ? AND status = 'running'", [
+      issues.length, JSON.stringify(issues), candidate, Date.now(), runId,
+    ])
   }
-  deps.db.run("UPDATE preparation_run SET status = 'exhausted', attempts = ?, errors_json = ?, time_updated = ? WHERE id = ? AND status = 'running'", [PREPARATION_ATTEMPTS, JSON.stringify(issues), Date.now(), runId])
-  return { teamId, status: "exhausted", questions: [], agent, model }
+  deps.db.run("UPDATE preparation_run SET status = 'exhausted', attempts = ?, errors_json = ?, candidate_json = ?, time_updated = ? WHERE id = ? AND status = 'running'", [
+    issues.length, JSON.stringify(issues), candidate || null, Date.now(), runId,
+  ])
+  return { teamId, status: "exhausted", questions: [], agent, model, issues, ...(candidate ? { candidate } : {}) }
 }
 
 async function acceptPreparation(deps: ToolDeps, sessionId: string, request: PreparationRequest, port: PreparationPort): Promise<PreparationRunResult> {
@@ -349,6 +486,7 @@ async function acceptPreparation(deps: ToolDeps, sessionId: string, request: Pre
     if (lateApproval(error) || missionApproved(deps.db, team.teamId)) {
       return { teamId: team.teamId, status: "cancelled", questions: [], agent: run.agent, model }
     }
+    if (error instanceof PreparationDocumentError) throw new PreparationAdmissionError("accept", error.message)
     throw error
   }
   const saved = deps.db.run("UPDATE preparation_run SET status = 'imported', supervisor_used = 1, time_updated = ? WHERE id = ? AND status = 'exhausted' AND supervisor_used = 0", [Date.now(), run.id])
@@ -370,27 +508,13 @@ export function selectPreparationModel(policy: unknown, native: readonly Mission
   return selected
 }
 
-/** Run admission, the bounded PM loop, or the one supervisor correction. */
-export async function executePreparation(deps: ToolDeps, sessionId: string, request: PreparationRequest, port: PreparationPort): Promise<PreparationRunResult> {
-  if (request.kind === "accept") return acceptPreparation(deps, sessionId, request, port)
-  if (!port.hooksReady) throw new PreparationAdmissionError("hooks", "Preparation hooks are not ready")
-  const admitted = await admitNativePm(deps, request, port)
-  const existing = findTeamBySession(deps.db, deps.registry, sessionId)
-  if (existing && existing.role !== "lead") throw new PreparationAdmissionError("lead", "Only the mission lead can run preparation")
-  if (existing && missionApproved(deps.db, existing.teamId)) throw new PreparationAdmissionError("approved", "This mission is already approved")
-  const existingRun = existing ? loadRun(deps.db, existing.teamId) : undefined
-  if (existingRun && existingRun.status !== "cancelled") throw runStatusError(existingRun.status)
-  const native = await nativeCatalogue(port)
-  const policy = preparationPolicy(deps, existing?.teamId, native)
-  const model = selectPreparationModel(policy, native)
-  const teamId = existing?.teamId ?? (await prepareMission(deps, sessionId, request.text)).teamId
-  const runId = claimRun(deps, teamId, admitted.agent, model, request.text)
+async function attachSession(deps: ToolDeps, port: PreparationPort, runId: string, agent: string, model: { id: string; variant?: string }, discardOnFailure: boolean): Promise<string> {
   let createdId: string | undefined
   try {
     const created = await port.createSession({ title: "Ensemble preparation", directory: deps.directory })
     createdId = created.id
     deps.db.run("UPDATE preparation_run SET session_id = ?, time_updated = ? WHERE id = ?", [created.id, Date.now(), runId])
-    await port.switchAgent({ sessionID: created.id, agent: admitted.agent })
+    await port.switchAgent({ sessionID: created.id, agent })
     const identity = modelIdentity(model.id)
     await port.switchModel({
       sessionID: created.id,
@@ -398,26 +522,129 @@ export async function executePreparation(deps: ToolDeps, sessionId: string, requ
       modelID: identity.modelID,
       ...(model.variant ? { variant: model.variant } : {}),
     })
+    return created.id
   } catch (error) {
     if (createdId) await port.abort({ sessionID: createdId }).catch(() => undefined)
-    deps.db.run("DELETE FROM preparation_run WHERE id = ? AND status = 'running'", [runId])
+    if (discardOnFailure) deps.db.run("DELETE FROM preparation_run WHERE id = ? AND status = 'running'", [runId])
     throw error
   }
-  if (!createdId) throw new PreparationAdmissionError("transport", "Preparation session was not created")
-  return boundedLoop(deps, port, runId, createdId, teamId, admitted.agent, model, policy, request.text, admitted.readOnly)
+}
+
+function finishImported(deps: ToolDeps, run: RunRow, imported: PreparationImportResult): PreparationRunResult {
+  if (run.status === "running") {
+    const saved = deps.db.run("UPDATE preparation_run SET status = 'imported', time_updated = ? WHERE id = ? AND status = 'running'", [Date.now(), run.id])
+    if (saved.changes !== 1 && loadRun(deps.db, run.team_id)?.status !== "imported") {
+      throw new PreparationAdmissionError("imported", "A preparation document was already imported")
+    }
+  }
+  return importedResult(run.team_id, run.agent, modelPair(run.model_id, run.variant), imported)
+}
+
+/** Run admission, the bounded PM loop, or the one supervisor correction. */
+export async function executePreparation(deps: ToolDeps, sessionId: string, request: PreparationRequest, port: PreparationPort): Promise<PreparationRunResult> {
+  if (request.kind === "accept") return acceptPreparation(deps, sessionId, request, port)
+  const existing = findTeamBySession(deps.db, deps.registry, sessionId)
+  if (existing && existing.role !== "lead") throw new PreparationAdmissionError("lead", "Only the mission lead can run preparation")
+  const existingRun = existing ? loadRun(deps.db, existing.teamId) : undefined
+  if (existing && existingRun && existingRun.status !== "cancelled") {
+    const stored = persistedPreparation(deps.db, existing.teamId)
+    if (stored && (existingRun.status === "imported" || existingRun.status === "running")) return finishImported(deps, existingRun, stored)
+  }
+  if (!port.hooksReady) throw new PreparationAdmissionError("hooks", "Preparation hooks are not ready")
+  await port.assertCapabilities()
+  if (existing && missionApproved(deps.db, existing.teamId)) throw new PreparationAdmissionError("approved", "This mission is already approved")
+  if (existing && existingRun && existingRun.status !== "cancelled") {
+    if (existingRun.status === "exhausted") throw runStatusError(existingRun.status)
+    if (existingRun.status === "running") {
+      const admitted = await admitNativePm(deps, request, port)
+      const native = await nativeCatalogue(port)
+      const policy = preparationPolicy(deps, existing.teamId, native)
+      const model = modelPair(existingRun.model_id, existingRun.variant)
+      const prepared = existingRun.session_id ?? await attachSession(deps, port, existingRun.id, existingRun.agent, model, false)
+      return boundedLoop(deps, port, existingRun.id, prepared, existing.teamId, existingRun.agent, model, policy, existingRun.mandate, admitted.readOnly)
+    }
+  }
+  const mandate = resolveMandate(deps.db, existing?.teamId, request.text)
+  const admitted = await admitNativePm(deps, request, port)
+  const native = await nativeCatalogue(port)
+  const policy = preparationPolicy(deps, existing?.teamId, native)
+  const model = selectPreparationModel(policy, native)
+  const teamId = existing?.teamId ?? (await prepareMission(deps, sessionId, mandate)).teamId
+  const runId = claimRun(deps, teamId, admitted.agent, model, mandate)
+  const createdId = await attachSession(deps, port, runId, admitted.agent, model, true)
+  return boundedLoop(deps, port, runId, createdId, teamId, admitted.agent, model, policy, mandate, admitted.readOnly)
+}
+
+function decisionSuffix(raw: string): string {
+  try {
+    const decision = JSON.parse(raw) as { mode?: unknown; kind?: unknown }
+    return typeof decision.mode === "string" && typeof decision.kind === "string" ? `; ${decision.mode}/${decision.kind}` : ""
+  } catch {
+    return ""
+  }
+}
+
+function parallelGroupLines(raw: string | null): string[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed.flatMap(item => {
+      if (!item || typeof item !== "object") return []
+      const group = item as { taskIds?: unknown; reason?: unknown; integrationNotes?: unknown; isolation?: unknown }
+      const taskIds = Array.isArray(group.taskIds) ? group.taskIds.filter((id): id is string => typeof id === "string").join(", ") : ""
+      const reason = typeof group.reason === "string" ? group.reason.trim() : ""
+      const notes = typeof group.integrationNotes === "string" ? group.integrationNotes.trim() : ""
+      const isolation = typeof group.isolation === "string" ? group.isolation.trim() : ""
+      if (!taskIds && !reason && !notes && !isolation) return []
+      const body = [reason, notes].filter(part => part.length > 0).join(" ")
+      return [`- ${taskIds} (${isolation}): ${body}`.trim()]
+    })
+  } catch {
+    return []
+  }
+}
+
+function pmContext(row: ContextRow): string {
+  const issues = readIssues(row.errors_json)
+  return [
+    PREPARATION_PM_INSTRUCTIONS,
+    `Mandate:\n${row.mandate ?? ""}`,
+    ...(issues.length ? [`Rejected issues:\n${issues.join("\n")}`] : []),
+    ...(row.candidate_json ? [`Rejected candidate:\n${row.candidate_json}`] : []),
+  ].join("\n\n")
+}
+
+function leadContext(db: Database, row: ContextRow): string {
+  const questions = row.open_questions_json ? supervisorQuestions(row.open_questions_json) : undefined
+  const tasks = db.query("SELECT pm_id, task_id, disposition, hold_reason, decision_json FROM preparation_task WHERE team_id = ? ORDER BY position ASC").all(row.team_id) as Array<{
+    pm_id: string
+    task_id: string
+    disposition: string
+    hold_reason: string | null
+    decision_json: string
+  }>
+  const groups = parallelGroupLines(row.parallel_groups_json)
+  return [
+    `Mandate:\n${row.mandate ?? ""}`,
+    questions ?? "Supervisor questions:\n- none",
+    "Imported tasks:",
+    ...(tasks.length ? tasks.map(task => `- ${task.pm_id} → ${task.task_id} (${task.disposition}${task.hold_reason ? `: ${task.hold_reason}` : ""}${decisionSuffix(task.decision_json)})`) : ["- none"]),
+    ...(groups.length ? ["Parallel groups:", ...groups] : []),
+  ].join("\n")
 }
 
 /** Contract text for a preparation session or its lead, omitted after approval. */
 export function preparationContextText(db: Database, sessionId: string): string | undefined {
-  const row = db.query(`SELECT r.session_id, r.status, r.team_id, p.approved_hash, i.open_questions_json
+  const row = db.query(`SELECT r.session_id, r.status, r.team_id, r.mandate, r.candidate_json, r.errors_json, p.approved_hash, i.open_questions_json, i.parallel_groups_json
     FROM preparation_run r
     JOIN mission_policy p ON p.team_id = r.team_id
     LEFT JOIN preparation_import i ON i.team_id = r.team_id
     WHERE r.session_id = ? OR r.team_id IN (SELECT id FROM team WHERE lead_session_id = ? AND status = 'active')
     ORDER BY r.time_updated DESC LIMIT 1`).get(sessionId, sessionId) as ContextRow | undefined
   if (!row || row.status === "cancelled" || row.approved_hash) return undefined
-  if (row.session_id === sessionId && (row.status === "running" || row.status === "exhausted" || row.status === "imported")) return PREPARATION_PM_INSTRUCTIONS
-  if (row.status !== "imported" || !row.open_questions_json) return undefined
+  if (row.session_id === sessionId && (row.status === "running" || row.status === "exhausted" || row.status === "imported")) return pmContext(row)
+  if (row.status !== "imported") return undefined
   const lead = db.query("SELECT id FROM team WHERE id = ? AND lead_session_id = ? AND status = 'active'").get(row.team_id, sessionId) as { id: string } | undefined
-  return lead ? supervisorQuestions(row.open_questions_json) : undefined
+  return lead ? leadContext(db, row) : undefined
 }

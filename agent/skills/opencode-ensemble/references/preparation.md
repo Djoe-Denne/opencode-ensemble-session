@@ -11,7 +11,7 @@ still works without it:
 
 Do not invoke `start` for the user. `start` remains the execution gate.
 
-## What is already code, and what is not
+## Command and intervention contract
 
 The integrated plugin code parses a version 1 discovery document and imports
 it once, before start, through `importPreparationDocument`. That path is
@@ -28,11 +28,11 @@ The validated user command is:
 `/ensemble-mission <objective>` stays the simple draft. On a new session the
 mandate is required. On an existing draft it is optional, and the stored
 objective remains. `--pm <agent>` is the exact native agent declared `pm` and
-natively available, not a homonym. If none qualifies, or several qualify and
-none is the appropriate default, the supervisor arbitrates. The reference PM
-is a native executable agent implemented by the runtime. Its admission is still
-being designed. This skill does not register that agent, and these instructions
-are not a substitute for it.
+natively available, not a homonym. Without `--pm`, the single admissible project
+PM is selected. If none qualifies, configure an existing native agent's category;
+if several qualify, the supervisor selects one explicitly. Ensemble adds its
+discovery contract to that PM's system context and compaction. It does not
+install a native agent or broaden the profile's permissions.
 
 Only after the initial JSON candidate and five PM corrections are exhausted,
 the lead may submit one document:
@@ -44,8 +44,9 @@ the lead may submit one document:
 `--pm` and `--accept` are mutually exclusive. The same parser validates that
 JSON. Nothing is repaired silently. The helper runs before `start` without
 `team_spawn`, a team member, or a claim, and it admits no executing worker.
-Code imports the first document that parses. Neither command is a verified
-runtime here. In the plugin repository, the parser-checked examples and the
+Code imports the first document that parses. Invalid supervisor JSON returns
+its issues without consuming the accepted correction. In the plugin repository,
+the parser-checked examples and the
 field tables live in `docs/preparation.md`. This reference is enough to write
 a conforming document without that page.
 
@@ -170,8 +171,15 @@ Recovery: the initial candidate, then at most five PM corrections that each see
 the candidate and the parser issues. Only after those are exhausted, the lead
 runs `/ensemble-mission prepare --accept <json>`. That JSON uses the same
 parser. `--pm` and `--accept` are mutually exclusive. Do not repair invalid
-JSON silently. Resume follows the migration already applied (`user_version`,
-preparation tables in migration 24). This reference does not verify that loop.
+JSON silently. Migration 24 stores the import, and migration 25 tracks the run,
+mandate, rejected candidate, and issues. Retry `prepare` to resume the same
+session after an error or to return an already-persisted result, even after
+approval, without a new PM/model call. A first import still requires a draft.
+Do not count missing, failed, interrupted, or unchanged responses as invalid
+JSON. The host must expose wait/context/get/interrupt; the wait is bounded.
+Report the returned dispositions, hold reasons, mapping, and full parallel
+groups, not just task ids. Runtime regression tests use mocked hosts; they do
+not certify a live PM smoke or deployment.
 
 ## Document to imitate
 

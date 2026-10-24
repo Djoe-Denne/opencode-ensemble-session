@@ -37,8 +37,8 @@ Optional PM discovery before `start` uses
 mandate; an existing draft may omit it and keep the stored objective. After the
 initial candidate and five PM corrections are exhausted, only the lead may run
 `/ensemble-mission prepare --accept <json>`. `--pm` and `--accept` are mutually
-exclusive. The document contract is integrated. The command runtime, the
-executable reference PM, and its admission are not verified here. Read
+exclusive. The runtime reuses an existing native PM and injects the discovery
+contract without registering an agent or adding permissions. Read
 [preparation](references/preparation.md). Direct V2 `team_create`
 also freezes this catalogue policy when configured; V1/no-catalogue teams
 retain the legacy assignment workflow below.

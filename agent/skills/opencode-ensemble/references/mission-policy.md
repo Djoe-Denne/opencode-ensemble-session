@@ -23,12 +23,12 @@ before `start` is specified in [preparation](preparation.md):
 `/ensemble-mission prepare [--pm <agent>] <mandat>`. A new session requires the
 mandate. An existing draft may omit it and keep the stored objective. `--pm`
 names the exact native `pm` agent that is available, not a homonym; otherwise
-the supervisor arbitrates. The reference PM is a native executable agent the
-runtime implements. Its admission is still being designed. After the initial
+the supervisor arbitrates. Ensemble reuses that existing PM and injects its
+discovery contract without installing an agent or adding permissions. After the initial
 candidate and five PM corrections are exhausted, only the lead may run
 `/ensemble-mission prepare --accept <json>`, with the same parser and without
-`--pm`. The parser and the import are integrated. The commands, the reference
-PM, and admission are not verified here. Only the user's `start` releases
+`--pm`. The command runtime and import have regression tests; this does not
+imply a live PM/model smoke or deployment. Only the user's `start` releases
 execution.
 
 ## Proposal, corrections and approval

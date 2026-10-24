@@ -6,6 +6,7 @@ import { createExecutionPolicy } from "../src/execution-policy"
 import { parseMissionCommand, registerMissionCommands, type MissionCommandDefinition, type MissionCommandInvocation } from "../src/mission-commands"
 import { prepareMission } from "../src/mission-policy"
 import { admitPreparationAgent, ENSEMBLE_PM_AGENT, preparationBusinessProfiles, PreparationAdmissionError } from "../src/preparation-admission"
+import { parsePreparationDocument } from "../src/preparation-document"
 import { PREPARATION_JSON_FALLBACK, PREPARATION_PM_INSTRUCTIONS } from "../src/preparation-instructions"
 import { executePreparation, preparationContextText, selectPreparationModel, type PreparationPort, type PreparationPromptCall } from "../src/preparation-runtime"
 import { MIGRATIONS } from "../src/schema"
@@ -66,6 +67,7 @@ function runtimeFixture(replies: string[], hooksReady = true) {
   const queue = [...replies]
   const port: PreparationPort = {
     hooksReady,
+    assertCapabilities: async () => undefined,
     probeAgent: async agent => {
       calls.push({ method: "probe", args: agent })
       if (agent === "offline") throw new Error("401 unauthorized")
@@ -134,9 +136,8 @@ describe("preparation command parsing", () => {
     })
   })
 
-  test("rejects an empty mandate and mixed accept or pm flags", () => {
-    expect(() => parseMissionCommand("prepare")).toThrow(/mandate/)
-    expect(() => parseMissionCommand("prepare --pm ensemble-pm")).toThrow(/mandate/)
+  test("rejects mixed accept or pm flags", () => {
+    expect(() => parseMissionCommand("prepare --pm")).toThrow(/agent/)
     expect(() => parseMissionCommand("prepare --pm ensemble-pm --accept {}")).toThrow(/exclusive/)
     expect(() => parseMissionCommand("prepare --accept")).toThrow(/accept/)
     expect(() => parseMissionCommand("prepare --accept --pm ensemble-pm {}")).toThrow(/exclusive/)
@@ -152,6 +153,24 @@ describe("preparation instructions", () => {
     expect(PREPARATION_PM_INSTRUCTIONS.toLowerCase()).toContain("do not include a model")
     expect(PREPARATION_JSON_FALLBACK.toLowerCase()).toContain("json")
     expect(PREPARATION_JSON_FALLBACK.toLowerCase()).not.toContain("structured output is available")
+  })
+
+  test("QA: gives the PM a complete example, the task types, and splitting rules", () => {
+    for (const type of ["implementation", "architecture", "documentation", "research", "review", "qa"]) {
+      expect(PREPARATION_PM_INSTRUCTIONS).toContain(type)
+    }
+    for (const field of ["acceptanceCriteria", "dependsOn", "verification", "handoff"]) {
+      expect(PREPARATION_PM_INSTRUCTIONS).toContain(field)
+    }
+    expect(PREPARATION_PM_INSTRUCTIONS).toContain("Do not group a task with its dependency")
+    expect(PREPARATION_PM_INSTRUCTIONS).toContain("The plugin imports real task ids")
+    expect(PREPARATION_PM_INSTRUCTIONS).not.toContain("supervisor imports")
+    const match = PREPARATION_PM_INSTRUCTIONS.match(/```json\n([\s\S]*?)\n```/)
+    if (!match?.[1]) throw new Error("missing complete preparation example")
+    const parsed = parsePreparationDocument(JSON.parse(match[1]))
+    expect(parsed.tasks.map(task => task.type)).toEqual(["research", "implementation"])
+    expect(parsed.parallelGroups[0]?.integrationNotes).toContain("Reconcile")
+    expect(parsed.parallelGroups[0]?.isolation).toBe("separate-worktrees")
   })
 })
 
@@ -296,7 +315,10 @@ describe("preparation runtime", () => {
     expect(f.calls.find(call => call.method === "switchModel")?.args).toEqual({ sessionID: "pm-session", providerID: "fixture", modelID: "a" })
     expect(preparationContextText(f.deps.db, "pm-session")).toContain("GrepAI")
     expect(preparationContextText(f.deps.db, "lead")).toContain("q1")
-    await expect(executePreparation(f.deps, "lead", { kind: "pm", text: "Again" }, f.port)).rejects.toMatchObject({ code: "imported" })
+    const again = await executePreparation(f.deps, "lead", { kind: "pm", text: "Again" }, f.port)
+    expect(again.status).toBe("imported")
+    expect(again.mapping).toEqual(result.mapping)
+    expect(again.parallelGroups).toEqual(result.parallelGroups)
     expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 2 })
     expect(f.prompts).toHaveLength(1)
     const taskId = result.mapping?.[0]?.taskId
@@ -363,13 +385,16 @@ describe("preparation runtime", () => {
     expect(race.calls.some(call => call.method === "abort")).toBe(true)
     expect(preparationContextText(race.deps.db, "pm-session")).toBeUndefined()
 
-    const active = runtimeFixture([])
+    const active = runtimeFixture([JSON.stringify(document())])
     const mission = await prepareMission(active.deps, "lead", "Stored objective")
     active.deps.db.run(
-      "INSERT INTO preparation_run (id, team_id, session_id, agent, model_id, mandate, status, attempts, supervisor_used, time_created, time_updated) VALUES ('run-1', ?, 'pm-old', 'ensemble-pm', 'fixture/a', 'mandate', 'running', 1, 0, 1, 1)",
+      "INSERT INTO preparation_run (id, team_id, session_id, agent, model_id, mandate, status, attempts, supervisor_used, time_created, time_updated) VALUES ('run-1', ?, 'pm-session', 'ensemble-pm', 'fixture/a', 'mandate', 'running', 0, 0, 1, 1)",
       [mission.teamId],
     )
-    await expect(executePreparation(active.deps, "lead", { kind: "pm", text: "Decompose" }, active.port)).rejects.toMatchObject({ code: "running" })
+    const resumed = await executePreparation(active.deps, "lead", { kind: "pm", text: "Decompose" }, active.port)
+    expect(resumed.status).toBe("imported")
+    expect(active.calls.filter(call => call.method === "create")).toHaveLength(0)
+    expect(active.deps.db.query("SELECT COUNT(*) AS c FROM preparation_run").get()).toEqual({ c: 1 })
     expect(active.deps.db.query("SELECT objective FROM mission_policy").get()).toEqual({ objective: "Stored objective" })
   })
 
@@ -470,5 +495,490 @@ describe("preparation host adapter", () => {
       session,
     }, true, async () => [])
     await expect(missing.probeAgent("ensemble-pm")).resolves.toBe("unavailable")
+  })
+})
+
+describe("preparation QA blockers", () => {
+  test("QA: retries an interrupted prompt on the same session", async () => {
+    const f = runtimeFixture([JSON.stringify(document())])
+    let failed = false
+    const prompt = f.port.prompt
+    f.port.prompt = async input => {
+      if (!failed) {
+        failed = true
+        throw new Error("provider unavailable")
+      }
+      return prompt(input)
+    }
+    await expect(executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, f.port)).rejects.toThrow(/provider unavailable/)
+    const resumed = await executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, f.port)
+    expect(resumed.status).toBe("imported")
+    expect(f.calls.filter(call => call.method === "create")).toHaveLength(1)
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_run").get()).toEqual({ c: 1 })
+    expect(f.deps.db.query("SELECT status, attempts FROM preparation_run").get()).toEqual({ status: "imported", attempts: 0 })
+  })
+
+  test("QA: aborts a wait that has no deadline and stays resumable", async () => {
+    const f = runtimeFixture([JSON.stringify(document())])
+    f.port.wait = async input => {
+      const signal = (input as { signal?: AbortSignal }).signal
+      if (!signal) throw new Error("wait was not bounded by a signal")
+      await new Promise((_, reject) => {
+        const timer = setTimeout(() => reject(new Error("signal did not abort the wait")), 250)
+        signal.addEventListener("abort", () => {
+          clearTimeout(timer)
+          reject(new Error("Preparation wait timed out"))
+        })
+      })
+    }
+    ;(f.port as PreparationPort & { waitBoundMs?: number }).waitBoundMs = 30
+    await expect(executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, f.port)).rejects.toThrow(/timed out|signal/)
+    expect(f.calls.some(call => call.method === "abort")).toBe(true)
+    expect(f.deps.db.query("SELECT status, attempts FROM preparation_run").get()).toEqual({ status: "running", attempts: 0 })
+    f.port.wait = async () => undefined
+    const resumed = await executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, f.port)
+    expect(resumed.status).toBe("imported")
+    expect(f.calls.filter(call => call.method === "create")).toHaveLength(1)
+  })
+
+  test("QA: restitutes an import that committed before the run status changed", async () => {
+    const f = runtimeFixture([JSON.stringify(document())])
+    const first = await executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, f.port)
+    f.deps.db.run("UPDATE preparation_run SET status = 'running'")
+    const again = await executePreparation(f.deps, "lead", { kind: "pm", text: "Again" }, f.port)
+    expect(again.status).toBe("imported")
+    expect(again.mapping).toEqual(first.mapping)
+    expect(f.calls.filter(call => call.method === "create")).toHaveLength(1)
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 2 })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 1 })
+  })
+
+  test("QA: does not import an unrelated object sliced from prose", async () => {
+    const unrelated = JSON.stringify({ version: 1, context: "unrelated object", openQuestions: [], tasks: [], parallelGroups: [] })
+    const fenced = "```json\n" + JSON.stringify(document()) + "\n```"
+    const f = runtimeFixture([`prefix ${unrelated} suffix`, fenced])
+    const result = await executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, f.port)
+    expect(result.status).toBe("imported")
+    expect(result.mapping?.map(item => item.pmId).sort()).toEqual(["code", "docs"])
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 1 })
+    expect(f.deps.db.query("SELECT context FROM preparation_import").get()).toEqual({ context: "Shared context for the bounded preparation run." })
+  })
+
+  test("QA: sends the rejected candidate and the unsupported attribute back to the PM", async () => {
+    const raw = document()
+    const tasks = raw.tasks as Array<Record<string, unknown>>
+    tasks[0] = { ...tasks[0], model: "fixture/smuggled" }
+    const bad = JSON.stringify(raw)
+    const f = runtimeFixture([bad, JSON.stringify(document())])
+    const result = await executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, f.port)
+    expect(result.status).toBe("imported")
+    expect(f.prompts[1]?.text).toContain("tasks[0].model is not supported")
+    expect(f.prompts[1]?.text).toContain("fixture/smuggled")
+    const stored = f.deps.db.query("SELECT candidate_json, errors_json FROM preparation_run").get() as { candidate_json: string; errors_json: string }
+    expect(stored.errors_json).toContain("tasks[0].model is not supported")
+    expect(stored.candidate_json).toContain("fixture/smuggled")
+    expect(stored.candidate_json).not.toBe(JSON.stringify({ id: "fixture/a" }))
+    expect(preparationContextText(f.deps.db, "pm-session")).toContain("Ship the cache boundary")
+    expect(preparationContextText(f.deps.db, "pm-session")).toContain("GrepAI")
+  })
+
+  test("QA: returns the last candidate and attribute issues when corrections are exhausted", async () => {
+    const raw = document()
+    const tasks = raw.tasks as Array<Record<string, unknown>>
+    tasks[0] = { ...tasks[0], model: "fixture/smuggled" }
+    const bad = JSON.stringify(raw)
+    const f = commandFixture(Array.from({ length: 6 }, () => bad))
+    await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/a", variant: "high" }], f.port)
+    await f.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    const text = (f.leadPrompts.at(-1) as { text: string }).text
+    expect(text).toContain("tasks[0].model is not supported")
+    expect(text).toContain("fixture/smuggled")
+    expect(text).toContain("prepare --accept")
+  })
+
+  test("QA: parses an empty mandate for later session resolution", () => {
+    expect(parseMissionCommand("prepare")).toEqual({ action: "prepare", text: "", preparation: { kind: "pm" } })
+    expect(parseMissionCommand("prepare --pm ensemble-pm")).toEqual({
+      action: "prepare", text: "", preparation: { kind: "pm", pm: "ensemble-pm" },
+    })
+    expect(() => parseMissionCommand("prepare --pm")).toThrow(/agent/)
+    expect(() => parseMissionCommand("prepare --pm --accept {}")).toThrow(/exclusive/)
+  })
+
+  test("QA: uses the stored objective when the mandate is omitted", async () => {
+    const f = runtimeFixture([JSON.stringify(document())])
+    await prepareMission(f.deps, "lead", "Stored objective")
+    await executePreparation(f.deps, "lead", { kind: "pm", text: "" }, f.port)
+    expect(f.prompts[0]?.text).toContain("Stored objective")
+    expect(f.deps.db.query("SELECT objective FROM mission_policy").get()).toEqual({ objective: "Stored objective" })
+    expect(f.deps.db.query("SELECT mandate FROM preparation_run").get()).toEqual({ mandate: "Stored objective" })
+  })
+
+  test("QA: refuses to open a draft when prepare has no mandate", async () => {
+    const f = commandFixture([JSON.stringify(document())])
+    await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/a" }], f.port)
+    await f.invoke("prepare")
+    expect(f.calls.filter(call => call.method === "create")).toHaveLength(0)
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team").get()).toEqual({ c: 0 })
+    expect((f.leadPrompts.at(-1) as { text: string }).text).toMatch(/mandate/)
+  })
+
+  test("QA: prepare without a mandate deepens the stored objective", async () => {
+    const f = commandFixture([JSON.stringify(document())])
+    await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/a" }], f.port)
+    await f.invoke("Keep the stored objective")
+    await f.invoke("prepare --pm ensemble-pm")
+    expect(f.deps.db.query("SELECT objective FROM mission_policy").get()).toEqual({ objective: "Keep the stored objective" })
+    expect(f.prompts[0]?.text).toContain("Keep the stored objective")
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team").get()).toEqual({ c: 1 })
+  })
+
+  test("QA: returns dispositions, integration notes, and the exact variant", async () => {
+    const raw = document([{
+      id: "code", title: "Title code", type: "implementation", goal: "Goal code", dependsOn: [],
+      planning: { required: false, reason: "Direct code stays inside the cited file." },
+      acceptanceCriteria: ["Accepted code when the cited behavior holds."],
+      verification: ["Verify code with its focused test."],
+      handoff: { document: "Findings for code stay in this handoff.", sources: [{ path: "src/code.ts", note: "Owns code." }] },
+    }])
+    raw.parallelGroups = [{
+      taskIds: ["code"],
+      reason: "The task has no partner.",
+      integrationNotes: "Reconcile the held task on the lead branch.",
+      isolation: "separate-worktrees",
+    }]
+    const f = commandFixture([JSON.stringify(raw)])
+    f.deps.config.modelRouting.models = [
+      { id: "fixture/a", reasoningEffort: "xhigh", intelligenceScore: 40, averageCostPerTask: 0, available: true },
+    ]
+    f.port.nativeModels = async () => [{ id: "fixture/a", variant: "xhigh" }]
+    await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/a", variant: "xhigh" }], f.port)
+    await f.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    const text = (f.leadPrompts.at(-1) as { text: string }).text
+    expect(text).toContain("fixture/a")
+    expect(text).toContain("xhigh")
+    expect(text).toContain("held")
+    expect(text).toContain("version 2")
+    expect(text).toContain("Reconcile the held task on the lead branch.")
+    const repeated = await executePreparation(f.deps, "lead", { kind: "pm", text: "different mandate" }, f.port)
+    expect(repeated.status).toBe("imported")
+    expect(repeated.model).toEqual({ id: "fixture/a", variant: "xhigh" })
+    expect(repeated.mapping?.[0]).toMatchObject({ pmId: "code", disposition: "held", mode: "direct", kind: "code" })
+    expect(repeated.mapping?.[0]?.holdReason).toMatch(/version 2/i)
+    expect(repeated.parallelGroups?.[0]?.integrationNotes).toBe("Reconcile the held task on the lead branch.")
+    expect(f.deps.db.query("SELECT objective FROM mission_policy").get()).toEqual({ objective: "Ship the cache boundary" })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 1 })
+    const storedTask = f.deps.db.query("SELECT task_id, hold_reason FROM preparation_task").get() as { task_id: string; hold_reason: string }
+    expect(text).toContain(storedTask.task_id)
+    expect(text).toContain("The task has no partner.")
+    expect(text).toContain("separate-worktrees")
+    const context = preparationContextText(f.deps.db, "lead") ?? ""
+    expect(context).toContain("Reconcile the held task on the lead branch.")
+    expect(context).toContain("held")
+    expect(context).toContain(storedTask.task_id)
+    expect(context).toContain(storedTask.hold_reason)
+    expect(context).toContain("The task has no partner.")
+    expect(context).toContain("separate-worktrees")
+  })
+
+  test("QA: an invalid accept is returned without consuming the correction", async () => {
+    const raw = document()
+    const tasks = raw.tasks as Array<Record<string, unknown>>
+    tasks[0] = { ...tasks[0], model: "fixture/smuggled" }
+    const f = commandFixture(Array.from({ length: 6 }, () => JSON.stringify(raw)))
+    await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/a" }], f.port)
+    await f.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    await f.invoke("prepare --accept {not json")
+    expect((f.leadPrompts.at(-1) as { text: string }).text).toMatch(/JSON object/)
+    expect(f.deps.db.query("SELECT status, supervisor_used FROM preparation_run").get()).toEqual({ status: "exhausted", supervisor_used: 0 })
+    await f.invoke(`prepare --accept ${JSON.stringify(document())}`)
+    expect(f.deps.db.query("SELECT status, supervisor_used FROM preparation_run").get()).toEqual({ status: "imported", supervisor_used: 1 })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 2 })
+  })
+
+  test("QA: delivery failure after import keeps the mapping and does not claim rollback", async () => {
+    const f = commandFixture([JSON.stringify(document())])
+    f.host.session.prompt = async (input: unknown) => {
+      f.leadPrompts.push(input)
+      const text = (input as { text?: string }).text ?? ""
+      if (text.includes("Preparation imported")) throw new Error("socket closed")
+    }
+    await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/a" }], f.port)
+    let caught: unknown
+    try {
+      await f.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    } catch (error) {
+      caught = error
+    }
+    const message = caught instanceof Error ? caught.message : ""
+    expect(message).toMatch(/remains committed/)
+    expect(message).toContain("code")
+    expect(message).toContain("socket closed")
+    expect(message.toLowerCase()).not.toContain("rollback")
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 2 })
+    f.host.session.prompt = async (input: unknown) => { f.leadPrompts.push(input) }
+    await f.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    const text = (f.leadPrompts.at(-1) as { text: string }).text
+    expect(text).toContain("code")
+    expect(text).toContain("docs")
+    expect(text).toContain("Reconcile on the lead branch")
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 2 })
+    expect(f.calls.filter(call => call.method === "create")).toHaveLength(1)
+  })
+
+  test("QA: missing wait, context, or interrupt fails before a session", async () => {
+    const root = join(import.meta.dir, "..")
+    for (const absent of ["wait", "context", "interrupt"] as const) {
+      const f = runtimeFixture([])
+      let created = 0
+      const session = {
+        create: async () => { created += 1; return { id: "pm-native" } },
+        prompt: async () => undefined,
+        switchAgent: async () => undefined,
+        switchModel: async () => undefined,
+        wait: async () => undefined,
+        context: async () => [],
+        interrupt: async () => undefined,
+      }
+      delete session[absent]
+      const port = createPreparationPort({
+        location: { directory: root },
+        agent: { get: async () => ({ metadata: { format: "json_schema" }, permissions: [{ action: "edit", effect: "deny" }, { action: "bash", effect: "deny" }] }) },
+        session,
+      }, true, async () => nativeCatalogue())
+      await expect(executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, port)).rejects.toThrow(new RegExp(`session\\.${absent}`))
+      expect(created).toBe(0)
+      expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_run").get()).toEqual({ c: 0 })
+    }
+  })
+
+  test("QA: an unchanged assistant cursor is not six invalid documents", async () => {
+    const root = join(import.meta.dir, "..")
+    const f = runtimeFixture([])
+    const messages = [{ info: { role: "assistant", id: "old" }, parts: [{ type: "text", text: "old prose" }] }]
+    const port = createPreparationPort({
+      location: { directory: root },
+      agent: { get: async () => ({ permissions: [{ action: "edit", effect: "deny" }] }) },
+      session: {
+        create: async () => ({ id: "pm-native" }),
+        prompt: async () => undefined,
+        switchAgent: async () => undefined,
+        switchModel: async () => undefined,
+        get: async () => ({ outcome: "succeeded" }),
+        wait: async () => undefined,
+        context: async () => messages,
+        interrupt: async () => undefined,
+      },
+    }, true, async () => nativeCatalogue())
+    await expect(executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, port)).rejects.toThrow(/no new assistant reply/)
+    expect(f.deps.db.query("SELECT status, attempts FROM preparation_run").get()).toEqual({ status: "running", attempts: 0 })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 0 })
+  })
+
+  test("QA: public prompt ignores structured-output metadata", async () => {
+    const root = join(import.meta.dir, "..")
+    const f = runtimeFixture([])
+    const messages = [{ info: { role: "assistant", id: "old" }, parts: [{ type: "text", text: "old prose" }] }]
+    const prompts: Array<Record<string, unknown>> = []
+    let created = 0
+    const port = createPreparationPort({
+      location: { directory: root },
+      agent: { get: async () => ({ metadata: { structuredOutput: true, format: "json_schema" }, permissions: [{ action: "edit", effect: "deny" }] }) },
+      session: {
+        create: async () => { created += 1; return { id: "pm-native" } },
+        prompt: async (input: Record<string, unknown>) => {
+          prompts.push(input)
+          messages.push({ info: { role: "assistant", id: "new" }, parts: [{ type: "text", text: JSON.stringify(document()) }] })
+        },
+        switchAgent: async () => undefined,
+        switchModel: async () => undefined,
+        get: async () => ({ outcome: "succeeded" }),
+        wait: async (_input: Record<string, unknown>, _options?: { signal?: AbortSignal }) => undefined,
+        context: async () => messages,
+        interrupt: async () => undefined,
+      },
+    }, true, async () => nativeCatalogue())
+    const result = await executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, port)
+    expect(result.status).toBe("imported")
+    expect(result.mapping?.map(item => item.pmId).sort()).toEqual(["code", "docs"])
+    expect(created).toBe(1)
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0] && "format" in prompts[0]).toBe(false)
+    expect(prompts[0] && "json_schema" in prompts[0]).toBe(false)
+    expect(Object.keys(prompts[0] ?? {}).sort()).toEqual(["delivery", "sessionID", "text"])
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 1 })
+    expect(f.deps.db.query("SELECT context FROM preparation_import").get()).not.toEqual({ context: "old prose" })
+  })
+
+  test("QA: native wait receives the abort signal as request options", async () => {
+    const f = runtimeFixture([])
+    const waits: Array<{ input: unknown; options?: { signal?: AbortSignal } }> = []
+    const port = createPreparationPort({
+      location: { directory: f.deps.directory },
+      agent: { get: async () => ({ permissions: [{ action: "edit", effect: "deny" }] }) },
+      session: {
+        create: async () => ({ id: "pm-native" }),
+        prompt: async () => undefined,
+        switchAgent: async () => undefined,
+        switchModel: async () => undefined,
+        get: async () => ({ outcome: "succeeded" }),
+        wait: async (input: { sessionID: string }, options?: { signal?: AbortSignal }) => {
+          waits.push({ input, options })
+          const signal = options?.signal
+          if (!signal) throw new Error("AbortSignal missing from request options")
+          await new Promise((_, reject) => {
+            const timer = setTimeout(() => reject(new Error("signal was not aborted")), 300)
+            signal.addEventListener("abort", () => {
+              clearTimeout(timer)
+              reject(new Error("host wait aborted"))
+            }, { once: true })
+          })
+        },
+        context: async () => [],
+        interrupt: async () => undefined,
+      },
+    }, true, async () => nativeCatalogue())
+    port.waitBoundMs = 30
+    await expect(executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, port)).rejects.toThrow(/timed out/)
+    expect(waits).toHaveLength(1)
+    expect(waits[0]?.input).toEqual({ sessionID: "pm-native" })
+    expect(waits[0]?.options?.signal).toBeInstanceOf(AbortSignal)
+    expect(waits[0]?.options?.signal?.aborted).toBe(true)
+    expect(f.deps.db.query("SELECT status, attempts FROM preparation_run").get()).toEqual({ status: "running", attempts: 0 })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 0 })
+  })
+
+  test("QA: a failed or interrupted native session is refused before import", async () => {
+    for (const outcome of ["failed", "interrupted"] as const) {
+      const f = runtimeFixture([])
+      const gets: unknown[] = []
+      const messages: unknown[] = []
+      const port = createPreparationPort({
+        location: { directory: f.deps.directory },
+        agent: { get: async () => ({ permissions: [{ action: "edit", effect: "deny" }] }) },
+        session: {
+          create: async () => ({ id: "pm-native" }),
+          prompt: async () => {
+            messages.push({ info: { role: "assistant", id: `reply-${outcome}` }, parts: [{ type: "text", text: JSON.stringify(document()) }] })
+          },
+          switchAgent: async () => undefined,
+          switchModel: async () => undefined,
+          get: async (input: { sessionID: string }) => {
+            gets.push(input)
+            return { outcome }
+          },
+          wait: async (_input: { sessionID: string }, _options?: { signal?: AbortSignal }) => undefined,
+          context: async () => messages,
+          interrupt: async () => undefined,
+        },
+      }, true, async () => nativeCatalogue())
+      await expect(executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, port)).rejects.toThrow(new RegExp(outcome))
+      expect(gets).toEqual([{ sessionID: "pm-native" }])
+      expect(f.deps.db.query("SELECT status, attempts FROM preparation_run").get()).toEqual({ status: "running", attempts: 0 })
+      expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 0 })
+      expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 0 })
+    }
+  })
+
+  test("QA: assistant cursors from two sessions do not consume each other", async () => {
+    const contexts = new Map<string, unknown[]>([
+      ["ses-a", [{ info: { role: "assistant", id: "a1" }, parts: [{ type: "text", text: "stale-a" }] }]],
+      ["ses-b", [{ info: { role: "assistant", id: "b1" }, parts: [{ type: "text", text: "stale-b" }] }]],
+    ])
+    const port = createPreparationPort({
+      location: { directory: join(import.meta.dir, "..") },
+      session: {
+        create: async () => ({ id: "unused" }),
+        prompt: async () => undefined,
+        switchAgent: async () => undefined,
+        switchModel: async () => undefined,
+        get: async () => ({ outcome: "succeeded" }),
+        wait: async () => undefined,
+        context: async (input: Record<string, unknown>) => contexts.get(String(input.sessionID)) ?? [],
+        interrupt: async () => undefined,
+      },
+    }, true, async () => [])
+    await port.prompt({ sessionID: "ses-a", text: "a", delivery: "queue" })
+    await port.prompt({ sessionID: "ses-b", text: "b", delivery: "queue" })
+    await expect(port.readAssistant({ sessionID: "ses-a" })).rejects.toThrow(/no new assistant reply/)
+    contexts.get("ses-b")?.push({ info: { role: "assistant", id: "b2" }, parts: [{ type: "text", text: "fresh-b" }] })
+    await expect(port.readAssistant({ sessionID: "ses-b" })).resolves.toBe("fresh-b")
+    await expect(port.readAssistant({ sessionID: "ses-a" })).rejects.toThrow(/no new assistant reply/)
+  })
+
+  test("QA: an active running loop rejects a second prepare and then resumes", async () => {
+    const f = runtimeFixture([JSON.stringify(document())])
+    let entered = 0
+    let release: () => void = () => undefined
+    const gate = new Promise<void>(resolve => { release = resolve })
+    let started: () => void = () => undefined
+    const ready = new Promise<void>(resolve => { started = resolve })
+    const original = f.port.prompt
+    f.port.prompt = async input => {
+      entered += 1
+      if (entered === 1) started()
+      await gate
+      return original(input)
+    }
+    const first = executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, f.port)
+    const start = await Promise.race([
+      ready.then(() => "ready" as const),
+      new Promise<"timeout">(resolve => { setTimeout(() => resolve("timeout"), 1000) }),
+    ])
+    expect(start).toBe("ready")
+    const second = executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, f.port)
+    const secondResult = second.then(value => value, error => error)
+    let secondError: unknown
+    try {
+      secondError = await Promise.race([
+        secondResult,
+        new Promise<string>(resolve => { setTimeout(() => resolve("overlapped"), 500) }),
+      ])
+    } finally {
+      release()
+    }
+    await secondResult
+    expect(secondError).toMatchObject({ code: "running" })
+    expect(entered).toBe(1)
+    await expect(first).resolves.toMatchObject({ status: "imported" })
+    const replay = await executePreparation(f.deps, "lead", { kind: "pm", text: "Again" }, f.port)
+    expect(replay.status).toBe("imported")
+    expect(entered).toBe(1)
+    expect(f.calls.filter(call => call.method === "create")).toHaveLength(1)
+  })
+
+  test("QA: replays a stored import after approval without host lookup", async () => {
+    const f = runtimeFixture([JSON.stringify(document())])
+    const first = await executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, f.port)
+    f.deps.db.run("UPDATE mission_policy SET approved_hash = 'locked', policy_path = ?", ["missing-preparation-policy.json"])
+    f.port.hooksReady = false
+    f.port.assertCapabilities = async () => { throw new Error("capabilities down") }
+    f.port.probeAgent = async () => { throw new Error("agent down") }
+    f.port.describeAgent = async () => { throw new Error("describe down") }
+    f.port.nativeModels = async () => { throw new Error("models down") }
+    const again = await executePreparation(f.deps, "lead", { kind: "pm", text: "Again" }, f.port)
+    expect(again.status).toBe("imported")
+    expect(again.mapping).toEqual(first.mapping)
+    expect(again.parallelGroups).toEqual(first.parallelGroups)
+    expect(again.model).toEqual(first.model)
+    expect(f.calls.filter(call => call.method === "create")).toHaveLength(1)
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 2 })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 1 })
+    expect(f.deps.db.query("SELECT approved_hash FROM mission_policy").get()).toEqual({ approved_hash: "locked" })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_member").get()).toEqual({ c: 0 })
+  })
+
+  test("QA: an approved mission without an import does not resume or open a session", async () => {
+    const f = runtimeFixture([JSON.stringify(document())])
+    const mission = await prepareMission(f.deps, "lead", "Stored objective")
+    f.deps.db.run(
+      "INSERT INTO preparation_run (id, team_id, session_id, agent, model_id, mandate, status, attempts, supervisor_used, time_created, time_updated) VALUES ('run-approved', ?, 'pm-session', 'ensemble-pm', 'fixture/a', 'mandate', 'running', 0, 0, 1, 1)",
+      [mission.teamId],
+    )
+    f.deps.db.run("UPDATE mission_policy SET approved_hash = 'locked'")
+    await expect(executePreparation(f.deps, "lead", { kind: "pm", text: "Continue" }, f.port)).rejects.toMatchObject({ code: "approved" })
+    expect(f.calls.filter(call => call.method === "create")).toHaveLength(0)
+    expect(f.calls.filter(call => call.method === "prompt")).toHaveLength(0)
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 0 })
   })
 })

@@ -10,7 +10,8 @@ export interface PreparationHost {
     prompt(input: Record<string, unknown>): Promise<unknown>
     switchAgent(input: Record<string, unknown>): Promise<unknown>
     switchModel(input: Record<string, unknown>): Promise<unknown>
-    wait?(input: Record<string, unknown>): Promise<unknown>
+    get?(input: { sessionID: string }): Promise<unknown>
+    wait?(input: { sessionID: string }, requestOptions?: { signal?: AbortSignal }): Promise<unknown>
     context?(input: Record<string, unknown>): Promise<unknown>
     interrupt?(input: Record<string, unknown>): Promise<unknown>
   }
@@ -20,22 +21,37 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
-function assistantText(messages: unknown): string {
-  if (!Array.isArray(messages)) return ""
-  const texts = messages.flatMap(message => {
+function assistantBody(entry: Record<string, unknown>): string {
+  if (typeof entry.content === "string") return entry.content
+  const parts = Array.isArray(entry.content) ? entry.content : Array.isArray(entry.parts) ? entry.parts : []
+  return parts.flatMap(part => {
+    const row = record(part)
+    return row.type === "text" && row.synthetic !== true && typeof row.text === "string" ? [row.text] : []
+  }).join("")
+}
+
+/** Last assistant message, keyed by the host message id when the host provides one. */
+function lastAssistant(messages: unknown): { cursor: string; text: string } | undefined {
+  if (!Array.isArray(messages)) return undefined
+  let found: { cursor: string; text: string } | undefined
+  messages.forEach((message, index) => {
     const entry = record(message)
     const info = record(entry.info)
     const role = entry.type ?? entry.role ?? info.role
-    if (role !== "assistant") return []
-    if (typeof entry.content === "string") return [entry.content]
-    const parts = Array.isArray(entry.content) ? entry.content : Array.isArray(entry.parts) ? entry.parts : []
-    const text = parts.flatMap(part => {
-      const row = record(part)
-      return row.type === "text" && row.synthetic !== true && typeof row.text === "string" ? [row.text] : []
-    }).join("")
-    return text.trim() ? [text] : []
+    if (role !== "assistant") return
+    const text = assistantBody(entry)
+    if (!text.trim()) return
+    const id = typeof info.id === "string" && info.id.trim() ? info.id : typeof entry.id === "string" && entry.id.trim() ? entry.id : ""
+    found = { cursor: id || `${index}:${text}`, text }
   })
-  return texts.at(-1) ?? ""
+  return found
+}
+
+function requireHost(session: PreparationHost["session"]): void {
+  if (typeof session.wait !== "function") throw new Error("Preparation requires session.wait")
+  if (typeof session.context !== "function") throw new Error("Preparation requires session.context")
+  if (typeof session.interrupt !== "function") throw new Error("Preparation requires session.interrupt")
+  if (typeof session.get !== "function") throw new Error("Preparation requires session.get")
 }
 
 /** Copy native allow-rules. A denied edit action marks the agent read-only. */
@@ -64,8 +80,10 @@ export function nativeAgentFacts(value: unknown): { readOnly: boolean; permissio
  * No agent is registered and no permission rule is added.
  */
 export function createPreparationPort(ctx: PreparationHost, hooksReady: boolean, nativeModels: () => Promise<readonly MissionPolicyModel[]>): PreparationPort {
+  const cursors = new Map<string, string>()
   return {
     hooksReady,
+    assertCapabilities: async () => { requireHost(ctx.session) },
     probeAgent: async agent => {
       if (!ctx.agent?.get) throw new Error("Native agent lookup is not available on this host")
       try {
@@ -96,16 +114,29 @@ export function createPreparationPort(ctx: PreparationHost, hooksReady: boolean,
         model: { providerID: input.providerID, id: input.modelID, ...(input.variant ? { variant: input.variant } : {}) },
       })
     },
-    prompt: async input => ctx.session.prompt({ sessionID: input.sessionID, text: input.text, delivery: input.delivery } satisfies PreparationPromptCall),
+    prompt: async input => {
+      requireHost(ctx.session)
+      const before = lastAssistant(await ctx.session.context!({ sessionID: input.sessionID }))
+      cursors.set(input.sessionID, before?.cursor ?? "")
+      return ctx.session.prompt({ sessionID: input.sessionID, text: input.text, delivery: input.delivery } satisfies PreparationPromptCall)
+    },
     wait: async input => {
-      if (ctx.session.wait) await ctx.session.wait({ sessionID: input.sessionID })
+      requireHost(ctx.session)
+      await ctx.session.wait!({ sessionID: input.sessionID }, { signal: input.signal })
+      const outcome = record(await ctx.session.get!({ sessionID: input.sessionID })).outcome
+      if (outcome === "failed" || outcome === "interrupted") throw new Error(`Preparation native session ${outcome}`)
     },
     readAssistant: async input => {
-      if (!ctx.session.context) throw new Error("Preparation readback requires session.context")
-      return assistantText(await ctx.session.context({ sessionID: input.sessionID }))
+      requireHost(ctx.session)
+      const current = lastAssistant(await ctx.session.context!({ sessionID: input.sessionID }))
+      const cursor = cursors.get(input.sessionID) ?? ""
+      if (!current || current.cursor === cursor || !current.text.trim()) throw new Error("Preparation received no new assistant reply")
+      cursors.set(input.sessionID, current.cursor)
+      return current.text
     },
     abort: async input => {
-      if (ctx.session.interrupt) await ctx.session.interrupt({ sessionID: input.sessionID })
+      requireHost(ctx.session)
+      await ctx.session.interrupt!({ sessionID: input.sessionID })
     },
   }
 }

@@ -39,10 +39,9 @@ function parsePrepareRequest(text: string): MissionCommand {
   if (pmAt === 0) {
     const pm = tokens[1]
     const mandate = tokens.slice(2).join(" ")
-    if (!pm || pm.startsWith("--") || !mandate) throw new Error("prepare --pm requires an agent and a mandate")
+    if (!pm || pm.startsWith("--")) throw new Error("prepare --pm requires an agent")
     return { action: "prepare", text: mandate, preparation: { kind: "pm", pm } }
   }
-  if (!rest) throw new Error("prepare requires a mandate")
   return { action: "prepare", text: rest, preparation: { kind: "pm" } }
 }
 
@@ -77,10 +76,31 @@ export interface MissionCommandHost {
 
 function formatPreparation(result: PreparationRunResult): string {
   if (result.status === "cancelled") return "Preparation stopped because the mission is already approved. No document was imported."
-  if (result.status === "exhausted") return "Preparation used the initial reply and five corrections without a valid document. Submit one correction with /ensemble-mission prepare --accept <json>."
+  if (result.status === "exhausted") {
+    return [
+      "Preparation used the initial reply and five corrections without a valid document.",
+      "Issues:",
+      result.issues?.join("\n") || "Preparation document is invalid",
+      "Last candidate:",
+      result.candidate ?? "none",
+      "Submit one correction with /ensemble-mission prepare --accept <json>.",
+    ].join("\n")
+  }
   const questions = result.questions.map(item => `- ${item.id}: ${item.question}`).join("\n")
-  const tasks = (result.mapping ?? []).map(item => `- ${item.pmId} → ${item.taskId}`).join("\n")
-  return [`Preparation imported for ${result.agent} on ${result.model.id}.`, "Supervisor questions:", questions || "- none", "Imported tasks:", tasks || "- none"].join("\n")
+  const tasks = (result.mapping ?? []).map(item => `- ${item.pmId} → ${item.taskId} (${item.disposition}${item.holdReason ? `: ${item.holdReason}` : ""}; ${item.mode}/${item.kind})`).join("\n")
+  const groups = (result.parallelGroups ?? []).map(group => {
+    const body = [group.reason.trim(), group.integrationNotes.trim()].filter(part => part.length > 0).join(" ")
+    return `- ${group.taskIds.join(", ")} (${group.isolation}): ${body}`.trim()
+  })
+  const variant = result.model.variant ? ` variant ${result.model.variant}` : ""
+  return [
+    `Preparation imported for ${result.agent} on ${result.model.id}${variant}.`,
+    "Supervisor questions:",
+    questions || "- none",
+    "Imported tasks:",
+    tasks || "- none",
+    ...(groups.length ? ["Parallel groups:", ...groups] : []),
+  ].join("\n")
 }
 
 async function deliverPreparation(host: MissionCommandHost, deps: ToolDeps, input: MissionCommandInvocation, command: MissionCommand, preparation: PreparationPort | undefined): Promise<void> {
@@ -89,7 +109,14 @@ async function deliverPreparation(host: MissionCommandHost, deps: ToolDeps, inpu
   if (!preparation) throw new Error("Preparation runtime is not available on this host")
   try {
     const result = await executePreparation(deps, input.sessionID, { kind: request.kind, text: command.text, ...(request.pm ? { pm: request.pm } : {}) }, preparation)
-    await host.session.prompt({ ...input.prompt, sessionID: input.sessionID, delivery: input.delivery, text: formatPreparation(result) })
+    const text = formatPreparation(result)
+    try {
+      await host.session.prompt({ ...input.prompt, sessionID: input.sessionID, delivery: input.delivery, text })
+    } catch (error) {
+      if (result.status !== "imported") throw error
+      const reason = error instanceof Error ? error.message : String(error)
+      throw new Error(`Preparation remains committed.\n${text}\nDelivery failed: ${reason}`)
+    }
   } catch (error) {
     if (!(error instanceof PreparationAdmissionError)) throw error
     await host.session.prompt({ ...input.prompt, sessionID: input.sessionID, delivery: input.delivery, text: error.message })

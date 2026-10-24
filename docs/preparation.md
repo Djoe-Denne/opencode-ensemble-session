@@ -1,18 +1,18 @@
 # Optional mission preparation
 
-The plugin can record a versioned discovery document and turn it into task
-rows before anyone executes them. The parser and the import are integrated.
-The commands below are the syntax validated with the runtime owner. This
-commit does not execute them.
+The plugin runs discovery with an existing native PM, validates its versioned
+JSON document, and imports initial tasks before execution is approved. The
+runtime and its regression tests are integrated; a live host/model smoke test
+is a separate verification and is not claimed here.
 
 | Piece | State |
 | --- | --- |
 | Intervention contract, document parser, deterministic import | Delivered in `src/intervention-contract.ts`, `src/preparation-document.ts`, and `src/preparation-import.ts` |
 | `/ensemble-mission <objective>` | Unchanged simple draft |
-| `/ensemble-mission prepare [--pm <agent>] <mandat>` | Syntax validated. Command execution is not verified in this commit |
-| `/ensemble-mission prepare --accept <json>` | Syntax validated. Used only after the initial candidate and five PM corrections are exhausted. Not verified here |
+| `/ensemble-mission prepare [--pm <agent>] <mandat>` | Implemented; regression-tested through the command and host adapters |
+| `/ensemble-mission prepare --accept <json>` | Implemented; lead correction after the initial candidate and five PM corrections are exhausted |
 | Native structured output on public `session.prompt` | Not available. The path is a JSON text fallback |
-| Executable reference PM and its admission | The runtime implements the native agent. Admission is still being designed. Not verified here |
+| PM selection and admission | Existing native agent only; declared category `pm` and native availability are checked mechanically |
 | Live PM session or smoke of either command | Not claimed by this document |
 
 Simple preparation stays valid. On a V2 host that exposes the command API:
@@ -43,11 +43,11 @@ and opens execution. Publishing tasks early does not start workers. See
   and whose native availability is available. A homonym is not enough.
   `architect` and `qa` stay available to the supervisor under their own
   categories. No permission is added.
-- If no agent qualifies, or several qualify and none is the appropriate
-  default, the supervisor arbitrates. Do not pick one silently. The reference
-  is a native Ensemble PM that must actually run. The runtime lot implements
-  that agent. Its admission is still being designed. This commit does not
-  register the agent, and a markdown prompt is not a substitute for it.
+- Without `--pm`, the single admissible project PM is selected. If no agent
+  qualifies, configure an existing native agent in `businessProfiles.byAgent`.
+  If several qualify, the supervisor selects one with `--pm`. Ensemble adds
+  its discovery contract to that agent's system context and compaction; it
+  does not register an agent or broaden its native permissions.
 - The discovery helper runs before `start`. It does not call `team_spawn`,
   does not insert a team member, and does not claim a task. It does not admit
   executing workers.
@@ -64,11 +64,13 @@ lead may submit one corrected document:
 - Lead only. `--pm` and `--accept` cannot be used together.
 - `<json>` is one preparation document. `parsePreparationDocument` is the only
   validator.
-- This is the supervisor's single correction, not another PM turn and not a
-  silent rewrite.
+- This is the supervisor's single accepted correction, not another PM turn
+  and not a silent rewrite. Invalid JSON returns validation issues without
+  consuming that correction.
 
-`start` remains the user's execution gate after a successful import. Neither
-command is a verified runtime in this commit.
+`start` remains the user's execution gate after a successful import. A later
+`prepare` can return an already-persisted result without creating a PM session,
+including after approval; it does not authorize or modify those tasks again.
 
 ## Two objects
 
@@ -907,11 +909,21 @@ The recovery contract is:
 4. That document is validated by the same parser. There is no looser schema
    and no silent repair.
 
-Resume and errors follow the migration already applied by `applyMigrations`
-(`PRAGMA user_version`). The preparation tables are migration 24 in
-`src/schema.ts`. A database newer than this plugin stops instead of guessing a
-schema. This page does not verify a live resume or a failed-command retry.
-The prompt loop itself is not verified here.
+Migration 24 stores the preparation document and task mapping; migration 25
+stores the PM run, mandate, session/model identity, rejected candidate, issues,
+and correction count. The same running session can resume after a transport
+failure; simultaneous loops for that run are refused. A missing, failed,
+interrupted, or unchanged assistant response is not counted as invalid JSON.
+The host must provide `session.wait`, `session.context`, `session.get`, and
+`session.interrupt`; the wait has a ten-minute deadline. A timeout interrupts
+the helper rather than inventing a JSON response.
+
+After an import commits, retrying `prepare` returns the stored task ids,
+decisions, hold reasons, questions, and parallel groups. It does not need a new
+model call or reauthorize the tasks. If delivery to the supervisor fails, the
+error explicitly says that the import remains committed. First-time imports
+remain forbidden after approval. Tests exercise these paths with mocked host
+operations and in-memory SQLite; no live recovery smoke is claimed.
 
 ## Serena and GrepAI
 
@@ -952,8 +964,8 @@ contract use an in-memory database and do not open a live Ensemble database.
 
 ## Verification boundary
 
-Examples on this page are checked by parsing them with `parsePreparationDocument`
-in this worktree. That check does not start a mission, select a PM, admit the
-reference PM, or prove `prepare` or `prepare --accept`. Those commands, the
-executable reference PM, and its admission stay unverified until the runtime
-lot lands. A green project gate on this tree does not mean either command ran.
+The document examples are checked with `parsePreparationDocument`. Runtime
+regression tests additionally exercise command parsing, admission, corrections,
+recovery, and the V2 adapter using mocked host operations and in-memory SQLite.
+A green project gate is not a live PM/model smoke test, nor proof that an
+installed plugin or Desktop session has loaded this checkout.

@@ -42,9 +42,10 @@ specified in [preparation](preparation.md):
 mandate. An existing draft may omit it and keep the stored objective. After the
 initial candidate and five PM corrections are exhausted, only the lead may run
 `/ensemble-mission prepare --accept <json>`. `--pm` and `--accept` are mutually
-exclusive. The parser and the import are integrated. The commands, the
-executable reference PM, and its admission are not verified here. `start`
-remains the user's execution gate.
+exclusive. The runtime reuses an existing native PM and injects the Ensemble
+discovery contract without adding permissions or registering an agent. Command
+and adapter regression tests do not imply a live PM smoke or deployment.
+`start` remains the user's execution gate.
 
 ## Supervisor reports
 

@@ -285,10 +285,10 @@ is unchanged. Optional discovery is
 mandate; an existing draft may omit it and keep the stored objective. After the
 initial candidate and five PM corrections, only the lead may run
 `/ensemble-mission prepare --accept <json>`. `--pm` and `--accept` are mutually
-exclusive. The parser, the generic intervention contract, and the deterministic
-import are in the plugin. The commands are not a verified runtime, and they add
-no sixteenth team tool. The reference PM is a native executable agent
-implemented by the runtime, not a prompt in this README. Public `session.prompt`
+exclusive. The command runtime, generic intervention contract, and deterministic
+import are implemented without a sixteenth team tool. The selected PM is an
+existing native agent declared in category `pm`; Ensemble injects its discovery
+contract without registering an agent or adding permissions. Public `session.prompt`
 has no structured-output field, so the document is ordinary JSON. `start` remains
 the execution gate. Field rules, examples, and counterexamples:
 [preparation](docs/preparation.md).
@@ -671,7 +671,7 @@ provenance, user-approved policy updates and restart recovery.
 - **Session switching is opt-in (v2).** `team_view` reports the teammate's session ID by default; it switches the user's client only when asked for with `navigate: true` — agents never hijack the client unprompted. The live sidebar (terminal only) shows member status on every client's dashboard at `http://localhost:4747`.
 - **Per-session shell env is unavailable (v2).** The v2 shell hook carries no session ID, so `ENSEMBLE_*` variables are not injected into teammate shells. Team identity travels in prompts and tool calls instead.
 - **Native continuity has explicit boundaries (v2).** `compact_fork` requires a distinct idle source; cross-directory inheritance requires clean, matching Git HEADs. Lost native creation acknowledgements can leave resources whose IDs were never received; see the [recovery limits](docs/native-session-continuity.md#remaining-limits).
-- **`/ensemble-mission prepare` is specified, not smoked.** The preparation document and its import are implemented. `prepare [--pm <agent>] <mandat>` and lead-only `prepare --accept <json>` are the validated command lines. Their runtime, the executable reference PM, and that PM's admission are not verified in this commit. See [preparation](docs/preparation.md).
+- **`/ensemble-mission prepare` uses an existing PM.** Runtime, admission, corrections, recovery, and deterministic import have regression tests with mocked host operations. No new native agent is installed. A live PM/model smoke test and deployment of this checkout are separate, not implied by a green gate. See [preparation](docs/preparation.md).
 
 ## How this differs from Claude Code agent teams
 

@@ -16,7 +16,7 @@ const ZERO_PM = "No admissible PM is configured for this project. Categorize the
 
 /** Admission failure that must not be collapsed into a generic unavailable agent. */
 export class PreparationAdmissionError extends Error {
-  readonly code: "category" | "unavailable" | "unverified" | "transport" | "model" | "hooks" | "lead" | "approved" | "exhausted" | "imported" | "running" | "accept" | "selection"
+  readonly code: "category" | "unavailable" | "unverified" | "transport" | "model" | "hooks" | "lead" | "approved" | "exhausted" | "imported" | "running" | "accept" | "selection" | "mandate"
 
   constructor(code: PreparationAdmissionError["code"], message: string) {
     super(message)
