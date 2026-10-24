@@ -14,7 +14,7 @@ import { missionReportingInstructions } from "./mission-reporting"
 import { dirname, join } from "node:path"
 import { executionStarts, planningCatalogue } from "./execution-policy"
 import { PreparationAdmissionError } from "./preparation-admission"
-import { executePreparation, type PreparationPort, type PreparationRunResult } from "./preparation-runtime"
+import { executePreparation, PREPARATION_SESSION_TITLE, type PreparationPort, type PreparationRunResult } from "./preparation-runtime"
 
 const QA_CONFIG_GUIDANCE = 'Discuss mission QA interactively: light (targeted checks), proportionate (risk-based checks; default), or reinforced (explicit verification plan and independent review). Offer the current/default choice for confirmation, not a new questionnaire per task. Ask only for consequential commands and acceptance criteria. Persist corrections in verification: { level, commands?, acceptance? } before presenting config again. Project safety/mandatory rules cannot be silently waived; surface conflicts for explicit arbitration. Do not impose a fixed QA agent pipeline.'
 
@@ -103,23 +103,121 @@ function formatPreparation(result: PreparationRunResult): string {
   ].join("\n")
 }
 
+function preparationAck(sessionID: string): string {
+  return `${PREPARATION_SESSION_TITLE} session ${sessionID} is running. Its result or error will be delivered to this supervisor session when the PM finishes.`
+}
+
+function runningPreparationSession(deps: ToolDeps, sessionID: string): string | undefined {
+  const team = findTeamBySession(deps.db, deps.registry, sessionID)
+  if (!team) return undefined
+  const row = deps.db.query("SELECT session_id FROM preparation_run WHERE team_id = ? AND status = 'running'").get(team.teamId) as { session_id: string | null } | undefined
+  return row?.session_id ?? undefined
+}
+
+function preparationPending(sessionID: string | undefined): string {
+  const target = sessionID ? `session ${sessionID}` : "the existing session"
+  return `${PREPARATION_SESSION_TITLE} ${target} is still running. This prepare kept that session.`
+}
+
+async function promptLead(host: MissionCommandHost, input: MissionCommandInvocation, text: string): Promise<void> {
+  await host.session.prompt({ ...input.prompt, sessionID: input.sessionID, delivery: input.delivery, text })
+}
+
+async function deliverPreparationResult(host: MissionCommandHost, input: MissionCommandInvocation, result: PreparationRunResult): Promise<void> {
+  const text = formatPreparation(result)
+  try {
+    await promptLead(host, input, text)
+  } catch (error) {
+    if (result.status !== "imported") throw error
+    const reason = error instanceof Error ? error.message : String(error)
+    throw new Error(`Preparation remains committed.\n${text}\nDelivery failed: ${reason}`)
+  }
+}
+
+async function deliverPreparationFailure(host: MissionCommandHost, deps: ToolDeps, input: MissionCommandInvocation, error: unknown, background: boolean): Promise<void> {
+  if (!(error instanceof PreparationAdmissionError)) {
+    if (!background) throw error
+    const text = error instanceof Error ? error.message : String(error)
+    await promptLead(host, input, text).catch(failure => { log(`preparation:background ${failure instanceof Error ? failure.message : String(failure)}`) })
+    return
+  }
+  const text = error.code === "running" ? preparationPending(runningPreparationSession(deps, input.sessionID)) : error.message
+  try {
+    await promptLead(host, input, text)
+  } catch (failure) {
+    if (!background) throw failure
+    log(`preparation:background ${failure instanceof Error ? failure.message : String(failure)}`)
+  }
+}
+
+/** Return once the PM session exists. The later result or error is owned before the ack, so an ack rejection still delivers it once. */
 async function deliverPreparation(host: MissionCommandHost, deps: ToolDeps, input: MissionCommandInvocation, command: MissionCommand, preparation: PreparationPort | undefined): Promise<void> {
   const request = command.preparation
   if (!request) return
   if (!preparation) throw new Error("Preparation runtime is not available on this host")
+  let settled: { ok: true; result: PreparationRunResult } | { ok: false; error: unknown } | undefined
+  let markReady: (sessionID: string) => void = () => undefined
+  const ready = new Promise<string>(resolve => { markReady = resolve })
+  const completion = executePreparation(deps, input.sessionID, { kind: request.kind, text: command.text, ...(request.pm ? { pm: request.pm } : {}) }, preparation, {
+    onReady: notice => markReady(notice.sessionID),
+  }).then(
+    result => {
+      settled = { ok: true, result }
+      return result
+    },
+    (error: unknown) => {
+      settled = { ok: false, error }
+      throw error
+    },
+  )
+  const outcome = await Promise.race([
+    ready.then(sessionID => ({ kind: "ready" as const, sessionID })),
+    completion.then(
+      result => ({ kind: "done" as const, result }),
+      (error: unknown) => ({ kind: "error" as const, error }),
+    ),
+  ])
+  if (outcome.kind === "done") {
+    await deliverPreparationResult(host, input, outcome.result)
+    return
+  }
+  if (outcome.kind === "error") {
+    await deliverPreparationFailure(host, deps, input, outcome.error, false)
+    return
+  }
+  await new Promise<void>(resolve => { setTimeout(resolve, 0) })
+  const current = settled
+  if (current?.ok === true) {
+    await deliverPreparationResult(host, input, current.result)
+    return
+  }
+  if (current?.ok === false) {
+    await deliverPreparationFailure(host, deps, input, current.error, false)
+    return
+  }
+  let posted = false
+  const owned = completion.then(
+    result => {
+      if (posted) return undefined
+      posted = true
+      return deliverPreparationResult(host, input, result)
+    },
+    (error: unknown) => {
+      if (posted) return undefined
+      posted = true
+      return deliverPreparationFailure(host, deps, input, error, true)
+    },
+  ).catch(error => {
+    const text = error instanceof Error ? error.message : String(error)
+    log(`preparation:background ${text}`)
+    return promptLead(host, input, text).catch(() => undefined)
+  })
+  void owned
   try {
-    const result = await executePreparation(deps, input.sessionID, { kind: request.kind, text: command.text, ...(request.pm ? { pm: request.pm } : {}) }, preparation)
-    const text = formatPreparation(result)
-    try {
-      await host.session.prompt({ ...input.prompt, sessionID: input.sessionID, delivery: input.delivery, text })
-    } catch (error) {
-      if (result.status !== "imported") throw error
-      const reason = error instanceof Error ? error.message : String(error)
-      throw new Error(`Preparation remains committed.\n${text}\nDelivery failed: ${reason}`)
-    }
+    await promptLead(host, input, preparationAck(outcome.sessionID))
   } catch (error) {
-    if (!(error instanceof PreparationAdmissionError)) throw error
-    await host.session.prompt({ ...input.prompt, sessionID: input.sessionID, delivery: input.delivery, text: error.message })
+    log(`preparation:ack ${error instanceof Error ? error.message : String(error)}`)
+    throw error
   }
 }
 

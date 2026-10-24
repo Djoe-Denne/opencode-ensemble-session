@@ -29,13 +29,23 @@ export interface PreparationPort {
   probeAgent(agent: string): Promise<"available" | "unavailable">
   describeAgent(agent: string): Promise<{ readOnly: boolean; permissions: readonly string[] }>
   nativeModels(): Promise<readonly MissionPolicyModel[]>
-  createSession(input: { title: string; directory: string }): Promise<{ id: string }>
+  createSession(input: { title: string; directory: string; parentID: string; agent: string }): Promise<{ id: string }>
+  /** Replace permissions inherited from the parent with the PM agent's own rules. */
+  replacePermissions(input: { sessionID: string; agent: string }): Promise<void>
   switchAgent(input: { sessionID: string; agent: string }): Promise<void>
   switchModel(input: { sessionID: string; providerID: string; modelID: string; variant?: string }): Promise<void>
   prompt(input: PreparationPromptCall): Promise<unknown>
   wait(input: { sessionID: string; signal: AbortSignal }): Promise<void>
   readAssistant(input: { sessionID: string }): Promise<string>
   abort(input: { sessionID: string }): Promise<void>
+}
+
+/** Native title of the preparatory PM child session. */
+export const PREPARATION_SESSION_TITLE = "Ensemble preparation PM"
+
+/** Fires once the PM prompt is queued, before the host wait. */
+export interface PreparationObserver {
+  onReady?(notice: { sessionID: string }): void
 }
 
 /** Explicit prepare request after command parsing. */
@@ -431,25 +441,30 @@ function documentIssue(reply: string): string {
   return "Preparation document is invalid"
 }
 
-async function boundedLoop(deps: ToolDeps, port: PreparationPort, runId: string, sessionId: string, teamId: string, agent: string, model: { id: string; variant?: string }, policy: ExecutionPolicy, mandate: string, readOnly: boolean): Promise<PreparationRunResult> {
+async function boundedLoop(deps: ToolDeps, port: PreparationPort, runId: string, sessionId: string, teamId: string, agent: string, model: { id: string; variant?: string }, policy: ExecutionPolicy, mandate: string, readOnly: boolean, hooks?: PreparationObserver): Promise<PreparationRunResult> {
   if (activePreparationLoops.has(runId)) throw runStatusError("running")
   activePreparationLoops.add(runId)
   try {
-    return await runBoundedLoop(deps, port, runId, sessionId, teamId, agent, model, policy, mandate, readOnly)
+    return await runBoundedLoop(deps, port, runId, sessionId, teamId, agent, model, policy, mandate, readOnly, hooks)
   } finally {
     activePreparationLoops.delete(runId)
   }
 }
 
-async function runBoundedLoop(deps: ToolDeps, port: PreparationPort, runId: string, sessionId: string, teamId: string, agent: string, model: { id: string; variant?: string }, policy: ExecutionPolicy, mandate: string, readOnly: boolean): Promise<PreparationRunResult> {
+async function runBoundedLoop(deps: ToolDeps, port: PreparationPort, runId: string, sessionId: string, teamId: string, agent: string, model: { id: string; variant?: string }, policy: ExecutionPolicy, mandate: string, readOnly: boolean, hooks?: PreparationObserver): Promise<PreparationRunResult> {
   const current = loadRun(deps.db, teamId)
   let issues = readIssues(current?.errors_json ?? null)
   let candidate = current?.candidate_json ?? ""
+  let announced = false
   while (issues.length < PREPARATION_ATTEMPTS) {
     const text = issues.length === 0
       ? openingPrompt(mandate, readOnly)
       : correctionPrompt(mandate, issues[issues.length - 1] ?? "Preparation document is invalid", candidate)
     await port.prompt({ sessionID: sessionId, text, delivery: "queue" })
+    if (!announced) {
+      announced = true
+      hooks?.onReady?.({ sessionID: sessionId })
+    }
     await boundedWait(port, sessionId)
     const reply = await port.readAssistant({ sessionID: sessionId })
     if (!reply.trim()) throw new Error(NO_ASSISTANT_REPLY)
@@ -508,10 +523,10 @@ export function selectPreparationModel(policy: unknown, native: readonly Mission
   return selected
 }
 
-async function attachSession(deps: ToolDeps, port: PreparationPort, runId: string, agent: string, model: { id: string; variant?: string }, discardOnFailure: boolean): Promise<string> {
+async function attachSession(deps: ToolDeps, port: PreparationPort, runId: string, agent: string, model: { id: string; variant?: string }, discardOnFailure: boolean, parentID: string): Promise<string> {
   let createdId: string | undefined
   try {
-    const created = await port.createSession({ title: "Ensemble preparation", directory: deps.directory })
+    const created = await port.createSession({ title: PREPARATION_SESSION_TITLE, directory: deps.directory, parentID, agent })
     createdId = created.id
     deps.db.run("UPDATE preparation_run SET session_id = ?, time_updated = ? WHERE id = ?", [created.id, Date.now(), runId])
     await port.switchAgent({ sessionID: created.id, agent })
@@ -522,6 +537,7 @@ async function attachSession(deps: ToolDeps, port: PreparationPort, runId: strin
       modelID: identity.modelID,
       ...(model.variant ? { variant: model.variant } : {}),
     })
+    await port.replacePermissions({ sessionID: created.id, agent })
     return created.id
   } catch (error) {
     if (createdId) await port.abort({ sessionID: createdId }).catch(() => undefined)
@@ -541,7 +557,7 @@ function finishImported(deps: ToolDeps, run: RunRow, imported: PreparationImport
 }
 
 /** Run admission, the bounded PM loop, or the one supervisor correction. */
-export async function executePreparation(deps: ToolDeps, sessionId: string, request: PreparationRequest, port: PreparationPort): Promise<PreparationRunResult> {
+export async function executePreparation(deps: ToolDeps, sessionId: string, request: PreparationRequest, port: PreparationPort, hooks?: PreparationObserver): Promise<PreparationRunResult> {
   if (request.kind === "accept") return acceptPreparation(deps, sessionId, request, port)
   const existing = findTeamBySession(deps.db, deps.registry, sessionId)
   if (existing && existing.role !== "lead") throw new PreparationAdmissionError("lead", "Only the mission lead can run preparation")
@@ -560,8 +576,8 @@ export async function executePreparation(deps: ToolDeps, sessionId: string, requ
       const native = await nativeCatalogue(port)
       const policy = preparationPolicy(deps, existing.teamId, native)
       const model = modelPair(existingRun.model_id, existingRun.variant)
-      const prepared = existingRun.session_id ?? await attachSession(deps, port, existingRun.id, existingRun.agent, model, false)
-      return boundedLoop(deps, port, existingRun.id, prepared, existing.teamId, existingRun.agent, model, policy, existingRun.mandate, admitted.readOnly)
+      const prepared = existingRun.session_id ?? await attachSession(deps, port, existingRun.id, existingRun.agent, model, false, sessionId)
+      return boundedLoop(deps, port, existingRun.id, prepared, existing.teamId, existingRun.agent, model, policy, existingRun.mandate, admitted.readOnly, hooks)
     }
   }
   const mandate = resolveMandate(deps.db, existing?.teamId, request.text)
@@ -571,8 +587,8 @@ export async function executePreparation(deps: ToolDeps, sessionId: string, requ
   const model = selectPreparationModel(policy, native)
   const teamId = existing?.teamId ?? (await prepareMission(deps, sessionId, mandate)).teamId
   const runId = claimRun(deps, teamId, admitted.agent, model, mandate)
-  const createdId = await attachSession(deps, port, runId, admitted.agent, model, true)
-  return boundedLoop(deps, port, runId, createdId, teamId, admitted.agent, model, policy, mandate, admitted.readOnly)
+  const createdId = await attachSession(deps, port, runId, admitted.agent, model, true, sessionId)
+  return boundedLoop(deps, port, runId, createdId, teamId, admitted.agent, model, policy, mandate, admitted.readOnly, hooks)
 }
 
 function decisionSuffix(raw: string): string {

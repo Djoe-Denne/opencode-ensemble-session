@@ -72,6 +72,30 @@ lead may submit one corrected document:
 `prepare` can return an already-persisted result without creating a PM session,
 including after approval; it does not authorize or modify those tasks again.
 
+## Visible PM session and background completion
+
+The helper is a native child of the supervisor, titled **Ensemble preparation
+PM**. It is not an executing Ensemble member. On V2 Desktop, active children
+appear in the native running-work menu; selecting an entry opens that session.
+The terminal's native subagent view also uses the session family. Ensemble does
+not force navigation or add a fake tool call to the conversation.
+
+`prepare` acknowledges the PM session once its initial prompt is queued, without
+holding the command open until discovery finishes. Its result or error is sent
+back to the supervisor separately. A second call while that loop is active
+keeps the same PM session instead of starting another prompt. A persisted import
+can still be returned again; an acknowledgement is not an import or execution
+approval.
+
+The child uses the selected PM's native rules, not permissions inherited from
+the supervisor. If the host cannot replace the inherited session rules, setup
+fails before the PM is prompted. No permission is added to the PM profile.
+
+The Desktop running-work menu may hide an idle child after completion. Do not
+promise a permanent tool card: final questions and imported task mappings belong
+in the supervisor's durable conversation. Sessions created by an older version
+are not automatically reparented, restarted, or replaced by this change.
+
 ## Two objects
 
 The PM does not author both objects.

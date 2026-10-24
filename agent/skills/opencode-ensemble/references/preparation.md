@@ -34,6 +34,19 @@ if several qualify, the supervisor selects one explicitly. Ensemble adds its
 discovery contract to that PM's system context and compaction. It does not
 install a native agent or broaden the profile's permissions.
 
+The PM runs as the supervisor's native child, titled **Ensemble preparation
+PM**, not as an executing team member. V2 Desktop lists active children in its
+running-work menu, and the terminal exposes them through its native subagent
+view. Selecting the child opens its session; do not force a navigation or
+invent a tool call. The command acknowledges the queued PM promptly, then
+returns its result or error separately. An active repeated `prepare` keeps the
+same session without a second PM prompt. Preserve the selected PM's own native
+permissions rather than the supervisor's inherited rules.
+
+The running-work menu need not retain an idle child after completion. Report
+the final mapping/questions in the supervisor's conversation. Older independent
+PM sessions are not silently reparented or restarted.
+
 Only after the initial JSON candidate and five PM corrections are exhausted,
 the lead may submit one document:
 

@@ -671,7 +671,7 @@ provenance, user-approved policy updates and restart recovery.
 - **Session switching is opt-in (v2).** `team_view` reports the teammate's session ID by default; it switches the user's client only when asked for with `navigate: true` — agents never hijack the client unprompted. The live sidebar (terminal only) shows member status on every client's dashboard at `http://localhost:4747`.
 - **Per-session shell env is unavailable (v2).** The v2 shell hook carries no session ID, so `ENSEMBLE_*` variables are not injected into teammate shells. Team identity travels in prompts and tool calls instead.
 - **Native continuity has explicit boundaries (v2).** `compact_fork` requires a distinct idle source; cross-directory inheritance requires clean, matching Git HEADs. Lost native creation acknowledgements can leave resources whose IDs were never received; see the [recovery limits](docs/native-session-continuity.md#remaining-limits).
-- **`/ensemble-mission prepare` uses an existing PM.** Runtime, admission, corrections, recovery, and deterministic import have regression tests with mocked host operations. No new native agent is installed. A live PM/model smoke test and deployment of this checkout are separate, not implied by a green gate. See [preparation](docs/preparation.md).
+- **`/ensemble-mission prepare` uses an existing PM.** Its native child session appears in V2's active-work/subagent view, without becoming an executing Ensemble member. The command acknowledges the queued PM, then returns the result separately. Runtime and adapter regression tests do not imply a live PM/model smoke or a verified Desktop rendering. See [preparation](docs/preparation.md).
 
 ## How this differs from Claude Code agent teams
 

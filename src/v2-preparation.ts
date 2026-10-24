@@ -11,6 +11,7 @@ export interface PreparationHost {
     switchAgent(input: Record<string, unknown>): Promise<unknown>
     switchModel(input: Record<string, unknown>): Promise<unknown>
     get?(input: { sessionID: string }): Promise<unknown>
+    update?(input: { sessionID: string; permissions: readonly unknown[] }): Promise<unknown>
     wait?(input: { sessionID: string }, requestOptions?: { signal?: AbortSignal }): Promise<unknown>
     context?(input: Record<string, unknown>): Promise<unknown>
     interrupt?(input: Record<string, unknown>): Promise<unknown>
@@ -54,10 +55,22 @@ function requireHost(session: PreparationHost["session"]): void {
   if (typeof session.get !== "function") throw new Error("Preparation requires session.get")
 }
 
+function agentBody(value: unknown): Record<string, unknown> {
+  const root = record(value)
+  const nested = record(root.data)
+  return Object.keys(nested).length > 0 ? nested : root
+}
+
+/** Copy the agent rule list. A missing list cannot replace inherited permissions. */
+function permissionRules(value: unknown): unknown[] {
+  const permissions = agentBody(value).permissions
+  if (!Array.isArray(permissions)) throw new Error("Preparation requires session.update to replace inherited permissions")
+  return permissions.map(rule => rule !== null && typeof rule === "object" && !Array.isArray(rule) ? { ...record(rule) } : rule)
+}
+
 /** Copy native allow-rules. A denied edit action marks the agent read-only. */
 export function nativeAgentFacts(value: unknown): { readOnly: boolean; permissions: string[] } {
-  const root = record(value)
-  const data = Object.keys(record(root.data)).length ? record(root.data) : root
+  const data = agentBody(value)
   if (typeof data.readOnly === "boolean" && Array.isArray(data.permissions) && data.permissions.every(item => typeof item === "string")) {
     return { readOnly: data.readOnly, permissions: data.permissions.map(item => item.trim()).filter(item => item.length > 0) }
   }
@@ -101,9 +114,26 @@ export function createPreparationPort(ctx: PreparationHost, hooksReady: boolean,
     },
     nativeModels,
     createSession: async input => {
-      const created = await ctx.session.create({ title: input.title, location: { directory: input.directory } })
+      const created = await ctx.session.create({
+        title: input.title,
+        parentID: input.parentID,
+        location: { directory: ctx.location.directory },
+      })
       if (!created.id) throw new Error("Preparation session was not created")
       return { id: created.id }
+    },
+    replacePermissions: async input => {
+      if (typeof ctx.session.update !== "function" || typeof ctx.agent?.get !== "function") {
+        throw new Error("Preparation requires session.update to replace inherited permissions")
+      }
+      try {
+        const permissions = permissionRules(await ctx.agent.get({ agentID: input.agent }))
+        await ctx.session.update({ sessionID: input.sessionID, permissions })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (message.includes("session.update")) throw error
+        throw new Error(`Preparation requires session.update to replace inherited permissions (${message})`)
+      }
     },
     switchAgent: async input => {
       await ctx.session.switchAgent({ sessionID: input.sessionID, agent: input.agent })

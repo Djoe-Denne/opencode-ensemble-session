@@ -80,6 +80,7 @@ function runtimeFixture(replies: string[], hooksReady = true) {
       calls.push({ method: "create", args: input })
       return { id: "pm-session" }
     },
+    replacePermissions: async input => { calls.push({ method: "replacePermissions", args: input }) },
     switchAgent: async input => { calls.push({ method: "switchAgent", args: input }) },
     switchModel: async input => { calls.push({ method: "switchModel", args: input }) },
     prompt: async input => {
@@ -117,6 +118,18 @@ function commandFixture(replies: string[]) {
     await command.execute({ sessionID: sessionID as MissionCommandInvocation["sessionID"], prompt: { text }, delivery: "queue" })
   }
   return { ...f, host, commands, leadPrompts: prompts, invoke }
+}
+
+function leadText(entry: unknown): string {
+  return (entry as { text?: string }).text ?? ""
+}
+
+async function waitForLead(prompts: unknown[], includes: string): Promise<void> {
+  const deadline = Date.now() + 1000
+  while (!prompts.some(entry => leadText(entry).includes(includes))) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for deferred preparation delivery: ${includes}`)
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
 }
 
 describe("preparation command parsing", () => {
@@ -310,7 +323,12 @@ describe("preparation runtime", () => {
     expect(f.prompts[0]?.text).toContain(PREPARATION_PM_INSTRUCTIONS.slice(0, 40))
     expect(f.prompts[0]?.text).toContain(PREPARATION_JSON_FALLBACK)
     expect(f.prompts[0]?.text.toLowerCase()).toContain("read-only")
-    expect(f.calls.find(call => call.method === "create")?.args).toEqual({ title: expect.any(String), directory: f.deps.directory })
+    expect(f.calls.find(call => call.method === "create")?.args).toEqual({
+      title: "Ensemble preparation PM",
+      directory: f.deps.directory,
+      parentID: "lead",
+      agent: ENSEMBLE_PM_AGENT,
+    })
     expect(f.calls.find(call => call.method === "switchAgent")?.args).toEqual({ sessionID: "pm-session", agent: ENSEMBLE_PM_AGENT })
     expect(f.calls.find(call => call.method === "switchModel")?.args).toEqual({ sessionID: "pm-session", providerID: "fixture", modelID: "a" })
     expect(preparationContextText(f.deps.db, "pm-session")).toContain("GrepAI")
@@ -472,6 +490,179 @@ describe("preparation command", () => {
     expect(text).toContain("project-pm")
     expect(text).toContain("--pm")
   })
+
+  test("returns while the PM is still working and a second prepare does not duplicate it", async () => {
+    const f = commandFixture([JSON.stringify(document())])
+    let release: () => void = () => undefined
+    const gate = new Promise<void>(resolve => { release = resolve })
+    f.port.wait = async () => { await gate }
+    await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/light" }], f.port)
+    const pending = f.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    const winner = await Promise.race([
+      pending.then(() => "returned" as const),
+      new Promise<"blocked">(resolve => { setTimeout(() => resolve("blocked"), 300) }),
+    ])
+    try {
+      expect(winner).toBe("returned")
+      const ack = (f.leadPrompts.at(-1) as { text: string }).text
+      expect(ack).toContain("pm-session")
+      expect(ack).toContain("Ensemble preparation PM")
+      expect(ack).not.toContain("Which boundary owns the schema?")
+      expect(f.deps.db.query("SELECT status FROM preparation_run").get()).toEqual({ status: "running" })
+      expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_member").get()).toEqual({ c: 0 })
+      await f.invoke("prepare --pm ensemble-pm Again")
+      expect(f.calls.filter(call => call.method === "create")).toHaveLength(1)
+      expect(f.calls.filter(call => call.method === "prompt")).toHaveLength(1)
+      expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_run").get()).toEqual({ c: 1 })
+    } finally {
+      release()
+      await pending
+    }
+  })
+
+  test("deferred success arrives once after prepare has returned", async () => {
+    const f = commandFixture([JSON.stringify(document())])
+    let release: () => void = () => undefined
+    const gate = new Promise<void>(resolve => { release = resolve })
+    f.port.wait = async () => { await gate }
+    await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/light" }], f.port)
+    const pending = f.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    const winner = await Promise.race([
+      pending.then(() => "returned" as const),
+      new Promise<"blocked">(resolve => { setTimeout(() => resolve("blocked"), 300) }),
+    ])
+    expect(winner).toBe("returned")
+    expect(f.leadPrompts.some(entry => leadText(entry).includes("Which boundary owns the schema?"))).toBe(false)
+    release()
+    await waitForLead(f.leadPrompts, "Which boundary owns the schema?")
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const results = f.leadPrompts.filter(entry => leadText(entry).includes("Which boundary owns the schema?"))
+    expect(results).toHaveLength(1)
+    expect(f.deps.db.query("SELECT status FROM preparation_run").get()).toEqual({ status: "imported" })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 2 })
+    expect(f.leadPrompts.some(entry => leadText(entry).toLowerCase().includes("rollback"))).toBe(false)
+    await pending
+  })
+
+  test("deferred PM error arrives after prepare has returned", async () => {
+    const f = commandFixture([JSON.stringify(document())])
+    let release: () => void = () => undefined
+    const gate = new Promise<void>(resolve => { release = resolve })
+    f.port.wait = async () => {
+      await gate
+      throw new Error("provider unavailable")
+    }
+    await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/light" }], f.port)
+    const pending = f.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    const winner = await Promise.race([
+      pending.then(() => "returned" as const),
+      new Promise<"blocked">(resolve => { setTimeout(() => resolve("blocked"), 300) }),
+    ])
+    expect(winner).toBe("returned")
+    expect(f.leadPrompts.some(entry => leadText(entry).includes("provider unavailable"))).toBe(false)
+    release()
+    await waitForLead(f.leadPrompts, "provider unavailable")
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(f.leadPrompts.filter(entry => leadText(entry).includes("provider unavailable"))).toHaveLength(1)
+    expect(f.deps.db.query("SELECT status FROM preparation_run").get()).toEqual({ status: "running" })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 0 })
+    expect(f.leadPrompts.some(entry => leadText(entry).toLowerCase().includes("rollback"))).toBe(false)
+    await pending
+  })
+
+  test("deferred ack rejection still delivers the PM result once", async () => {
+    const f = commandFixture([JSON.stringify(document())])
+    let release: () => void = () => undefined
+    const gate = new Promise<void>(resolve => { release = resolve })
+    f.port.wait = async () => { await gate }
+    f.host.session.prompt = async (input: unknown) => {
+      f.leadPrompts.push(input)
+      if (leadText(input).includes("is running")) throw new Error("ack rejected")
+    }
+    await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/light" }], f.port)
+    const pending = f.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    const winner = await Promise.race([
+      pending.then(() => "returned" as const, error => error),
+      new Promise<"blocked">(resolve => { setTimeout(() => resolve("blocked"), 300) }),
+    ])
+    expect(winner).toBeInstanceOf(Error)
+    expect((winner as Error).message).toMatch(/ack rejected/)
+    expect((winner as Error).message.toLowerCase()).not.toContain("rollback")
+    expect(f.leadPrompts.some(entry => leadText(entry).includes("Which boundary owns the schema?"))).toBe(false)
+    expect(f.deps.db.query("SELECT status FROM preparation_run").get()).toEqual({ status: "running" })
+    release()
+    await waitForLead(f.leadPrompts, "Which boundary owns the schema?")
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(f.leadPrompts.filter(entry => leadText(entry).includes("Which boundary owns the schema?"))).toHaveLength(1)
+    expect(f.deps.db.query("SELECT status FROM preparation_run").get()).toEqual({ status: "imported" })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 2 })
+    expect(f.leadPrompts.some(entry => leadText(entry).toLowerCase().includes("rollback"))).toBe(false)
+  })
+
+  test("deferred ack rejection still delivers the PM error", async () => {
+    const f = commandFixture([JSON.stringify(document())])
+    let release: () => void = () => undefined
+    const gate = new Promise<void>(resolve => { release = resolve })
+    f.port.wait = async () => {
+      await gate
+      throw new Error("provider unavailable")
+    }
+    f.host.session.prompt = async (input: unknown) => {
+      f.leadPrompts.push(input)
+      if (leadText(input).includes("is running")) throw new Error("ack rejected")
+    }
+    await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/light" }], f.port)
+    const pending = f.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    const winner = await Promise.race([
+      pending.then(() => "returned" as const, error => error),
+      new Promise<"blocked">(resolve => { setTimeout(() => resolve("blocked"), 300) }),
+    ])
+    expect(winner).toBeInstanceOf(Error)
+    expect((winner as Error).message).toMatch(/ack rejected/)
+    expect((winner as Error).message.toLowerCase()).not.toContain("rollback")
+    expect(f.leadPrompts.some(entry => leadText(entry).includes("provider unavailable"))).toBe(false)
+    release()
+    await waitForLead(f.leadPrompts, "provider unavailable")
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(f.leadPrompts.filter(entry => leadText(entry).includes("provider unavailable"))).toHaveLength(1)
+    expect(f.deps.db.query("SELECT status FROM preparation_run").get()).toEqual({ status: "running" })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 0 })
+    expect(f.leadPrompts.some(entry => leadText(entry).toLowerCase().includes("rollback"))).toBe(false)
+  })
+
+  test("deferred final delivery failure keeps the import recoverable", async () => {
+    const f = commandFixture([JSON.stringify(document())])
+    let release: () => void = () => undefined
+    const gate = new Promise<void>(resolve => { release = resolve })
+    f.port.wait = async () => { await gate }
+    f.host.session.prompt = async (input: unknown) => {
+      f.leadPrompts.push(input)
+      if (leadText(input).includes("Preparation imported")) throw new Error("socket closed")
+    }
+    await registerMissionCommands(f.host, f.deps, async () => [{ id: "fixture/light" }], f.port)
+    const pending = f.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    const winner = await Promise.race([
+      pending.then(() => "returned" as const),
+      new Promise<"blocked">(resolve => { setTimeout(() => resolve("blocked"), 300) }),
+    ])
+    expect(winner).toBe("returned")
+    release()
+    await waitForLead(f.leadPrompts, "Preparation imported")
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(f.leadPrompts.some(entry => leadText(entry).toLowerCase().includes("rollback"))).toBe(false)
+    expect(f.deps.db.query("SELECT status FROM preparation_run").get()).toEqual({ status: "imported" })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 2 })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 1 })
+    f.host.session.prompt = async (input: unknown) => { f.leadPrompts.push(input) }
+    await f.invoke("prepare --pm ensemble-pm Ship the cache boundary")
+    const recovered = leadText(f.leadPrompts.at(-1))
+    expect(recovered).toContain("Which boundary owns the schema?")
+    expect(recovered).toContain("code")
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 2 })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 1 })
+    expect(f.calls.filter(call => call.method === "create")).toHaveLength(1)
+    await pending
+  })
 })
 
 describe("preparation host adapter", () => {
@@ -495,6 +686,67 @@ describe("preparation host adapter", () => {
       session,
     }, true, async () => [])
     await expect(missing.probeAgent("ensemble-pm")).resolves.toBe("unavailable")
+  })
+
+  test("binds the preparatory PM as a child and replaces inherited permissions with the native rules", async () => {
+    const root = join(import.meta.dir, "..")
+    const f = runtimeFixture([])
+    const calls: Array<{ method: string; input: unknown }> = []
+    const messages: unknown[] = []
+    const nativeRules = [
+      { action: "edit", resource: "*", effect: "deny" as const },
+      { action: "read", resource: "*", effect: "allow" as const },
+    ]
+    const port = createPreparationPort({
+      location: { directory: root },
+      agent: { get: async () => ({ permissions: nativeRules }) },
+      session: {
+        create: async input => { calls.push({ method: "create", input }); return { id: "pm-child" } },
+        update: async input => { calls.push({ method: "update", input }); return {} },
+        prompt: async () => {
+          messages.push({ info: { role: "assistant", id: "reply" }, parts: [{ type: "text", text: JSON.stringify(document()) }] })
+        },
+        switchAgent: async () => undefined,
+        switchModel: async () => undefined,
+        get: async () => ({ outcome: "succeeded" }),
+        wait: async () => undefined,
+        context: async () => messages,
+        interrupt: async input => { calls.push({ method: "interrupt", input }) },
+      },
+    }, true, async () => nativeCatalogue())
+    const result = await executePreparation(f.deps, "ses_lead", { kind: "pm", text: "Ship the cache boundary" }, port)
+    expect(result.status).toBe("imported")
+    expect(calls[0]).toEqual({
+      method: "create",
+      input: { title: "Ensemble preparation PM", parentID: "ses_lead", location: { directory: root } },
+    })
+    expect(JSON.stringify(calls[0]?.input)).not.toContain("shell")
+    expect(calls.find(call => call.method === "update")?.input).toEqual({ sessionID: "pm-child", permissions: nativeRules })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_member").get()).toEqual({ c: 0 })
+  })
+
+  test("interrupts a child session when inherited permissions cannot be replaced", async () => {
+    const root = join(import.meta.dir, "..")
+    const f = runtimeFixture([])
+    const calls: Array<{ method: string; input: unknown }> = []
+    const port = createPreparationPort({
+      location: { directory: root },
+      agent: { get: async () => ({ permissions: [{ action: "edit", effect: "deny" }] }) },
+      session: {
+        create: async input => { calls.push({ method: "create", input }); return { id: "pm-child" } },
+        prompt: async () => undefined,
+        switchAgent: async () => undefined,
+        switchModel: async () => undefined,
+        get: async () => ({ outcome: "succeeded" }),
+        wait: async () => undefined,
+        context: async () => [],
+        interrupt: async input => { calls.push({ method: "interrupt", input }) },
+      },
+    }, true, async () => nativeCatalogue())
+    await expect(executePreparation(f.deps, "ses_lead", { kind: "pm", text: "Ship the cache boundary" }, port)).rejects.toThrow(/session\.update/)
+    expect(calls.map(call => call.method)).toEqual(["create", "interrupt"])
+    expect(calls[0]?.input).not.toHaveProperty("permissions")
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_run").get()).toEqual({ c: 0 })
   })
 })
 
@@ -761,6 +1013,7 @@ describe("preparation QA blockers", () => {
       agent: { get: async () => ({ permissions: [{ action: "edit", effect: "deny" }] }) },
       session: {
         create: async () => ({ id: "pm-native" }),
+        update: async () => undefined,
         prompt: async () => undefined,
         switchAgent: async () => undefined,
         switchModel: async () => undefined,
@@ -786,6 +1039,7 @@ describe("preparation QA blockers", () => {
       agent: { get: async () => ({ metadata: { structuredOutput: true, format: "json_schema" }, permissions: [{ action: "edit", effect: "deny" }] }) },
       session: {
         create: async () => { created += 1; return { id: "pm-native" } },
+        update: async () => undefined,
         prompt: async (input: Record<string, unknown>) => {
           prompts.push(input)
           messages.push({ info: { role: "assistant", id: "new" }, parts: [{ type: "text", text: JSON.stringify(document()) }] })
@@ -818,6 +1072,7 @@ describe("preparation QA blockers", () => {
       agent: { get: async () => ({ permissions: [{ action: "edit", effect: "deny" }] }) },
       session: {
         create: async () => ({ id: "pm-native" }),
+        update: async () => undefined,
         prompt: async () => undefined,
         switchAgent: async () => undefined,
         switchModel: async () => undefined,
@@ -858,6 +1113,7 @@ describe("preparation QA blockers", () => {
         agent: { get: async () => ({ permissions: [{ action: "edit", effect: "deny" }] }) },
         session: {
           create: async () => ({ id: "pm-native" }),
+          update: async () => undefined,
           prompt: async () => {
             messages.push({ info: { role: "assistant", id: `reply-${outcome}` }, parts: [{ type: "text", text: JSON.stringify(document()) }] })
           },
