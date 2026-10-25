@@ -33,12 +33,27 @@ and opens execution. Publishing tasks early does not start workers. See
 `/ensemble-mission <objective>` is unchanged. Optional discovery uses:
 
 ```text
-/ensemble-mission prepare [--pm <agent>] <mandat>
+/ensemble-mission prepare [--pm <agent>] [--preplan <file>] [--history none|fork|checkpoint] [--before <messageID>] <mandat>
 ```
 
 - On a new session, `<mandat>` is required.
-- On an existing draft, `<mandat>` is optional. Omitting it keeps the stored
-  objective.
+- On an existing draft, `<mandat>` supplements the stored objective. Both are
+  transmitted even when the mandate is explicit. Multiline text is preserved.
+- Options precede the mandate; quote paths containing spaces. Unknown and
+  duplicate options are rejected. `--` ends option parsing.
+- `--preplan` snapshots a nonempty project-local file (including realpath
+  containment), up to 20000 characters / 80000 bytes. Missing, external and
+  oversized files fail before native session creation; nothing is truncated.
+- `--history none` (default) creates a fresh child. `fork` explicitly inherits
+  the supervisor's projected native context; `checkpoint` requires `--before`
+  with an existing source message ID, an **exclusive** boundary. This reuses the
+  same-server continuity adapter, never pastes a fake history, compacts the
+  supervisor or silently falls back to a fresh session. A fork is an independent
+  native session and need not appear as a fresh child in the running-work menu.
+- The objective, instructions, constraints, preplan, source, history choice and
+  business-profile fingerprint are frozen with a SHA-256 dossier hash before
+  the PM prompt. The dossier and preflight are included in durable supervisor
+  context. Active preparation cannot silently change its dossier or PM.
 - `--pm <agent>` names the exact native agent whose declared profile is `pm`
   and whose native availability is available. A homonym is not enough.
   `architect` and `qa` stay available to the supervisor under their own
@@ -51,8 +66,54 @@ and opens execution. Publishing tasks early does not start workers. See
 - The discovery helper runs before `start`. It does not call `team_spawn`,
   does not insert a team member, and does not claim a task. It does not admit
   executing workers.
-- Code imports automatically on the first document that parses. Invalid JSON
-  is not repaired in place.
+- Code imports only an explicitly `ready` version 2 document. `blocked` and
+  `incomplete` results preserve their candidate/reasons/questions, import no
+  tasks, and do not spend schema-correction attempts. Repeated prepare returns
+  that diagnostic; `/ensemble-mission prepare --resume <clarification>` explicitly
+  resumes the same PM. Clarifications persist separately from the frozen dossier.
+  Invalid JSON is not repaired in place. `start` refuses an unfinished preparation;
+  the simple mission path without PM is unchanged.
+- New PM admissions read global → project business associations freshly; malformed
+  files fail closed. Already-admitted runs and approved policy are not rewritten.
+
+### Tool preflight is layered
+
+The host persists registered tool IDs, declared ordered permission rules and MCP
+connection state separately. `ctx.tool.list()` is not the session-filtered Code
+Mode catalogue; the host labels that catalogue **unverified**. Allowing execute
+does not authorize nested MCP actions. The PM must check the required tools in
+its own effective catalogue and report missing/refused/disconnected capabilities.
+No permissions are added automatically, including on a context fork. Narrow
+read/analysis exceptions require a separate native-profile decision; granting a
+whole MCP server or every Context Mode/Serena method is not a read-only policy.
+
+### Readiness contract (version 2)
+
+New documents add `readiness: { status, reasons, missingInformation }` and
+`tooling: { catalogue, unavailable }`. Status is ready, blocked or incomplete;
+catalogue is verified or unverified. Lists contain 0–50 nonempty strings, each
+at most 2000 characters. Non-ready results need at least one reason. Each v2
+question adds an explicit boolean `blocking`. Ready refuses blockers, missing
+information, unavailable required tools and unverified tooling. This is reported
+evidence, not a semantic quality guarantee or an execution approval.
+
+```json
+{
+  "version": 2,
+  "readiness": { "status": "blocked", "reasons": ["Required tools are not exposed"], "missingInformation": [] },
+  "tooling": { "catalogue": "unverified", "unavailable": ["Serena symbol lookup"] },
+  "context": "No implementation plan is ready for supervisor review.",
+  "openQuestions": [{ "id": "tools", "question": "Can the required read-only tools be exposed?", "audience": "supervisor", "blocking": true }],
+  "tasks": [],
+  "parallelGroups": []
+}
+```
+
+The historical v1 parser examples below remain valid **for compatibility parsing
+and replay only**, not new imports. A newly returned v1 candidate is incomplete,
+never implicitly ready. Existing v1 imports retain their hash, IDs and decisions;
+they are not upgraded or reauthorized. `--accept` also requires ready v2 for a
+new import and does not bypass readiness validation.
 
 Only after the initial candidate and five PM corrections are exhausted, the
 lead may submit one corrected document:
@@ -74,7 +135,7 @@ including after approval; it does not authorize or modify those tasks again.
 
 ## Visible PM session and background completion
 
-The helper is a native child of the supervisor, titled **Ensemble preparation
+By default the helper is a native child of the supervisor, titled **Ensemble preparation
 PM**. It is not an executing Ensemble member. On V2 Desktop, active children
 appear in the native running-work menu; selecting an entry opens that session.
 The terminal's native subagent view also uses the session family. Ensemble does
@@ -152,7 +213,8 @@ trailing hyphen are rejected. Unknown keys are rejected.
 | Field | Bound after trim |
 | --- | --- |
 | `id`, `category` | 1 to 64 characters, lower kebab-case |
-| `mandate.objective`, `mandate.instructions`, `ensemble` | 1 to 4000 characters |
+| `mandate.objective`, `ensemble` | 1 to 4000 characters |
+| `mandate.instructions` | 1 to 20000 characters |
 | `target.agent` | 1 to 128 characters |
 | `target.declaredProfile` | profile id, or `null` |
 | `target.nativeAvailability` | `available`, `unavailable`, or `unverified` |
@@ -168,7 +230,9 @@ way. Those refusals are return values, not spawned sessions.
 
 ## Preparation document
 
-`parsePreparationDocument` accepts one JSON object of `version` `1`.
+`parsePreparationDocument` accepts version 2 (current) and version 1 (legacy
+compatibility). The following field reference and legacy examples describe v1;
+new v2 documents add the readiness/tooling fields and question blocking flag above.
 
 | Field | Rule |
 | --- | --- |

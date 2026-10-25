@@ -173,10 +173,25 @@ function readConfigFile(filePath: string): ConfigFile {
   }
 }
 
-/**
- * Load plugin configuration. Merges global → project → env vars.
- * Missing files are silently skipped. Invalid JSON logs a warning.
- */
+/** Read fresh business associations only; malformed files fail closed at admission. */
+export function loadPreparationProfiles(projectDir: string): BusinessProfilesConfig {
+  const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? ""
+  const paths = [path.join(homeDir, ".config", "opencode", "ensemble.json"), path.join(projectDir, ".opencode", "ensemble.json")]
+  const declarations = paths.map(file => {
+    try {
+      const raw: unknown = JSON.parse(readFileSync(file, "utf8"))
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("configuration must be an object")
+      return (raw as { businessProfiles?: BusinessProfilesConfig }).businessProfiles
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined
+      throw new Error(`Invalid businessProfiles configuration at ${file}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  })
+  try { return resolveBusinessProfilesConfig(...declarations) }
+  catch (error) { throw new Error(`Invalid businessProfiles (${paths.join(" → ")}): ${error instanceof Error ? error.message : String(error)}`) }
+}
+
+/** Load the setup snapshot of plugin configuration. */
 export function loadConfig(projectDir: string): Required<EnsembleConfig> {
   const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? ""
   const globalPath = path.join(homeDir, ".config", "opencode", "ensemble.json")

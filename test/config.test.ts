@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs"
 import path from "node:path"
 import os from "node:os"
-import { loadConfig, DEFAULT_CONFIG } from "../src/config"
+import { loadConfig, loadPreparationProfiles, DEFAULT_CONFIG } from "../src/config"
 
 describe("config", () => {
   let tmpDir: string
@@ -62,6 +62,22 @@ describe("config", () => {
   test("returns defaults when no config files exist", () => {
     const config = loadConfig(tmpDir)
     expect(config).toEqual(DEFAULT_CONFIG)
+  })
+
+  test("preparation mappings are re-read without reloading unrelated runtime policy", () => {
+    const configDir = path.join(tmpDir, ".opencode")
+    mkdirSync(configDir, { recursive: true })
+    const file = path.join(configDir, "ensemble.json")
+    const snapshot = loadConfig(tmpDir)
+    writeFileSync(file, JSON.stringify({ businessProfiles: { byAgent: { pm: "pm" } }, startingIntelligence: "invalid unrelated policy" }))
+    expect(loadPreparationProfiles(tmpDir).byAgent).toEqual({ pm: "pm" })
+    expect(snapshot.businessProfiles.byAgent).toEqual({})
+    writeFileSync(file, JSON.stringify({ businessProfiles: { byAgent: {} } }))
+    expect(loadPreparationProfiles(tmpDir).byAgent).toEqual({})
+    writeFileSync(file, "{broken")
+    expect(() => loadPreparationProfiles(tmpDir)).toThrow(/ensemble.json/)
+    writeFileSync(file, JSON.stringify({ businessProfiles: { byAgent: { pm: "missing-category" } } }))
+    expect(() => loadPreparationProfiles(tmpDir)).toThrow(/businessProfiles/)
   })
 
   test("planning range is opt-in, layered atomically and can be disabled locally", () => {

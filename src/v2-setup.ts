@@ -17,7 +17,7 @@ import { notifyLead } from "./notify"
 import { enrichToolError } from "./tool-arg-hint"
 import { rehydrateRegistry } from "./recovery"
 import { findTeamBySession } from "./types"
-import { loadConfig } from "./config"
+import { loadConfig, loadPreparationProfiles } from "./config"
 import { TokenBucket } from "./rate-limit"
 import { ActivityBuffer, recordFromToolBefore, recordFromToolAfter } from "./activity"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
@@ -404,6 +404,7 @@ export async function setupEnsemble(
     directory: ctx.location.directory,
     config,
     progressTracker,
+    loadPreparationProfiles: () => loadPreparationProfiles(ctx.location.directory),
   }
   const listClassifiers = ctx.tool.list?.bind(ctx.tool)
   if (listClassifiers && ctx.session.wait && ctx.session.remove && ctx.permission?.hook) {
@@ -412,7 +413,7 @@ export async function setupEnsemble(
   const listMissionModels = ctx.model?.list.bind(ctx.model)
   if (listMissionModels) deps.nativeModels = async () => nativeMissionModels((await listMissionModels({ location: { directory: ctx.location.directory } })).data)
   await registerV2Tools(ctx.tool, deps)
-  const preparationPort = createPreparationPort(ctx, true, async () => deps.nativeModels ? await deps.nativeModels() : [])
+  const preparationPort = createPreparationPort(ctx, true, async () => deps.nativeModels ? await deps.nativeModels() : [], client.continuity)
   const missionCommands = await registerMissionCommands(ctx, deps, deps.nativeModels, preparationPort)
   // Self-register the shipped skills so instructions follow the running
   // revision even when an external skills pointer lags behind a deployment.

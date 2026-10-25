@@ -33,8 +33,12 @@ Write chat corrections to the mission draft rather than retaining them only in
 context. Do not invoke `start` on the user's behalf. Read
 [mission policy](references/mission-policy.md) for the approval and revision flow.
 Optional PM discovery before `start` uses
-`/ensemble-mission prepare [--pm <agent>] <mandat>`. A new session requires the
-mandate; an existing draft may omit it and keep the stored objective. After the
+`/ensemble-mission prepare [--pm <agent>] [--preplan <file>] [--history none|fork|checkpoint] [--before <messageID>] <mandat>`.
+A new session requires the objective; an existing draft always transmits its
+stored objective alongside any extra mandate. Preplan/history are explicit and
+frozen, not implicit context inheritance. Blocked/incomplete preparation imports
+no tasks; use `prepare --resume <clarification>` after resolving blockers.
+Only ready v2 results are importable; start still requires user approval. After the
 initial candidate and five PM corrections are exhausted, only the lead may run
 `/ensemble-mission prepare --accept <json>`. `--pm` and `--accept` are mutually
 exclusive. The runtime reuses an existing native PM and injects the discovery

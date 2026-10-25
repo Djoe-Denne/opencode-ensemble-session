@@ -200,6 +200,10 @@ export function markMissionPresented(db: Database, snapshot: MissionPolicySnapsh
 export function approveMission(deps: ToolDeps, teamId: string, sessionId: string, availableModels?: readonly MissionPolicyModel[], expected?: MissionPolicySnapshot): MissionPolicySnapshot {
   requireLead(deps, teamId, sessionId)
   const record = row(deps.db, teamId)
+  if (!record?.approved_hash) {
+    const preparation = deps.db.query("SELECT status, readiness FROM preparation_run WHERE team_id = ?").get(teamId) as { status: string; readiness: string | null } | undefined
+    if (preparation && preparation.status !== "imported") throw new Error(`Preparation is ${preparation.readiness ?? preparation.status}; resolve it before mission start`)
+  }
   if (!record?.presented_hash) throw new Error("Run /ensemble-mission config to present a policy before start")
   if (expected && (record.time_updated !== expected.presentationToken || record.revision !== expected.revision || record.presented_hash !== expected.hash)) {
     throw new Error("Mission configuration changed while start was pending; present config and start again")

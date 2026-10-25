@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createExecutionPolicy } from "../src/execution-policy"
 import { parseMissionCommand, registerMissionCommands, type MissionCommandDefinition, type MissionCommandInvocation } from "../src/mission-commands"
-import { prepareMission } from "../src/mission-policy"
+import { approveMission, prepareMission } from "../src/mission-policy"
 import { admitPreparationAgent, ENSEMBLE_PM_AGENT, preparationBusinessProfiles, PreparationAdmissionError } from "../src/preparation-admission"
 import { parsePreparationDocument } from "../src/preparation-document"
 import { PREPARATION_JSON_FALLBACK, PREPARATION_PM_INSTRUCTIONS } from "../src/preparation-instructions"
@@ -30,9 +30,11 @@ function document(tasks?: Array<Record<string, unknown>>): Record<string, unknow
     handoff: { document: `Findings for ${id} stay in this handoff.`, sources: [{ path: `src/${id}.ts`, note: `Owns ${id}.` }] },
   })
   return {
-    version: 1,
+    version: 2,
+    readiness: { status: "ready", reasons: [], missingInformation: [] },
+    tooling: { catalogue: "verified", unavailable: [] },
     context: "Shared context for the bounded preparation run.",
-    openQuestions: [{ id: "q1", question: "Which boundary owns the schema?", audience: "supervisor" }],
+    openQuestions: [{ id: "q1", question: "Which boundary owns the schema?", audience: "supervisor", blocking: false }],
     tasks: tasks ?? [task("code", "implementation", true), task("docs", "documentation", false)],
     parallelGroups: [{
       taskIds: ["code", "docs"],
@@ -143,6 +145,17 @@ async function waitForLead(prompts: unknown[], includes: string): Promise<void> 
 }
 
 describe("preparation command parsing", () => {
+  test("preserves multiline mandates and parses explicit preparation context options", () => {
+    expect(parseMissionCommand('prepare --pm pm --preplan "docs/pre plan.md" --history checkpoint --before msg_boundary First line\n\nSecond line')).toEqual({
+      action: "prepare", text: "First line\n\nSecond line",
+      preparation: { kind: "pm", pm: "pm", preplan: "docs/pre plan.md", history: "checkpoint", before: "msg_boundary" },
+    })
+    expect(() => parseMissionCommand("prepare --history checkpoint Goal")).toThrow("--before")
+    expect(() => parseMissionCommand("prepare --before msg_boundary Goal")).toThrow("checkpoint")
+    expect(() => parseMissionCommand("prepare --unknown Goal")).toThrow("Unknown")
+    expect(() => parseMissionCommand("prepare --pm pm --pm other Goal")).toThrow("Duplicate")
+    expect(() => parseMissionCommand("prepare --history fork --accept {} ")).toThrow("exclusive")
+  })
   test("keeps a bare objective on the simple prepare path", () => {
     expect(parseMissionCommand("  Ship the cache  ")).toEqual({ action: "prepare", text: "Ship the cache" })
   })
@@ -191,6 +204,10 @@ describe("preparation instructions", () => {
     const match = PREPARATION_PM_INSTRUCTIONS.match(/```json\n([\s\S]*?)\n```/)
     if (!match?.[1]) throw new Error("missing complete preparation example")
     const parsed = parsePreparationDocument(JSON.parse(match[1]))
+    expect(parsed.version).toBe(2)
+    expect(parsed.readiness?.status).toBe("ready")
+    expect(PREPARATION_PM_INSTRUCTIONS).toContain("effective catalogue")
+    expect(PREPARATION_PM_INSTRUCTIONS).toContain("blocked")
     expect(parsed.tasks.map(task => task.type)).toEqual(["research", "implementation"])
     expect(parsed.parallelGroups[0]?.integrationNotes).toContain("Reconcile")
     expect(parsed.parallelGroups[0]?.isolation).toBe("separate-worktrees")
@@ -306,8 +323,110 @@ describe("preparation model selection", () => {
 })
 
 describe("preparation runtime", () => {
+  test("retains blocked preparation without importing tasks or spending correction attempts", async () => {
+    const blocked = { ...document(), version: 2, readiness: { status: "blocked", reasons: ["Functional objective is missing"], missingInformation: ["Supervisor contract"] }, tooling: { catalogue: "unverified", unavailable: ["serena"] }, tasks: [], parallelGroups: [] }
+    const f = runtimeFixture([JSON.stringify(blocked), JSON.stringify(document())])
+    const first = await executePreparation(f.deps, "lead", { kind: "pm", text: "Objective" }, f.port)
+    expect(first.status).toBe("blocked")
+    expect(() => approveMission(f.deps, first.teamId, "lead")).toThrow(/preparation/i)
+    expect(f.prompts).toHaveLength(1)
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 0 })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 0 })
+    expect(f.deps.db.query("SELECT attempts, readiness, candidate_json FROM preparation_run").get()).toMatchObject({ attempts: 0, readiness: "blocked", candidate_json: JSON.stringify(blocked) })
+    const replay = await executePreparation(f.deps, "lead", { kind: "pm", text: "" }, f.port)
+    expect(replay.status).toBe("blocked")
+    expect(f.prompts).toHaveLength(1)
+    const resumed = await executePreparation(f.deps, "lead", { kind: "pm", text: "Contract now available", resume: true }, f.port)
+    expect(resumed.status).toBe("imported")
+    expect(f.prompts).toHaveLength(2)
+    expect(f.prompts[1]?.text).toContain("Contract now available")
+    expect(f.calls.filter(call => call.method === "create")).toHaveLength(1)
+    expect(f.calls.filter(call => call.method === "replacePermissions")).toHaveLength(2)
+  })
+
+  test("rejects a ready candidate with blocking questions or unverified tooling", async () => {
+    for (const invalid of [
+      { ...document(), openQuestions: [{ id: "q", question: "Need objective", audience: "supervisor", blocking: true }] },
+      { ...document(), tooling: { catalogue: "unverified", unavailable: [] } },
+    ]) {
+      expect(() => parsePreparationDocument(invalid)).toThrow(/ready/)
+    }
+  })
+
+  test("a new legacy v1 candidate is incomplete rather than silently ready", async () => {
+    const legacy: Record<string, unknown> = { ...document(), version: 1 }
+    delete legacy.readiness
+    delete legacy.tooling
+    legacy.openQuestions = []
+    const f = runtimeFixture([JSON.stringify(legacy)])
+    const result = await executePreparation(f.deps, "lead", { kind: "pm", text: "Objective" }, f.port)
+    expect(result.status).toBe("incomplete")
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 0 })
+  })
+  test("reads fresh business associations for admission without replacing the setup config", async () => {
+    const f = runtimeFixture([JSON.stringify(document())])
+    f.deps.loadPreparationProfiles = () => ({ extensions: {}, byAgent: { "fresh-pm": "pm" } })
+    const result = await executePreparation(f.deps, "lead", { kind: "pm", text: "Objective", pm: "fresh-pm" }, f.port)
+    expect(result.agent).toBe("fresh-pm")
+    expect(f.deps.config.businessProfiles.byAgent).not.toHaveProperty("fresh-pm")
+    const row = f.deps.db.query("SELECT dossier_json FROM preparation_run").get() as { dossier_json: string }
+    expect(JSON.parse(row.dossier_json).businessProfilesHash).toMatch(/^[a-f0-9]{64}$/)
+  })
+
+  test("a failed fresh mapping read blocks admission before creating a session", async () => {
+    const f = runtimeFixture([])
+    f.deps.loadPreparationProfiles = () => { throw new Error("Invalid businessProfiles at project root") }
+    await expect(executePreparation(f.deps, "lead", { kind: "pm", text: "Objective" }, f.port)).rejects.toThrow("Invalid businessProfiles")
+    expect(f.calls.some(call => call.method === "create")).toBe(false)
+  })
+  test("freezes the objective and preplan in an inspectable dossier before the first prompt", async () => {
+    const f = runtimeFixture([JSON.stringify(document())])
+    writeFileSync(join(f.deps.directory, "preplan.md"), "# Preplan\n\nPreserve this layout.")
+    await prepareMission(f.deps, "lead", "Actual mission objective")
+    await executePreparation(f.deps, "lead", { kind: "pm", text: "Investigate risks", preplan: "preplan.md" }, f.port)
+    expect(f.prompts[0]?.text).toContain("# Preplan\n\nPreserve this layout.")
+    const row = f.deps.db.query("SELECT * FROM preparation_run").get() as Record<string, unknown>
+    expect(row.dossier_hash).toMatch(/^[a-f0-9]{64}$/)
+    expect(JSON.parse(String(row.dossier_json))).toMatchObject({ objective: "Actual mission objective", instructions: "Investigate risks", supervisorSessionID: "lead", preplan: { content: "# Preplan\n\nPreserve this layout." } })
+    const context = preparationContextText(f.deps.db, "lead")
+    expect(context).toContain(String(row.dossier_hash))
+    expect(context).toContain("Preserve this layout.")
+    expect(context).toContain("effectiveCatalogue")
+  })
+
+  test("passes explicit history to native creation before replacing PM rules and prompting", async () => {
+    const f = runtimeFixture([JSON.stringify(document())])
+    await executePreparation(f.deps, "lead", { kind: "pm", text: "Objective", history: "fork" }, f.port)
+    expect(f.calls.find(call => call.method === "create")?.args).toMatchObject({ parentID: "lead", history: "fork" })
+    expect(f.calls.findIndex(call => call.method === "replacePermissions")).toBeLessThan(f.calls.findIndex(call => call.method === "prompt"))
+  })
+
+  test("refuses changing a frozen mandate and retains explicit resume notes across interruptions", async () => {
+    const blocked = { ...document(), readiness: { status: "incomplete", reasons: ["Need contract"], missingInformation: [] }, tasks: [], parallelGroups: [] }
+    const f = runtimeFixture([JSON.stringify(blocked), JSON.stringify(document())])
+    await executePreparation(f.deps, "lead", { kind: "pm", text: "Objective" }, f.port)
+    await expect(executePreparation(f.deps, "lead", { kind: "pm", text: "Silently changed objective" }, f.port)).rejects.toThrow(/frozen/)
+    let fail = true
+    const port = { ...f.port, prompt: async (input: PreparationPromptCall) => {
+      if (fail) { fail = false; throw new Error("transport offline") }
+      await f.port.prompt(input)
+    } }
+    await expect(executePreparation(f.deps, "lead", { kind: "pm", text: "Clarification to preserve", resume: true }, port)).rejects.toThrow(/offline/)
+    const result = await executePreparation(f.deps, "lead", { kind: "pm", text: "" }, port)
+    expect(result.status).toBe("imported")
+    expect(f.prompts.at(-1)?.text).toContain("Clarification to preserve")
+  })
+
+  test("refuses missing or outside-project preplans before creating any native session", async () => {
+    for (const preplan of ["missing.md", "../outside.md"]) {
+      const f = runtimeFixture([JSON.stringify(document())])
+      await expect(executePreparation(f.deps, "lead", { kind: "pm", text: "Objective", preplan }, f.port)).rejects.toThrow(/preplan/i)
+      expect(f.calls.some(call => call.method === "create")).toBe(false)
+      expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_run").get()).toEqual({ c: 0 })
+    }
+  })
   test("registers the preparation run migration", () => {
-    expect(MIGRATIONS).toHaveLength(25)
+    expect(MIGRATIONS).toHaveLength(26)
     const { deps } = runtimeFixture([])
     expect(deps.db.query("SELECT name FROM sqlite_master WHERE name = 'preparation_run'").get()).toEqual({ name: "preparation_run" })
   })
@@ -438,10 +557,32 @@ describe("preparation runtime", () => {
     expect(result.agent).toBe("project-pm")
     expect(f.deps.db.query("SELECT objective FROM mission_policy").get()).toEqual({ objective: "Stored objective" })
     expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team").get()).toEqual({ c: 1 })
+    expect(f.prompts[0]?.text).toContain("Stored objective")
+    expect(f.prompts[0]?.text).toContain("Decompose the stored objective")
   })
 })
 
 describe("preparation command", () => {
+  test("reports preplan and fresh-configuration validation failures to the supervisor", async () => {
+    const f = commandFixture([])
+    await registerMissionCommands(f.host, f.deps, async () => nativeCatalogue(), f.port)
+    await expect(f.invoke("prepare --preplan missing.md Objective")).resolves.toBeUndefined()
+    expect(f.leadPrompts.some(entry => leadText(entry).includes("preplan"))).toBe(true)
+    expect(f.calls.some(call => call.method === "create")).toBe(false)
+    f.deps.loadPreparationProfiles = () => { throw new Error("Invalid project businessProfiles") }
+    await expect(f.invoke("prepare Objective")).resolves.toBeUndefined()
+    expect(f.leadPrompts.some(entry => leadText(entry).includes("Invalid project businessProfiles"))).toBe(true)
+  })
+
+  test("reports native preparation initialization refusal without an unhandled command error", async () => {
+    const f = commandFixture([])
+    f.port.createSession = async () => { throw new Error("Preparation checkpoint boundary is absent") }
+    await registerMissionCommands(f.host, f.deps, async () => nativeCatalogue(), f.port)
+    await expect(f.invoke("prepare --history checkpoint --before msg_missing Objective")).resolves.toBeUndefined()
+    expect(f.leadPrompts.some(entry => leadText(entry).includes("checkpoint boundary"))).toBe(true)
+    expect(f.prompts).toHaveLength(0)
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_run").get()).toEqual({ c: 0 })
+  })
   test("simple prepare does not open a PM session", async () => {
     const f = commandFixture([JSON.stringify(document())])
     await registerMissionCommands(f.host, f.deps, async () => nativeCatalogue(), f.port)
@@ -520,7 +661,7 @@ describe("preparation command", () => {
       expect(ack).not.toContain("Which boundary owns the schema?")
       expect(f.deps.db.query("SELECT status FROM preparation_run").get()).toEqual({ status: "running" })
       expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_member").get()).toEqual({ c: 0 })
-      await f.invoke("prepare --pm ensemble-pm Again")
+      await f.invoke("prepare --pm ensemble-pm")
       expect(f.calls.filter(call => call.method === "create")).toHaveLength(1)
       expect(f.calls.filter(call => call.method === "prompt")).toHaveLength(1)
       expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_run").get()).toEqual({ c: 1 })
@@ -676,6 +817,61 @@ describe("preparation command", () => {
 })
 
 describe("preparation host adapter", () => {
+  test("uses the declared permission action rather than the registered tool ID", async () => {
+    const rules = [{ action: "*", resource: "*", effect: "deny" }, { action: "context_mode_ctx_execute_file", resource: "*", effect: "allow" }]
+    const port = createPreparationPort({
+      location: { directory: "/fixture" },
+      agent: { get: async () => ({ permissions: rules }) },
+      tool: { list: async () => [{ id: "context-mode_ctx_execute_file", options: { permission: "context_mode_ctx_execute_file" } }] },
+      session: { create: async () => ({ id: "pm" }), prompt: async () => undefined, switchAgent: async () => undefined, switchModel: async () => undefined, get: async () => ({ permissions: rules }) },
+    }, true, async () => [])
+    const evidence = await port.inspectTools?.({ sessionID: "pm", agent: "pm" })
+    expect(evidence?.registered[0]).toMatchObject({ id: "context-mode_ctx_execute_file", permission: "allow" })
+  })
+  test("distinguishes registered tools, denied actions, and disconnected MCPs without granting access", async () => {
+    const base = {
+      location: { directory: "/project" },
+      agent: { get: async () => ({ permissions: [{ action: "*", resource: "*", effect: "deny" }, { action: "execute", resource: "*", effect: "allow" }] }) },
+      tool: { list: async () => [{ id: "serena_lookup" }] },
+      mcp: { list: async () => ({ data: [{ name: "serena", status: { status: "connected" } }, { name: "grepai", status: { status: "failed" } }] }) },
+      session: {
+        create: async () => ({ id: "pm" }), prompt: async () => undefined,
+        switchAgent: async () => undefined, switchModel: async () => undefined,
+        get: async () => ({ permissions: [{ action: "*", resource: "*", effect: "deny" }, { action: "execute", resource: "*", effect: "allow" }] }),
+      },
+    }
+    const evidence = await createPreparationPort(base, true, async () => []).inspectTools?.({ sessionID: "pm", agent: "pm" })
+    expect(evidence).toMatchObject({ effectiveCatalogue: "unverified", registered: [{ id: "serena_lookup", permission: "deny" }], servers: [{ name: "serena", status: "connected" }, { name: "grepai", status: "failed" }] })
+    const unavailable = await createPreparationPort({ ...base, tool: undefined, mcp: undefined }, true, async () => []).inspectTools?.({ sessionID: "pm", agent: "pm" })
+    expect(unavailable?.issues.join(" ")).toMatch(/catalogue|tool/i)
+    const allowed = await createPreparationPort({ ...base, agent: { get: async () => ({ permissions: [{ action: "serena_lookup", resource: "*", effect: "allow" }] }) }, session: { ...base.session, get: async () => ({ permissions: [{ action: "serena_lookup", resource: "*", effect: "allow" }] }) } }, true, async () => []).inspectTools?.({ sessionID: "pm", agent: "pm" })
+    expect(allowed?.registered).toEqual([{ id: "serena_lookup", action: "serena_lookup", permission: "allow" }])
+    expect(allowed?.effectiveCatalogue).toBe("unverified")
+  })
+  test("inherits only on explicit request and validates checkpoint source before forking", async () => {
+    const f = runtimeFixture([])
+    const calls: unknown[] = []
+    const host = {
+      location: { directory: f.deps.directory },
+      session: {
+        create: async () => { calls.push("fresh"); return { id: "fresh" } },
+        prompt: async () => undefined, switchAgent: async () => undefined, switchModel: async () => undefined,
+        get: async () => ({ id: "lead", location: { directory: f.deps.directory } }),
+        context: async () => [{ id: "msg_boundary", type: "user", content: "boundary" }],
+      },
+    }
+    const port = createPreparationPort(host, true, async () => [], { fork: async input => { calls.push(input); return { id: "forked-pm" } } })
+    const input = { title: "PM", directory: f.deps.directory, parentID: "lead", agent: "pm" }
+    expect((await port.createSession(input)).id).toBe("fresh")
+    expect((await port.createSession({ ...input, history: "checkpoint", before: "msg_boundary" })).id).toBe("forked-pm")
+    expect(calls).toEqual(["fresh", { sessionID: "lead", before: "msg_boundary" }])
+    await expect(port.createSession({ ...input, history: "checkpoint", before: "msg_missing" })).rejects.toThrow(/boundary/)
+    const unavailable = createPreparationPort(host, true, async () => [])
+    await expect(unavailable.createSession({ ...input, history: "fork" })).rejects.toThrow(/fork/)
+    const wrongSource = createPreparationPort({ ...host, session: { ...host.session, get: async () => ({ id: "lead", location: { directory: "/other-project" } }) } }, true, async () => [], { fork: async () => { calls.push("unexpected fork"); return { id: "wrong" } } })
+    await expect(wrongSource.createSession({ ...input, history: "fork" })).rejects.toThrow(/same project/)
+    expect(calls).toHaveLength(2)
+  })
   test("probes native availability without turning transport failures into unavailable", async () => {
     const root = join(import.meta.dir, "..")
     const denied = createPreparationPort({
@@ -1139,7 +1335,7 @@ describe("preparation QA blockers", () => {
         },
       }, true, async () => nativeCatalogue())
       await expect(executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, port)).rejects.toThrow(new RegExp(outcome))
-      expect(gets).toEqual([{ sessionID: "pm-native" }])
+      expect(gets).toEqual([{ sessionID: "pm-native" }, { sessionID: "pm-native" }])
       expect(f.deps.db.query("SELECT status, attempts FROM preparation_run").get()).toEqual({ status: "running", attempts: 0 })
       expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 0 })
       expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 0 })
@@ -1303,7 +1499,7 @@ describe("preparation PM session restitution", () => {
       const pm = preparationContextText(f.deps.db, NATIVE_PM_SESSION) ?? ""
       expect(pm).toContain("GrepAI")
       expect(pm).not.toContain("current reply")
-      await f.invoke("prepare --pm ensemble-pm Again")
+      await f.invoke("prepare --pm ensemble-pm")
       const resumed = leadText(f.leadPrompts.at(-1))
       expect(hasAutonomousSessionInline(resumed, NATIVE_PM_SESSION)).toBe(true)
       expect(resumed).not.toMatch(/\bis running\b/)

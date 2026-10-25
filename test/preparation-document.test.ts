@@ -141,7 +141,7 @@ describe("preparation document", () => {
     expect(parsedIssues.some(issue => /cycle/.test(issue) && issue.includes("a") && issue.includes("b"))).toBe(true)
     expect(parsedIssues.some(issue => /unknown/.test(issue) && issue.includes("missing"))).toBe(true)
 
-    const shape = issuesOf({ version: 2, context: "  ", extra: true, openQuestions: [], tasks: [], parallelGroups: [] })
+    const shape = issuesOf({ version: 99, context: "  ", extra: true, openQuestions: [], tasks: [], parallelGroups: [] })
     expect(shape.some(issue => /version/.test(issue))).toBe(true)
     expect(shape.some(issue => /context/.test(issue))).toBe(true)
     expect(shape.some(issue => /extra/.test(issue))).toBe(true)

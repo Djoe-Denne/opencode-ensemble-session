@@ -4,9 +4,9 @@ import { MIGRATIONS, WORKTREE_STATE_BACKFILL_SQL } from "../src/schema"
 
 describe("checkout schema bridge", () => {
   test("registers the no-op bridge and the additive worktree migration", () => {
-    expect(MIGRATIONS).toHaveLength(25)
+    expect(MIGRATIONS).toHaveLength(26)
     const db = setupDb()
-    expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 25 })
+    expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 26 })
     expect(db.query("SELECT name FROM sqlite_master WHERE name = 'preparation_import'").get()).toEqual({ name: "preparation_import" })
     expect(db.query("SELECT name FROM sqlite_master WHERE name = 'preparation_run'").get()).toEqual({ name: "preparation_run" })
     expect(db.query("SELECT name FROM sqlite_master WHERE name = 'preparation_task'").get()).toEqual({ name: "preparation_task" })

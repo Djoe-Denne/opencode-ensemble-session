@@ -4,6 +4,7 @@ import type { EnsembleConfig } from "./config"
 import type { ProgressTracker } from "./progress"
 import type { ClassificationPort } from "./mission-classification"
 import type { MissionPolicyModel } from "./mission-model-policy"
+import type { BusinessProfilesConfig } from "./business-profiles"
 
 /**
  * Shared dependencies injected into every tool's execute function.
@@ -28,6 +29,8 @@ export interface ToolDeps {
   classifier?: ClassificationPort
   /** Exact enabled model/variant identities from the public V2 host catalogue. */
   nativeModels?: () => Promise<readonly MissionPolicyModel[]>
+  /** Fresh project/global associations for new PM admissions only. */
+  loadPreparationProfiles?: () => BusinessProfilesConfig
 }
 
 /** A single permission rule for session-level enforcement. */

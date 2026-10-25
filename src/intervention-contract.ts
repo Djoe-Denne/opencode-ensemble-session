@@ -67,7 +67,7 @@ function mandateOf(value: object): InterventionMandate {
   const record = rejectUnknown(value, ["objective", "instructions"], "mandate")
   return {
     objective: requiredText(record.objective, "mandate.objective"),
-    instructions: requiredText(record.instructions, "mandate.instructions"),
+    instructions: requiredText(record.instructions, "mandate.instructions", 20000),
   }
 }
 

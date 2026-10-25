@@ -1,10 +1,13 @@
 import type { MissionPolicyModel } from "./mission-model-policy"
-import type { PreparationPort, PreparationPromptCall } from "./preparation-runtime"
+import type { PreparationPort, PreparationPromptCall, PreparationToolEvidence } from "./preparation-runtime"
+import { resolve } from "node:path"
 
 /** Subset of the V2 host used to run a preparation session without team spawn. */
 export interface PreparationHost {
   location: { directory: string }
   agent?: { get?(input: { agentID: string }): Promise<unknown> }
+  tool?: { list?(): Promise<readonly { id: string; options?: { permission?: string } }[]> }
+  mcp?: { list(input?: Record<string, unknown>): Promise<unknown> }
   session: {
     create(input: Record<string, unknown>): Promise<{ id: string }>
     prompt(input: Record<string, unknown>): Promise<unknown>
@@ -68,6 +71,19 @@ function permissionRules(value: unknown): unknown[] {
   return permissions.map(rule => rule !== null && typeof rule === "object" && !Array.isArray(rule) ? { ...record(rule) } : rule)
 }
 
+function declaredPermission(rules: readonly unknown[], id: string): PreparationToolEvidence["registered"][number]["permission"] {
+  let effect: PreparationToolEvidence["registered"][number]["permission"] = "unverified"
+  rules.forEach(rule => {
+    const row = record(rule)
+    if (typeof row.action !== "string") return
+    const pattern = row.action.split("*").map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")
+    if (!new RegExp(`^${pattern}$`).test(id)) return
+    if (row.resource !== "*") { effect = "unverified"; return }
+    effect = row.effect === "allow" || row.effect === "deny" || row.effect === "ask" ? row.effect : "unverified"
+  })
+  return effect
+}
+
 /** Copy native allow-rules. A denied edit action marks the agent read-only. */
 export function nativeAgentFacts(value: unknown): { readOnly: boolean; permissions: string[] } {
   const data = agentBody(value)
@@ -92,10 +108,40 @@ export function nativeAgentFacts(value: unknown): { readOnly: boolean; permissio
  * Adapt the public V2 host onto the selected native agent.
  * No agent is registered and no permission rule is added.
  */
-export function createPreparationPort(ctx: PreparationHost, hooksReady: boolean, nativeModels: () => Promise<readonly MissionPolicyModel[]>): PreparationPort {
+export function createPreparationPort(ctx: PreparationHost, hooksReady: boolean, nativeModels: () => Promise<readonly MissionPolicyModel[]>, history?: { fork(input: { sessionID: string; before?: string }): Promise<{ id: string }> }): PreparationPort {
   const cursors = new Map<string, string>()
   return {
     hooksReady,
+    inspectTools: async input => {
+      const evidence: PreparationToolEvidence = { effectiveCatalogue: "unverified", registered: [], servers: [], issues: [] }
+      let rules: unknown[] = []
+      try {
+        const native = ctx.agent?.get ? permissionRules(await ctx.agent.get({ agentID: input.agent })) : []
+        const session = ctx.session.get ? record(await ctx.session.get({ sessionID: input.sessionID })).permissions : undefined
+        rules = [...native, ...(Array.isArray(session) ? session : [])]
+        if (!Array.isArray(session)) evidence.issues.push("Session permission rules are not observable")
+      } catch (error) { evidence.issues.push(`Permission inspection unavailable: ${String(error)}`) }
+      try {
+        if (!ctx.tool?.list) evidence.issues.push("Registered tool catalogue is unavailable")
+        else evidence.registered = (await ctx.tool.list()).map(tool => {
+          const action = tool.options?.permission ?? tool.id
+          return { id: tool.id, action, permission: declaredPermission(rules, action) }
+        })
+      } catch (error) { evidence.issues.push(`Registered tool catalogue unavailable: ${String(error)}`) }
+      try {
+        if (!ctx.mcp?.list) evidence.issues.push("MCP connection state is unavailable")
+        else {
+          const response = await ctx.mcp.list({ location: { directory: ctx.location.directory } })
+          const servers = Array.isArray(response) ? response : record(response).data
+          if (!Array.isArray(servers)) evidence.issues.push("MCP response has no server list")
+          else evidence.servers = servers.map(server => {
+            const row = record(server)
+            return { name: typeof row.name === "string" ? row.name : "unknown", status: typeof row.status === "string" ? row.status : String(record(row.status).status ?? "unverified") }
+          })
+        }
+      } catch (error) { evidence.issues.push(`MCP connection inspection unavailable: ${String(error)}`) }
+      return evidence
+    },
     assertCapabilities: async () => { requireHost(ctx.session) },
     probeAgent: async agent => {
       if (!ctx.agent?.get) throw new Error("Native agent lookup is not available on this host")
@@ -114,6 +160,20 @@ export function createPreparationPort(ctx: PreparationHost, hooksReady: boolean,
     },
     nativeModels,
     createSession: async input => {
+      if (input.history && input.history !== "none") {
+        if (!history || !ctx.session.get) throw new Error("Preparation history requires native fork/get; no fresh fallback was performed")
+        const source = record(await ctx.session.get({ sessionID: input.parentID }))
+        const directory = record(source.location).directory
+        if (source.id !== input.parentID || typeof directory !== "string" || resolve(directory) !== resolve(input.directory)) throw new Error("Preparation history source must be the supervisor in the same project location")
+        if (input.history === "checkpoint") {
+          if (!input.before || !ctx.session.context) throw new Error("Preparation checkpoint requires a native message boundary")
+          const messages = await ctx.session.context({ sessionID: input.parentID })
+          if (!Array.isArray(messages) || !messages.some(message => record(message).id === input.before || record(record(message).info).id === input.before)) throw new Error("Preparation checkpoint boundary is absent from the source context")
+        } else if (input.before) throw new Error("A message boundary requires checkpoint history")
+        const child = await history.fork({ sessionID: input.parentID, ...(input.before ? { before: input.before } : {}) })
+        if (!child.id || child.id === input.parentID) throw new Error("Native preparation fork returned an invalid child")
+        return child
+      }
       const created = await ctx.session.create({
         title: input.title,
         parentID: input.parentID,

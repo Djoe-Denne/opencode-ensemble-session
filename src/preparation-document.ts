@@ -1,7 +1,7 @@
 import { validateExecutionPolicy, validateTaskExecutionDecision, type ExecutionPolicy, type TaskExecutionDecision } from "./execution-policy"
 
 /** Version of the PM preparation document. */
-export const PREPARATION_DOCUMENT_VERSION = 1
+export const PREPARATION_DOCUMENT_VERSION = 2
 
 /** Business task types a PM may assign. Execution kinds are derived, not accepted here. */
 export const PREPARATION_TASK_TYPES = ["implementation", "architecture", "documentation", "research", "review", "qa"] as const
@@ -42,6 +42,7 @@ export interface PreparationQuestion {
   id: string
   question: string
   audience: "supervisor"
+  blocking?: boolean
 }
 
 /** Isolated work that may proceed on separate worktrees, with a reconciliation note. */
@@ -54,11 +55,13 @@ export interface PreparationParallelGroup {
 
 /** Versioned PM preparation document. */
 export interface PreparationDocument {
-  version: typeof PREPARATION_DOCUMENT_VERSION
+  version: 1 | typeof PREPARATION_DOCUMENT_VERSION
   context: string
   openQuestions: PreparationQuestion[]
   tasks: PreparationTask[]
   parallelGroups: PreparationParallelGroup[]
+  readiness?: { status: "ready" | "blocked" | "incomplete"; reasons: string[]; missingInformation: string[] }
+  tooling?: { catalogue: "verified" | "unverified"; unavailable: string[] }
 }
 
 /** Prepared execution boundary with no model assigned. */
@@ -164,7 +167,7 @@ function readIdList(value: unknown, field: string, issues: string[], allowEmpty:
   return ok ? items : undefined
 }
 
-function readQuestions(value: unknown, issues: string[]): PreparationQuestion[] | undefined {
+function readQuestions(value: unknown, issues: string[], version: unknown): PreparationQuestion[] | undefined {
   if (!Array.isArray(value) || value.length > 50) {
     issues.push("openQuestions must contain 0 to 50 questions")
     return undefined
@@ -179,7 +182,8 @@ function readQuestions(value: unknown, issues: string[]): PreparationQuestion[] 
       ok = false
       return
     }
-    rejectUnknown(item, ["id", "question", "audience"], field, issues)
+    rejectUnknown(item, ["id", "question", "audience", ...(version === 2 ? ["blocking"] : [])], field, issues)
+    if (version === 2 && typeof item.blocking !== "boolean") issues.push(`${field}.blocking must be boolean`)
     const id = readId(item.id, `${field}.id`, issues)
     const question = readText(item.question, `${field}.question`, issues, 1, 2000)
     if (item.audience !== "supervisor") issues.push(`${field}.audience must be supervisor`)
@@ -189,7 +193,7 @@ function readQuestions(value: unknown, issues: string[]): PreparationQuestion[] 
       ok = false
     }
     if (id) seen.add(id)
-    if (id && question && item.audience === "supervisor") questions.push({ id, question, audience: "supervisor" })
+    if (id && question && item.audience === "supervisor") questions.push({ id, question, audience: "supervisor", ...(version === 2 ? { blocking: item.blocking === true } : {}) })
   })
   return ok ? questions : undefined
 }
@@ -359,17 +363,44 @@ export function parsePreparationDocument(value: unknown): PreparationDocument {
   if (encoded.length > MAX_DOCUMENT_JSON) throw new PreparationDocumentError(["Preparation document exceeds 200000 characters"])
   if (!isRecord(value)) throw new PreparationDocumentError(["Preparation document must be an object"])
   const issues: string[] = []
-  rejectUnknown(value, DOCUMENT_KEYS, "document", issues)
-  if (value.version !== PREPARATION_DOCUMENT_VERSION) issues.push("version must be 1")
+  rejectUnknown(value, [...DOCUMENT_KEYS, ...(value.version === 2 ? ["readiness", "tooling"] : [])], "document", issues)
+  if (value.version !== 1 && value.version !== PREPARATION_DOCUMENT_VERSION) issues.push("version must be 1 or 2")
   const context = readText(value.context, "context", issues, 1, 20000)
-  const openQuestions = readQuestions(value.openQuestions, issues)
+  const openQuestions = readQuestions(value.openQuestions, issues, value.version)
+  let readiness: PreparationDocument["readiness"]
+  let tooling: PreparationDocument["tooling"]
+  if (value.version === 2) {
+    const ready = isRecord(value.readiness) ? value.readiness : {}
+    const tools = isRecord(value.tooling) ? value.tooling : {}
+    rejectUnknown(ready, ["status", "reasons", "missingInformation"], "readiness", issues)
+    rejectUnknown(tools, ["catalogue", "unavailable"], "tooling", issues)
+    const list = (input: unknown, field: string): string[] => {
+      if (!Array.isArray(input) || input.length > 50 || input.some(item => typeof item !== "string" || !item.trim() || item.length > 2000)) {
+        issues.push(`${field} must contain 0 to 50 nonempty strings of at most 2000 characters`)
+        return []
+      }
+      return input.map(item => String(item).trim())
+    }
+    const reasons = list(ready.reasons, "readiness.reasons")
+    const missingInformation = list(ready.missingInformation, "readiness.missingInformation")
+    const unavailable = list(tools.unavailable, "tooling.unavailable")
+    if (ready.status !== "ready" && ready.status !== "blocked" && ready.status !== "incomplete") issues.push("readiness.status must be ready, blocked, or incomplete")
+    else {
+      readiness = { status: ready.status, reasons, missingInformation }
+      if (ready.status !== "ready" && !reasons.length) issues.push("Non-ready preparation requires readiness.reasons")
+      if (ready.status === "ready" && (reasons.length || missingInformation.length || openQuestions?.some(question => question.blocking))) issues.push("ready preparation cannot have blockers or missing information")
+      if (ready.status === "ready" && (tools.catalogue !== "verified" || unavailable.length)) issues.push("ready preparation requires verified tooling without unavailable capabilities")
+    }
+    if (tools.catalogue !== "verified" && tools.catalogue !== "unverified") issues.push("tooling.catalogue must be verified or unverified")
+    else tooling = { catalogue: tools.catalogue, unavailable }
+  }
   const parsedTasks = readTasks(value.tasks, issues)
   if (parsedTasks.ok) checkGraph(parsedTasks.tasks, issues)
   const parallelGroups = readGroups(value.parallelGroups, issues, parsedTasks.ok ? parsedTasks.tasks : undefined)
   if (issues.length || !context || !openQuestions || !parsedTasks.ok || !parallelGroups) {
     throw new PreparationDocumentError(issues.length ? issues : ["Preparation document is invalid"])
   }
-  return { version: PREPARATION_DOCUMENT_VERSION, context, openQuestions, tasks: parsedTasks.tasks, parallelGroups }
+  return { version: value.version === 2 ? 2 : 1, context, openQuestions, tasks: parsedTasks.tasks, parallelGroups, ...(readiness ? { readiness } : {}), ...(tooling ? { tooling } : {}) }
 }
 
 /**

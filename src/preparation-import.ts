@@ -4,6 +4,7 @@ import { validateExecutionPolicy, validateTaskExecutionDecision, type ExecutionP
 import {
   authorizePreparationDecision,
   parsePreparationDocument,
+  PreparationDocumentError,
   preparationExecutionDecision,
   renderPreparationTask,
   type PreparationDocument,
@@ -195,6 +196,7 @@ function writeImport(db: Database, teamId: string, document: PreparationDocument
   if (!mission) throw new Error("Preparation import requires a mission draft")
   const existing = headOf(db, teamId)
   if (existing) return replay(db, existing, hash)
+  if (document.version !== 2 || document.readiness?.status !== "ready") throw new PreparationDocumentError(["New preparation imports require an explicit ready version 2 document"])
   if (mission.approved_hash) throw new Error("Initial preparation import must happen before mission start")
 
   const importId = generateId("prep")

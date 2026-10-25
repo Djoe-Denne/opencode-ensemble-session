@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs"
+import { readFileSync, realpathSync, statSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { isAbsolute, relative, resolve } from "node:path"
 import type { Database } from "./db"
 import { createExecutionPolicy, nativeExecutionCatalogue, planningCatalogue, validateExecutionPolicy, type ExecutionPolicy } from "./execution-policy"
 import type { MissionPolicyModel } from "./mission-model-policy"
@@ -29,7 +31,7 @@ export interface PreparationPort {
   probeAgent(agent: string): Promise<"available" | "unavailable">
   describeAgent(agent: string): Promise<{ readOnly: boolean; permissions: readonly string[] }>
   nativeModels(): Promise<readonly MissionPolicyModel[]>
-  createSession(input: { title: string; directory: string; parentID: string; agent: string }): Promise<{ id: string }>
+  createSession(input: { title: string; directory: string; parentID: string; agent: string; history?: "none" | "fork" | "checkpoint"; before?: string }): Promise<{ id: string }>
   /** Replace permissions inherited from the parent with the PM agent's own rules. */
   replacePermissions(input: { sessionID: string; agent: string }): Promise<void>
   switchAgent(input: { sessionID: string; agent: string }): Promise<void>
@@ -38,6 +40,16 @@ export interface PreparationPort {
   wait(input: { sessionID: string; signal: AbortSignal }): Promise<void>
   readAssistant(input: { sessionID: string }): Promise<string>
   abort(input: { sessionID: string }): Promise<void>
+  /** Registered tools and native rules are not proof of a session-filtered catalogue. */
+  inspectTools?(input: { sessionID: string; agent: string }): Promise<PreparationToolEvidence>
+}
+
+/** Observable preflight layers; the effective Code Mode catalogue is checked inside the PM. */
+export interface PreparationToolEvidence {
+  effectiveCatalogue: "unverified"
+  registered: Array<{ id: string; action: string; permission: "allow" | "deny" | "ask" | "unverified" }>
+  servers: Array<{ name: string; status: string }>
+  issues: string[]
 }
 
 /** Native title of the preparatory PM session. */
@@ -76,12 +88,16 @@ export interface PreparationRequest {
   kind: "pm" | "accept"
   text: string
   pm?: string
+  preplan?: string
+  history?: "none" | "fork" | "checkpoint"
+  before?: string
+  resume?: boolean
 }
 
 /** Result returned to the lead command. */
 export interface PreparationRunResult {
   teamId: string
-  status: "imported" | "exhausted" | "cancelled"
+  status: "imported" | "exhausted" | "cancelled" | "blocked" | "incomplete"
   questions: Array<{ id: string; question: string }>
   mapping?: PreparationImportResult["mapping"]
   parallelGroups?: PreparationImportResult["parallelGroups"]
@@ -103,6 +119,11 @@ interface RunRow {
   supervisor_used: number
   candidate_json: string | null
   errors_json: string | null
+  dossier_json: string | null
+  dossier_hash: string | null
+  readiness: "ready" | "blocked" | "incomplete" | null
+  preflight_json: string | null
+  resume_notes_json: string | null
 }
 
 interface ContextRow {
@@ -115,6 +136,10 @@ interface ContextRow {
   approved_hash: string | null
   open_questions_json: string | null
   parallel_groups_json: string | null
+  dossier_json: string | null
+  dossier_hash: string | null
+  preflight_json: string | null
+  resume_notes_json: string | null
 }
 
 const PREPARATION_ATTEMPTS = 6
@@ -203,7 +228,44 @@ function runStatusError(status: string): PreparationAdmissionError {
 }
 
 function loadRun(db: Database, teamId: string): RunRow | undefined {
-  return db.query("SELECT id, team_id, session_id, agent, model_id, variant, mandate, status, supervisor_used, candidate_json, errors_json FROM preparation_run WHERE team_id = ?").get(teamId) as RunRow | undefined
+  return db.query("SELECT * FROM preparation_run WHERE team_id = ?").get(teamId) as RunRow | undefined
+}
+
+function preparationDossier(deps: ToolDeps, teamId: string | undefined, supervisorSessionID: string, request: PreparationRequest, businessProfilesHash: string): { json: string; hash: string; mandate: string } {
+  if (request.history === "checkpoint" && !request.before) throw new PreparationAdmissionError("mandate", "Preparation checkpoint requires --before")
+  if (request.before && request.history !== "checkpoint") throw new PreparationAdmissionError("mandate", "Preparation --before requires checkpoint history")
+  const objective = (teamId ? storedObjective(deps.db, teamId) : request.text).trim()
+  if (!objective) throw new PreparationAdmissionError("mandate", "prepare requires a mandate to open a mission draft")
+  if (request.text.length > 20000 || objective.length > 20000) throw new PreparationAdmissionError("mandate", "Preparation mandate exceeds 20000 characters")
+  let preplan: { path: string; content: string; hash: string } | undefined
+  if (request.preplan) {
+    try {
+      const root = realpathSync(deps.directory)
+      const file = realpathSync(resolve(root, request.preplan))
+      const local = relative(root, file)
+      if (local === ".." || local.startsWith("../") || local.startsWith("..\\") || isAbsolute(local)) throw new Error("outside project")
+      if (!statSync(file).isFile() || statSync(file).size > 80000) throw new Error("must be a file of at most 80000 bytes")
+      const content = readFileSync(file, "utf8")
+      if (!content.trim() || content.length > 20000) throw new Error("must contain 1 to 20000 characters")
+      preplan = { path: local, content, hash: createHash("sha256").update(content).digest("hex") }
+    } catch (error) { throw new PreparationAdmissionError("mandate", `Preparation preplan: ${messageOf(error)}`) }
+  }
+  const json = JSON.stringify({ version: 1, objective, instructions: teamId ? request.text.trim() : "", supervisorSessionID,
+    directory: deps.directory, businessProfilesHash, history: request.history ?? "none", ...(request.before ? { before: request.before } : {}),
+    constraints: "Discovery only; no implementation, no board mutation, no execution approval. Follow AGENTS.md and the native PM permissions.",
+    ...(preplan ? { preplan } : {}),
+  })
+  const hash = createHash("sha256").update(json).digest("hex")
+  const mandate = resolveMandate(deps.db, teamId, request.text)
+  return { json, hash, mandate }
+}
+
+function dossierPrompt(run: Pick<RunRow, "dossier_json" | "dossier_hash" | "preflight_json" | "resume_notes_json"> | undefined, mandate: string): string {
+  if (!run?.dossier_json) return mandate
+  if (createHash("sha256").update(run.dossier_json).digest("hex") !== run.dossier_hash) throw new Error("Frozen preparation dossier hash mismatch")
+  const dossier = JSON.parse(run.dossier_json) as { preplan?: { content: string } }
+  const notes = readIssues(run.resume_notes_json)
+  return `${mandate}\n\nFrozen preparation dossier (SHA-256 ${run.dossier_hash}):\n${run.dossier_json}${dossier.preplan ? `\n\nPreplan:\n${dossier.preplan.content}` : ""}${run.preflight_json ? `\n\nPreflight evidence (registered tools and declared rules, NOT the session-filtered Code Mode catalogue):\n${run.preflight_json}` : ""}${notes.length ? `\n\nSupervisor clarifications on explicit resume:\n${notes.join("\n\n")}` : ""}`
 }
 
 function readIssues(raw: string | null): string[] {
@@ -223,8 +285,9 @@ function storedObjective(db: Database, teamId: string): string {
 
 function resolveMandate(db: Database, teamId: string | undefined, text: string): string {
   const explicit = text.trim()
-  if (explicit) return explicit
   const objective = teamId ? storedObjective(db, teamId) : ""
+  if (explicit && objective) return `Mission objective:\n${objective}\n\nAdditional mandate:\n${explicit}`
+  if (explicit) return explicit
   if (objective) return objective
   throw new PreparationAdmissionError("mandate", "prepare requires a mandate to open a mission draft")
 }
@@ -258,6 +321,15 @@ function importedResult(teamId: string, agent: string, model: { id: string; vari
     questions: imported.openQuestions.map(item => ({ id: item.id, question: item.question })),
     mapping: imported.mapping,
     parallelGroups: imported.parallelGroups,
+  }
+}
+
+function pausedResult(run: RunRow): PreparationRunResult {
+  const document = parsePreparationDocument(parseJson(run.candidate_json ?? ""))
+  return { teamId: run.team_id, agent: run.agent, model: modelPair(run.model_id, run.variant),
+    status: run.readiness === "blocked" ? "blocked" : "incomplete", candidate: run.candidate_json ?? "",
+    questions: document.openQuestions.map(item => ({ id: item.id, question: item.question })),
+    issues: document.readiness ? [...document.readiness.reasons, ...document.readiness.missingInformation] : ["Legacy v1 has no readiness or tooling evidence. Return an explicit version 2 document."],
   }
 }
 
@@ -343,8 +415,11 @@ async function probe(port: PreparationPort, agent: string): Promise<"available" 
   }
 }
 
-async function admitNativePm(deps: ToolDeps, request: PreparationRequest, port: PreparationPort): Promise<{ agent: string; readOnly: boolean }> {
-  const profiles = deps.config.businessProfiles
+async function admitNativePm(deps: ToolDeps, request: PreparationRequest, port: PreparationPort): Promise<{ agent: string; readOnly: boolean; profilesHash: string }> {
+  const profiles = (() => {
+    try { return deps.loadPreparationProfiles?.() ?? deps.config.businessProfiles }
+    catch (error) { throw new PreparationAdmissionError("category", messageOf(error)) }
+  })()
   const requested = request.pm?.trim()
   const declared = requested ? [requested] : declaredPreparationAgents(profiles)
   const available: string[] = []
@@ -366,7 +441,7 @@ async function admitNativePm(deps: ToolDeps, request: PreparationRequest, port: 
     readOnly: facts.readOnly,
     permissions: facts.permissions,
   })
-  return { agent: admitted.agent, readOnly: admitted.readOnly }
+  return { agent: admitted.agent, readOnly: admitted.readOnly, profilesHash: createHash("sha256").update(JSON.stringify(profiles)).digest("hex") }
 }
 
 async function nativeCatalogue(port: PreparationPort): Promise<readonly MissionPolicyModel[]> {
@@ -409,8 +484,15 @@ async function importReply(deps: ToolDeps, port: PreparationPort, runId: string,
   try {
     const document = parsePreparationDocument(parseJson(reply))
     if (missionApproved(deps.db, teamId)) return cancelRun(deps, port, runId, sessionId, teamId, agent, model)
+    if (document.version === 1 || document.readiness?.status !== "ready") {
+      const readiness = document.readiness?.status === "blocked" ? "blocked" : "incomplete"
+      deps.db.run("UPDATE preparation_run SET readiness = ?, candidate_json = ?, time_updated = ? WHERE id = ? AND status = 'running'", [readiness, reply, Date.now(), runId])
+      const run = loadRun(deps.db, teamId)
+      if (!run) throw new Error("Preparation run disappeared")
+      return pausedResult(run)
+    }
     const imported = importPreparationDocument(deps.db, teamId, document, policy)
-    const saved = deps.db.run("UPDATE preparation_run SET status = 'imported', time_updated = ? WHERE id = ? AND status = 'running'", [Date.now(), runId])
+    const saved = deps.db.run("UPDATE preparation_run SET status = 'imported', readiness = 'ready', time_updated = ? WHERE id = ? AND status = 'running'", [Date.now(), runId])
     if (saved.changes !== 1) {
       if (missionApproved(deps.db, teamId)) return cancelRun(deps, port, runId, sessionId, teamId, agent, model)
       throw new PreparationAdmissionError("imported", "A preparation document was already imported")
@@ -464,14 +546,20 @@ function documentIssue(reply: string): string {
   return "Preparation document is invalid"
 }
 
-async function boundedLoop(deps: ToolDeps, port: PreparationPort, runId: string, sessionId: string, teamId: string, agent: string, model: { id: string; variant?: string }, policy: ExecutionPolicy, mandate: string, readOnly: boolean, hooks?: PreparationObserver): Promise<PreparationRunResult> {
+async function boundedLoop(deps: ToolDeps, port: PreparationPort, runId: string, sessionId: string, teamId: string, agent: string, model: { id: string; variant?: string }, policy: ExecutionPolicy, mandate: string, readOnly: boolean, hooks?: PreparationObserver, initialize?: () => Promise<void>): Promise<PreparationRunResult> {
   if (activePreparationLoops.has(runId)) throw runStatusError("running")
   activePreparationLoops.add(runId)
   try {
+    if (initialize) await initialize()
     return await runBoundedLoop(deps, port, runId, sessionId, teamId, agent, model, policy, mandate, readOnly, hooks)
   } finally {
     activePreparationLoops.delete(runId)
   }
+}
+
+async function recordPreflight(deps: ToolDeps, port: PreparationPort, runId: string, sessionId: string, agent: string): Promise<void> {
+  const evidence = port.inspectTools ? await port.inspectTools({ sessionID: sessionId, agent }) : { effectiveCatalogue: "unverified", registered: [], servers: [], issues: ["Host has no preflight inspection API"] }
+  deps.db.run("UPDATE preparation_run SET preflight_json = ? WHERE id = ?", [JSON.stringify(evidence), runId])
 }
 
 async function runBoundedLoop(deps: ToolDeps, port: PreparationPort, runId: string, sessionId: string, teamId: string, agent: string, model: { id: string; variant?: string }, policy: ExecutionPolicy, mandate: string, readOnly: boolean, hooks?: PreparationObserver): Promise<PreparationRunResult> {
@@ -481,8 +569,8 @@ async function runBoundedLoop(deps: ToolDeps, port: PreparationPort, runId: stri
   let announced = false
   while (issues.length < PREPARATION_ATTEMPTS) {
     const text = issues.length === 0
-      ? openingPrompt(mandate, readOnly)
-      : correctionPrompt(mandate, issues[issues.length - 1] ?? "Preparation document is invalid", candidate)
+      ? openingPrompt(dossierPrompt(current, mandate), readOnly)
+      : correctionPrompt(dossierPrompt(current, mandate), issues[issues.length - 1] ?? "Preparation document is invalid", candidate)
     await port.prompt({ sessionID: sessionId, text, delivery: "queue" })
     if (!announced) {
       announced = true
@@ -549,7 +637,11 @@ export function selectPreparationModel(policy: unknown, native: readonly Mission
 async function attachSession(deps: ToolDeps, port: PreparationPort, runId: string, agent: string, model: { id: string; variant?: string }, discardOnFailure: boolean, parentID: string): Promise<string> {
   let createdId: string | undefined
   try {
-    const created = await port.createSession({ title: PREPARATION_SESSION_TITLE, directory: deps.directory, parentID, agent })
+    const run = deps.db.query("SELECT * FROM preparation_run WHERE id = ?").get(runId) as RunRow | undefined
+    const dossier = run?.dossier_json ? JSON.parse(run.dossier_json) as { history?: "none" | "fork" | "checkpoint"; before?: string } : undefined
+    const created = await port.createSession({ title: PREPARATION_SESSION_TITLE, directory: deps.directory, parentID, agent,
+      ...(dossier?.history && dossier.history !== "none" ? { history: dossier.history, ...(dossier.before ? { before: dossier.before } : {}) } : {}),
+    })
     createdId = created.id
     deps.db.run("UPDATE preparation_run SET session_id = ?, time_updated = ? WHERE id = ?", [created.id, Date.now(), runId])
     await port.switchAgent({ sessionID: created.id, agent })
@@ -561,11 +653,12 @@ async function attachSession(deps: ToolDeps, port: PreparationPort, runId: strin
       ...(model.variant ? { variant: model.variant } : {}),
     })
     await port.replacePermissions({ sessionID: created.id, agent })
+    await recordPreflight(deps, port, runId, created.id, agent)
     return created.id
   } catch (error) {
     if (createdId) await port.abort({ sessionID: createdId }).catch(() => undefined)
     if (discardOnFailure) deps.db.run("DELETE FROM preparation_run WHERE id = ? AND status = 'running'", [runId])
-    throw error
+    throw error instanceof PreparationAdmissionError ? error : new PreparationAdmissionError("transport", messageOf(error))
   }
 }
 
@@ -595,21 +688,41 @@ export async function executePreparation(deps: ToolDeps, sessionId: string, requ
   if (existing && existingRun && existingRun.status !== "cancelled") {
     if (existingRun.status === "exhausted") throw runStatusError(existingRun.status)
     if (existingRun.status === "running") {
-      const admitted = await admitNativePm(deps, request, port)
+      if (existingRun.dossier_json && (request.preplan || request.history || request.before || request.pm && request.pm !== existingRun.agent)) throw new Error("Preparation dossier is frozen; context or PM cannot be replaced")
+      if (existingRun.dossier_json && request.text.trim() && !request.resume) {
+        const dossier = JSON.parse(existingRun.dossier_json) as { instructions: string; objective: string }
+        if (request.text.trim() !== (dossier.instructions || dossier.objective)) throw new Error("Preparation mandate is frozen; resolve blockers with explicit --resume clarification")
+      }
+      if (existingRun.readiness === "blocked" || existingRun.readiness === "incomplete") {
+        if (!request.resume) return pausedResult(existingRun)
+        if (activePreparationLoops.has(existingRun.id)) throw runStatusError("running")
+      } else if (request.resume) throw new Error("--resume requires a blocked or incomplete preparation")
+      const facts = await port.describeAgent(existingRun.agent)
       const native = await nativeCatalogue(port)
       const policy = preparationPolicy(deps, existing.teamId, native)
       const model = modelPair(existingRun.model_id, existingRun.variant)
       const prepared = existingRun.session_id ?? await attachSession(deps, port, existingRun.id, existingRun.agent, model, false, sessionId)
-      return boundedLoop(deps, port, existingRun.id, prepared, existing.teamId, existingRun.agent, model, policy, existingRun.mandate, admitted.readOnly, hooks)
+      const initialize = request.resume ? async () => {
+        if (request.text.length > 20000) throw new Error("Resume clarification exceeds 20000 characters")
+        const notes = [...readIssues(existingRun.resume_notes_json), ...(request.text.trim() ? [request.text.trim()] : [])]
+        await port.replacePermissions({ sessionID: prepared, agent: existingRun.agent })
+        await recordPreflight(deps, port, existingRun.id, prepared, existingRun.agent)
+        const saved = deps.db.run("UPDATE preparation_run SET readiness = NULL, resume_notes_json = ?, time_updated = ? WHERE id = ? AND status = 'running' AND readiness IN ('blocked', 'incomplete')", [JSON.stringify(notes), Date.now(), existingRun.id])
+        if (saved.changes !== 1) throw runStatusError("running")
+      } : undefined
+      return boundedLoop(deps, port, existingRun.id, prepared, existing.teamId, existingRun.agent, model, policy, existingRun.mandate, facts.readOnly, hooks, initialize)
     }
   }
-  const mandate = resolveMandate(deps.db, existing?.teamId, request.text)
+  if (request.resume) throw new Error("--resume requires a blocked or incomplete preparation")
   const admitted = await admitNativePm(deps, request, port)
+  const dossier = preparationDossier(deps, existing?.teamId, sessionId, request, admitted.profilesHash)
+  const mandate = dossier.mandate
   const native = await nativeCatalogue(port)
   const policy = preparationPolicy(deps, existing?.teamId, native)
   const model = selectPreparationModel(policy, native)
   const teamId = existing?.teamId ?? (await prepareMission(deps, sessionId, mandate)).teamId
   const runId = claimRun(deps, teamId, admitted.agent, model, mandate)
+  deps.db.run("UPDATE preparation_run SET dossier_json = ?, dossier_hash = ? WHERE id = ?", [dossier.json, dossier.hash, runId])
   const createdId = await attachSession(deps, port, runId, admitted.agent, model, true, sessionId)
   return boundedLoop(deps, port, runId, createdId, teamId, admitted.agent, model, policy, mandate, admitted.readOnly, hooks)
 }
@@ -648,9 +761,9 @@ function pmContext(row: ContextRow): string {
   const issues = readIssues(row.errors_json)
   return [
     PREPARATION_PM_INSTRUCTIONS,
-    `Mandate:\n${row.mandate ?? ""}`,
+    `Mandate:\n${dossierPrompt(row, row.mandate ?? "")}`,
     ...(issues.length ? [`Rejected issues:\n${issues.join("\n")}`] : []),
-    ...(row.candidate_json ? [`Rejected candidate:\n${row.candidate_json}`] : []),
+    ...(row.candidate_json ? [`Previous candidate (not execution approval):\n${row.candidate_json}`] : []),
   ].join("\n\n")
 }
 
@@ -668,7 +781,7 @@ function leadContext(db: Database, row: ContextRow): string {
   return [
     ...(reference ? [reference] : []),
     `Tracked preparation record: ${row.status}. That record is not a native session status.`,
-    `Mandate:\n${row.mandate ?? ""}`,
+    `Mandate:\n${dossierPrompt(row, row.mandate ?? "")}`,
     questions ?? "Supervisor questions:\n- none",
     "Imported tasks:",
     ...(tasks.length ? tasks.map(task => `- ${task.pm_id} → ${task.task_id} (${task.disposition}${task.hold_reason ? `: ${task.hold_reason}` : ""}${decisionSuffix(task.decision_json)})`) : ["- none"]),
@@ -678,15 +791,16 @@ function leadContext(db: Database, row: ContextRow): string {
 
 /** Contract text for a preparation session or its lead, omitted after approval. */
 export function preparationContextText(db: Database, sessionId: string): string | undefined {
-  const row = db.query(`SELECT r.session_id, r.status, r.team_id, r.mandate, r.candidate_json, r.errors_json, p.approved_hash, i.open_questions_json, i.parallel_groups_json
+  const row = db.query(`SELECT r.session_id, CASE WHEN r.status = 'running' THEN COALESCE(r.readiness, r.status) ELSE r.status END AS status, r.team_id, r.mandate, r.candidate_json, r.errors_json,
+    r.dossier_json, r.dossier_hash, r.preflight_json, r.resume_notes_json, p.approved_hash, i.open_questions_json, i.parallel_groups_json
     FROM preparation_run r
     JOIN mission_policy p ON p.team_id = r.team_id
     LEFT JOIN preparation_import i ON i.team_id = r.team_id
     WHERE r.session_id = ? OR r.team_id IN (SELECT id FROM team WHERE lead_session_id = ? AND status = 'active')
     ORDER BY r.time_updated DESC LIMIT 1`).get(sessionId, sessionId) as ContextRow | undefined
   if (!row || row.status === "cancelled" || row.approved_hash) return undefined
-  if (row.session_id === sessionId && (row.status === "running" || row.status === "exhausted" || row.status === "imported")) return pmContext(row)
-  if (row.status !== "imported" && row.status !== "running" && row.status !== "exhausted") return undefined
+  if (row.session_id === sessionId) return pmContext(row)
+  if (!["imported", "ready", "running", "exhausted", "blocked", "incomplete"].includes(row.status)) return undefined
   if (!row.session_id && row.status !== "imported") return undefined
   const lead = db.query("SELECT id FROM team WHERE id = ? AND lead_session_id = ? AND status = 'active'").get(row.team_id, sessionId) as { id: string } | undefined
   return lead ? leadContext(db, row) : undefined

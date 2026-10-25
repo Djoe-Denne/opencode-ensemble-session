@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs"
+import { createHash } from "node:crypto"
 import { describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import { createExecutionPolicy, validateExecutionPolicy, type ExecutionPolicy } from "../src/execution-policy"
@@ -53,9 +54,11 @@ function document(tasks: Array<Record<string, unknown>> = [
   task("build", { dependsOn: ["plan"], planning: { required: false, reason: "Implement the accepted contract." } }),
 ], overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    version: 1,
+    version: 2,
+    readiness: { status: "ready", reasons: [], missingInformation: [] },
+    tooling: { catalogue: "verified", unavailable: [] },
     context: "Shared context for the initial preparation import.",
-    openQuestions: [{ id: "q1", question: "Which boundary owns the schema?", audience: "supervisor" }],
+    openQuestions: [{ id: "q1", question: "Which boundary owns the schema?", audience: "supervisor", blocking: false }],
     tasks,
     parallelGroups: [{
       taskIds: ["plan"],
@@ -82,6 +85,29 @@ function count(db: EnsembleDatabase, table: string): number {
 }
 
 describe("preparation import", () => {
+  test("replays a historical v1 import without upgrading its document or decisions", () => {
+    const db = setupDb()
+    const team = draft(db)
+    const legacy = { context: "Historical context", openQuestions: [], parallelGroups: [], tasks: [], version: 1 }
+    const encoded = JSON.stringify(legacy)
+    const hash = createHash("sha256").update(encoded).digest("hex")
+    db.run("INSERT INTO preparation_import (id, team_id, document_hash, policy_hash, document_json, context, open_questions_json, parallel_groups_json, time_created) VALUES ('legacy', ?, ?, 'historical-policy', ?, 'Historical context', '[]', '[]', 1)", [team, hash, encoded])
+    expect(importPreparationDocument(db, team, legacy)).toMatchObject({ importId: "legacy", replayed: true, documentHash: hash })
+    expect(db.query("SELECT document_json, policy_hash FROM preparation_import").get()).toEqual({ document_json: encoded, policy_hash: "historical-policy" })
+  })
+  test("rejects new blocked, incomplete, and legacy documents without writing tasks", () => {
+    const db = setupDb()
+    const team = draft(db)
+    for (const status of ["blocked", "incomplete"]) {
+      expect(() => importPreparationDocument(db, team, document([], { readiness: { status, reasons: ["Need contract"], missingInformation: [] }, parallelGroups: [] }))).toThrow(/ready/)
+    }
+    const legacy = document([], { version: 1, parallelGroups: [], openQuestions: [] })
+    delete legacy.readiness
+    delete legacy.tooling
+    expect(() => importPreparationDocument(db, team, legacy)).toThrow(/version 2/)
+    expect(count(db, "team_task")).toBe(0)
+    expect(count(db, "preparation_import")).toBe(0)
+  })
   test("imports a valid document once and replays the same task ids", () => {
     const db = setupDb()
     const teamId = draft(db)
@@ -93,7 +119,9 @@ describe("preparation import", () => {
       tasks: raw.tasks,
       openQuestions: raw.openQuestions,
       context: "  Shared context for the initial preparation import.  ",
-      version: 1,
+      version: 2,
+      tooling: raw.tooling,
+      readiness: raw.readiness,
     }
     const second = importPreparationDocument(db, teamId, reordered, v2)
 
@@ -148,7 +176,7 @@ describe("preparation import", () => {
       parallel_groups_json: string
     }
     expect(stored.context).toBe("Shared context for the initial preparation import.")
-    expect(JSON.parse(stored.open_questions_json)).toEqual([{ id: "q1", question: "Which boundary owns the schema?", audience: "supervisor" }])
+    expect(JSON.parse(stored.open_questions_json)).toEqual([{ id: "q1", question: "Which boundary owns the schema?", audience: "supervisor", blocking: false }])
     expect(JSON.parse(stored.parallel_groups_json)[0].integrationNotes).toBe("Reconcile on the lead branch after each isolated worktree lands.")
     expect(JSON.parse(stored.parallel_groups_json)[0].isolation).toBe("separate-worktrees")
     const handoff = db.query("SELECT handoff_json FROM preparation_task WHERE task_id = ?").get(plan.taskId) as { handoff_json: string }
@@ -432,6 +460,19 @@ describe("preparation import", () => {
     expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: MIGRATIONS.length })
     expect(db.query("SELECT name FROM sqlite_master WHERE name = 'preparation_import'").get()).toEqual({ name: "preparation_import" })
     expect(db.query("SELECT name FROM sqlite_master WHERE name = 'preparation_task'").get()).toEqual({ name: "preparation_task" })
+    db.close()
+  })
+
+  test("migration 26 preserves historical run and import records while adding nullable evidence", () => {
+    const db = new Database(":memory:")
+    MIGRATIONS.slice(0, 25).forEach(sql => { db.exec(sql) })
+    db.exec("PRAGMA user_version = 25")
+    const team = draft(db as EnsembleDatabase)
+    db.run("INSERT INTO preparation_run (id, team_id, agent, model_id, mandate, status, attempts, time_created, time_updated) VALUES ('old-run', ?, 'pm', 'fixture/model', 'historical mandate', 'imported', 0, 1, 1)", [team])
+    db.run("INSERT INTO preparation_import (id, team_id, document_hash, policy_hash, document_json, context, open_questions_json, parallel_groups_json, time_created) VALUES ('old-import', ?, 'old-hash', 'old-policy', '{\"version\":1}', 'old context', '[]', '[]', 1)", [team])
+    applyMigrations(db as EnsembleDatabase)
+    expect(db.query("SELECT id, mandate, status, dossier_json, readiness FROM preparation_run").get()).toEqual({ id: "old-run", mandate: "historical mandate", status: "imported", dossier_json: null, readiness: null })
+    expect(db.query("SELECT id, document_hash, policy_hash, document_json FROM preparation_import").get()).toEqual({ id: "old-import", document_hash: "old-hash", policy_hash: "old-policy", document_json: '{"version":1}' })
     db.close()
   })
 })

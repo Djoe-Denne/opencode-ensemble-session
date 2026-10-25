@@ -14,7 +14,7 @@ import { missionReportingInstructions } from "./mission-reporting"
 import { dirname, join } from "node:path"
 import { executionStarts, planningCatalogue } from "./execution-policy"
 import { PreparationAdmissionError } from "./preparation-admission"
-import { executePreparation, PREPARATION_SESSION_TITLE, preparationSessionReference, type PreparationPort, type PreparationRunResult } from "./preparation-runtime"
+import { executePreparation, PREPARATION_SESSION_TITLE, preparationSessionReference, type PreparationPort, type PreparationRunResult, type PreparationRequest } from "./preparation-runtime"
 
 const QA_CONFIG_GUIDANCE = 'Discuss mission QA interactively: light (targeted checks), proportionate (risk-based checks; default), or reinforced (explicit verification plan and independent review). Offer the current/default choice for confirmation, not a new questionnaire per task. Ask only for consequential commands and acceptance criteria. Persist corrections in verification: { level, commands?, acceptance? } before presenting config again. Project safety/mandatory rules cannot be silently waived; surface conflicts for explicit arbitration. Do not impose a fixed QA agent pipeline.'
 
@@ -22,27 +22,46 @@ const QA_CONFIG_GUIDANCE = 'Discuss mission QA interactively: light (targeted ch
 export interface MissionCommand {
   action: "prepare" | "config" | "start"
   text: string
-  preparation?: { kind: "pm" | "accept"; pm?: string }
+  preparation?: Omit<PreparationRequest, "text">
 }
 
 function parsePrepareRequest(text: string): MissionCommand {
-  const rest = text.slice("prepare".length).trim()
-  const tokens = rest.split(/\s+/).filter(token => token.length > 0)
-  const acceptAt = tokens.indexOf("--accept")
-  const pmAt = tokens.indexOf("--pm")
-  if (acceptAt >= 0 && pmAt >= 0) throw new Error("prepare --pm and prepare --accept are exclusive")
-  if (acceptAt === 0) {
+  let rest = text.slice("prepare".length).trim()
+  if (/^--accept(?:\s|$)/.test(rest)) {
     const json = rest.slice("--accept".length).trim()
     if (!json) throw new Error("prepare --accept requires the supervisor JSON")
+    if (json.startsWith("--")) throw new Error("prepare --accept and PM options are exclusive")
     return { action: "prepare", text: json, preparation: { kind: "accept" } }
   }
-  if (pmAt === 0) {
-    const pm = tokens[1]
-    const mandate = tokens.slice(2).join(" ")
-    if (!pm || pm.startsWith("--")) throw new Error("prepare --pm requires an agent")
-    return { action: "prepare", text: mandate, preparation: { kind: "pm", pm } }
+  const preparation: NonNullable<MissionCommand["preparation"]> = { kind: "pm" }
+  const seen = new Set<string>()
+  while (rest.startsWith("--")) {
+    if (/^--(?:\s|$)/.test(rest)) { rest = rest.slice(2).trimStart(); break }
+    const flag = rest.match(/^--[\w-]+/)?.[0]
+    if (!flag) throw new Error("Unknown prepare option")
+    if (seen.has(flag)) throw new Error(`Duplicate prepare option ${flag}`)
+    seen.add(flag)
+    rest = rest.slice(flag.length).trimStart()
+    if (flag === "--accept") throw new Error("prepare --accept and PM options are exclusive")
+    if (flag === "--resume") { preparation.resume = true; continue }
+    if (!["--pm", "--preplan", "--history", "--before"].includes(flag)) throw new Error(`Unknown prepare option ${flag}`)
+    const token = rest.match(/^(?:"([^"]+)"|'([^']+)'|([^\s]+))/)
+    const value = token?.[1] ?? token?.[2] ?? token?.[3]
+    if (value === "--accept") throw new Error("prepare --accept and PM options are exclusive")
+    if (!token || !value || value.startsWith("--")) throw new Error(`${flag} requires ${flag === "--pm" ? "an agent" : "a value"}`)
+    rest = rest.slice(token[0].length).trimStart()
+    if (flag === "--pm") preparation.pm = value
+    if (flag === "--preplan") preparation.preplan = value
+    if (flag === "--before") preparation.before = value
+    if (flag === "--history") {
+      if (value !== "none" && value !== "fork" && value !== "checkpoint") throw new Error("--history must be none, fork, or checkpoint")
+      preparation.history = value
+    }
   }
-  return { action: "prepare", text: rest, preparation: { kind: "pm" } }
+  if (preparation.history === "checkpoint" && !preparation.before) throw new Error("--history checkpoint requires --before <messageID>")
+  if (preparation.before && preparation.history !== "checkpoint") throw new Error("--before requires --history checkpoint")
+  if (preparation.resume && (preparation.preplan || preparation.history || preparation.before)) throw new Error("--resume cannot replace a frozen preparation dossier")
+  return { action: "prepare", text: rest.trim(), preparation }
 }
 
 /** Parse the single command namespace without interpreting user preferences. */
@@ -75,6 +94,12 @@ export interface MissionCommandHost {
 }
 
 function formatPreparation(result: PreparationRunResult): string {
+  if (result.status === "blocked" || result.status === "incomplete") return [
+    `Preparation ${result.status}. No tasks imported; this is not an executable plan.`,
+    ...(result.issues ?? []),
+    ...result.questions.map(item => `- ${item.id}: ${item.question}`),
+    "Resolve the blockers, then explicitly run /ensemble-mission prepare --resume <clarification>.",
+  ].join("\n")
   if (result.status === "cancelled") return "Preparation stopped because the mission is already approved. No document was imported."
   if (result.status === "exhausted") {
     return [
@@ -95,6 +120,7 @@ function formatPreparation(result: PreparationRunResult): string {
   const variant = result.model.variant ? ` variant ${result.model.variant}` : ""
   return [
     `Preparation imported for ${result.agent} on ${result.model.id}${variant}.`,
+    "Ready for supervisor review; import is not execution approval.",
     "Supervisor questions:",
     questions || "- none",
     "Imported tasks:",
@@ -169,7 +195,7 @@ async function deliverPreparation(host: MissionCommandHost, deps: ToolDeps, inpu
   let settled: { ok: true; result: PreparationRunResult } | { ok: false; error: unknown } | undefined
   let markReady: (sessionID: string) => void = () => undefined
   const ready = new Promise<string>(resolve => { markReady = resolve })
-  const completion = executePreparation(deps, input.sessionID, { kind: request.kind, text: command.text, ...(request.pm ? { pm: request.pm } : {}) }, preparation, {
+  const completion = executePreparation(deps, input.sessionID, { ...request, text: command.text }, preparation, {
     onReady: notice => markReady(notice.sessionID),
   }).then(
     result => {

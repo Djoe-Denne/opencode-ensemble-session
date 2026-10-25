@@ -366,6 +366,12 @@ export const MIGRATIONS: string[] = [
       time_created INTEGER NOT NULL,
       time_updated INTEGER NOT NULL
     );`,
+  // Migration 26: additive preparation evidence; historical imports are untouched.
+  `ALTER TABLE preparation_run ADD COLUMN dossier_json TEXT;
+   ALTER TABLE preparation_run ADD COLUMN dossier_hash TEXT;
+   ALTER TABLE preparation_run ADD COLUMN readiness TEXT CHECK(readiness IN ('ready', 'blocked', 'incomplete'));
+   ALTER TABLE preparation_run ADD COLUMN preflight_json TEXT;
+   ALTER TABLE preparation_run ADD COLUMN resume_notes_json TEXT;`,
 ]
 
 /**

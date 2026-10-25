@@ -13,8 +13,9 @@ Do not invoke `start` for the user. `start` remains the execution gate.
 
 ## Command and intervention contract
 
-The integrated plugin code parses a version 1 discovery document and imports
-it once, before start, through `importPreparationDocument`. That path is
+The integrated plugin code imports an explicitly ready version 2 discovery document
+once, before start, through `importPreparationDocument`. Legacy v1 parsing/replay
+does not make a new v1 result ready. That path is
 generic at the intervention-contract layer. PM discovery is the first concrete
 case: category `pm`, contract id `pm-discovery`, native permissions copied, no
 model and no extra tool.
@@ -22,12 +23,19 @@ model and no extra tool.
 The validated user command is:
 
 ```text
-/ensemble-mission prepare [--pm <agent>] <mandat>
+/ensemble-mission prepare [--pm <agent>] [--preplan <file>] [--history none|fork|checkpoint] [--before <messageID>] <mandat>
 ```
 
 `/ensemble-mission <objective>` stays the simple draft. On a new session the
 mandate is required. On an existing draft it is optional, and the stored
-objective remains. `--pm <agent>` is the exact native agent declared `pm` and
+objective is always transmitted; explicit instructions supplement it. Multiline
+mandates are preserved. Options precede the mandate; quote paths with spaces.
+`--preplan` freezes a project-local file (at most 20000 characters / 80000 bytes).
+History defaults to none. Fork/checkpoint opt in to the supervisor's projected
+native context, without compaction or fresh fallback; checkpoint requires an
+exclusive source message boundary via --before. The dossier, source and hash
+are inspectable in supervisor context. An active dossier cannot be replaced.
+`--pm <agent>` is the exact native agent declared `pm` and
 natively available, not a homonym. Without `--pm`, the single admissible project
 PM is selected. If none qualifies, configure an existing native agent's category;
 if several qualify, the supervisor selects one explicitly. Ensemble adds its
@@ -68,7 +76,11 @@ the lead may submit one document:
 `--pm` and `--accept` are mutually exclusive. The same parser validates that
 JSON. Nothing is repaired silently. The helper runs before `start` without
 `team_spawn`, a team member, or a claim, and it admits no executing worker.
-Code imports the first document that parses. Invalid supervisor JSON returns
+Code imports only a ready v2 document. Blocked/incomplete candidates persist
+without tasks or schema retries; resolve their blockers and explicitly use
+`prepare --resume <clarification>`. Clarifications persist, not replace the frozen
+dossier. Start refuses unfinished PM preparation; the simple no-PM path remains.
+Invalid supervisor JSON returns
 its issues without consuming the accepted correction. In the plugin repository,
 the parser-checked examples and the
 field tables live in `docs/preparation.md`. This reference is enough to write
@@ -116,8 +128,14 @@ a minimum of 20, 40, or 400 characters. Do stay inside the maxima in
 `docs/preparation.md`: context and handoff document 20000, goal and integration
 notes 4000, most other prose 2000, title 200, source path 500, ids 64.
 
-Root keys are only `version`, `context`, `openQuestions`, `tasks`, and
-`parallelGroups`. `version` is the number `1`. Task keys are only `id`,
+Root keys are `version`, `readiness`, `tooling`, `context`, `openQuestions`, `tasks`,
+and `parallelGroups`. `version` is the number `2`. Readiness is
+`{status: "ready"|"blocked"|"incomplete", reasons: string[], missingInformation: string[]}`;
+tooling is `{catalogue: "verified"|"unverified", unavailable: string[]}`. Non-ready
+needs a reason and can return empty tasks/groups. Ready permits no blockers,
+missing information, unverified catalogue or unavailable required tools. These
+are reported evidence, not a guarantee of plan quality or execution approval.
+Task keys are only `id`,
 `title`, `type`, `goal`, `dependsOn`, `planning`, `acceptanceCriteria`,
 `verification`, and `handoff`. `planning` is `{ required: boolean, reason }`.
 `kind`, `mode`, and `model` are rejected.
@@ -151,7 +169,8 @@ other. Both may depend on the implementation task outside the group.
 
 ### Questions, handoffs, and branches
 
-Questions use `audience: "supervisor"` only. They stay on the document and are
+Questions require boolean `blocking` and use `audience: "supervisor"` only. A ready
+document permits nonblocking questions only. They stay on the document and are
 not delegated as worker notes. Ask only what the supervisor must decide.
 
 Every task has a handoff. `document` is the finding. Each source has a `path`
@@ -165,6 +184,13 @@ dependency inside the group is rejected. Do not schedule two writers in one
 shared worktree and call it a parallel group.
 
 ## Discovery tools
+
+The host preflight distinguishes registered tool IDs, declared permissions and
+MCP connection state. It cannot prove the effective session-filtered catalogue;
+check required tools inside the PM before business discovery and report absence,
+refusal and disconnection separately. Execute permission alone is insufficient.
+Do not broaden profile rules or bypass unavailable tools. Business associations
+are read freshly at each new admission; existing runs/policy are not rewritten.
 
 GrepAI answers "where is this behavior?" when the file is unknown: a
 descriptive English query, a few results, then open the file. Exact symbols,

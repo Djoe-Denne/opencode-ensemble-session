@@ -15,6 +15,11 @@ function target(overrides: Partial<InterventionTarget> = {}): InterventionTarget
 }
 
 describe("intervention contract", () => {
+  test("bounds the richer PM instructions without weakening other text validation", () => {
+    expect(pmDiscoveryContract({ ...mandate, instructions: "x".repeat(5000) }).mandate.instructions).toHaveLength(5000)
+    expect(() => pmDiscoveryContract({ ...mandate, instructions: "x".repeat(20001) })).toThrow(/instructions/)
+    expect(() => pmDiscoveryContract({ ...mandate, objective: "x".repeat(4001) })).toThrow(/objective/)
+  })
   test("composes a read-only pm without adding permissions", () => {
     const permissions = ["read"]
     const contract = pmDiscoveryContract(mandate)
