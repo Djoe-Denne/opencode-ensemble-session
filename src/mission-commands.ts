@@ -98,7 +98,14 @@ function formatPreparation(result: PreparationRunResult): string {
     `Preparation ${result.status}. No tasks imported; this is not an executable plan.`,
     ...(result.issues ?? []),
     ...result.questions.map(item => `- ${item.id}: ${item.question}`),
-    "Resolve the blockers, then explicitly run /ensemble-mission prepare --resume <clarification>.",
+    `Current candidate tasks: ${result.candidateTaskCount ?? "unverified"}.`,
+    ...(result.validationHistory?.length ? [
+      "Historical validation errors (not current blockers):",
+      ...result.validationHistory,
+      "A schema correction preceded this pause. Compare the complete candidate with earlier PM responses in the native PM session referenced below, especially any removed tasks or newly asserted blockers. Do not infer substantive blockers from a formatting rejection.",
+    ] : []),
+    "Supervisor review: distinguish facts required to prepare an actionable plan from work and gates to satisfy before execution. Keep genuine blockers; do not declare ready without evidence. Use the native PM session for the complete candidate, not this notification alone.",
+    "If the available evidence resolves a misunderstanding, propose a precise /ensemble-mission prepare --resume <clarification>; ask the user only for a genuinely missing decision or authorization. Do not auto-resume or invoke start.",
   ].join("\n")
   if (result.status === "cancelled") return "Preparation stopped because the mission is already approved. No document was imported."
   if (result.status === "exhausted") {

@@ -388,7 +388,11 @@ export function parsePreparationDocument(value: unknown): PreparationDocument {
     else {
       readiness = { status: ready.status, reasons, missingInformation }
       if (ready.status !== "ready" && !reasons.length) issues.push("Non-ready preparation requires readiness.reasons")
-      if (ready.status === "ready" && (reasons.length || missingInformation.length || openQuestions?.some(question => question.blocking))) issues.push("ready preparation cannot have blockers or missing information")
+      if (ready.status === "ready") {
+        if (reasons.length) issues.push("readiness.reasons must be empty when status is ready; put positive justifications in context. If these are actual blockers, keep them and use blocked or incomplete instead.")
+        if (missingInformation.length) issues.push("readiness.missingInformation must be empty when status is ready; unresolved required information needs blocked or incomplete readiness.")
+        if (openQuestions?.some(question => question.blocking)) issues.push("openQuestions contains blocking questions while readiness.status is ready; resolve them or use blocked or incomplete readiness.")
+      }
       if (ready.status === "ready" && (tools.catalogue !== "verified" || unavailable.length)) issues.push("ready preparation requires verified tooling without unavailable capabilities")
     }
     if (tools.catalogue !== "verified" && tools.catalogue !== "unverified") issues.push("tooling.catalogue must be verified or unverified")

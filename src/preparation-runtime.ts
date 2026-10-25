@@ -114,6 +114,8 @@ export interface PreparationRunResult {
   agent: string
   issues?: string[]
   candidate?: string
+  candidateTaskCount?: number
+  validationHistory?: string[]
 }
 
 interface RunRow {
@@ -225,6 +227,7 @@ function correctionPrompt(mandate: string, issue: string, candidate: string): st
     issue,
     "Rejected candidate:",
     candidate,
+    "Correct only the reported validation issues. Preserve the existing task breakdown, dependencies and verification unless a concrete substantive defect requires changing them. Do not invent blockers or discard the plan merely because its JSON was rejected. A format error does not establish a missing requirement; keep any real blockers explicit and distinguish preparation blockers from future execution gates.",
     PREPARATION_JSON_FALLBACK,
     `Mandate:\n${mandate}`,
   ].join("\n\n")
@@ -339,6 +342,7 @@ function pausedResult(run: RunRow): PreparationRunResult {
   const document = parsePreparationDocument(parseJson(run.candidate_json ?? ""))
   return { teamId: run.team_id, agent: run.agent, model: modelPair(run.model_id, run.variant),
     status: run.readiness === "blocked" ? "blocked" : "incomplete", candidate: run.candidate_json ?? "",
+    candidateTaskCount: document.tasks.length, validationHistory: readIssues(run.errors_json),
     questions: document.openQuestions.map(item => ({ id: item.id, question: item.question })),
     issues: document.readiness ? [...document.readiness.reasons, ...document.readiness.missingInformation] : ["Legacy v1 has no readiness or tooling evidence. Return an explicit version 2 document."],
   }

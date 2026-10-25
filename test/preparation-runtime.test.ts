@@ -458,6 +458,16 @@ describe("preparation runtime", () => {
     }
   })
 
+  test("distinguishes ready justifications from missing information and blocking questions", () => {
+    const justified = { ...document(), readiness: { status: "ready", reasons: ["The plan is ready for review"], missingInformation: [] } }
+    expect(() => parsePreparationDocument(justified)).toThrow("readiness.reasons must be empty")
+    expect(() => parsePreparationDocument(justified)).toThrow("positive justifications in context")
+    const missing = { ...document(), readiness: { status: "ready", reasons: [], missingInformation: ["Required input"] } }
+    expect(() => parsePreparationDocument(missing)).toThrow("readiness.missingInformation must be empty")
+    const blocking = { ...document(), openQuestions: [{ id: "q", question: "Required decision", audience: "supervisor", blocking: true }] }
+    expect(() => parsePreparationDocument(blocking)).toThrow("openQuestions contains blocking questions")
+  })
+
   test("a new legacy v1 candidate is incomplete rather than silently ready", async () => {
     const legacy: Record<string, unknown> = { ...document(), version: 1 }
     delete legacy.readiness
@@ -668,6 +678,43 @@ describe("preparation runtime", () => {
 })
 
 describe("preparation command", () => {
+  test("equips the supervisor to review a plan regression after a schema correction", async () => {
+    const positiveReasons = { ...document(), readiness: { status: "ready", reasons: ["Plan ready for review"], missingInformation: [] } }
+    const incomplete = { ...document(), readiness: { status: "incomplete", reasons: ["Need a decision"], missingInformation: ["Boundary choice"] }, tasks: [], parallelGroups: [] }
+    const f = commandFixture([positiveReasons, incomplete].map(value => JSON.stringify(value)))
+    await registerMissionCommands(f.host, f.deps, async () => nativeCatalogue(), f.port)
+    await f.invoke("prepare Objective")
+    await waitForLead(f.leadPrompts, "Preparation incomplete")
+    const text = f.leadPrompts.map(leadText).find(text => text.includes("Preparation incomplete")) ?? ""
+    expect(text).toContain("Current candidate tasks: 0")
+    expect(text).toContain("Historical validation errors (not current blockers)")
+    expect(text).toContain("readiness.reasons must be empty")
+    expect(text).toContain("Compare the complete candidate with earlier PM responses")
+    expect(text).toContain("Do not infer substantive blockers from a formatting rejection")
+    expect(text).toContain("Do not auto-resume or invoke start")
+    expect(text).toContain("pm-session")
+    expect(f.prompts[1]?.text).toContain("Preserve the existing task breakdown")
+    expect(f.prompts[1]?.text).toContain("Do not invent blockers")
+    expect(f.prompts).toHaveLength(2)
+    expect(f.deps.db.query("SELECT attempts, readiness FROM preparation_run").get()).toMatchObject({ attempts: 1, readiness: "incomplete" })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 0 })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 0 })
+  })
+
+  test("reports a genuinely blocked candidate without claiming a schema correction happened", async () => {
+    const blocked = { ...document(), readiness: { status: "blocked", reasons: ["Required contract absent"], missingInformation: ["Contract"] } }
+    const f = commandFixture([JSON.stringify(blocked)])
+    await registerMissionCommands(f.host, f.deps, async () => nativeCatalogue(), f.port)
+    await f.invoke("prepare Objective")
+    await waitForLead(f.leadPrompts, "Preparation blocked")
+    const text = f.leadPrompts.map(leadText).find(text => text.includes("Preparation blocked")) ?? ""
+    expect(text).toContain("Current candidate tasks: 2")
+    expect(text).toContain("Required contract absent")
+    expect(text).not.toContain("Historical validation errors (not current blockers)")
+    expect(f.prompts).toHaveLength(1)
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 0 })
+  })
+
   test("reports preplan and fresh-configuration validation failures to the supervisor", async () => {
     const f = commandFixture([])
     await registerMissionCommands(f.host, f.deps, async () => nativeCatalogue(), f.port)

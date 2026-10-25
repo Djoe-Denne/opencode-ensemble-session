@@ -81,6 +81,23 @@ and opens execution. Publishing tasks early does not start workers. See
 - New PM admissions read global → project business associations freshly; malformed
   files fail closed. Already-admitted runs and approved policy are not rewritten.
 
+### Supervisor review of paused preparation
+
+A blocked/incomplete notification reports the current task count and, when
+present, historical validation errors explicitly labelled as history rather than
+current blockers. The referenced native PM session contains the complete candidate
+and earlier responses. The supervisor should compare them if a correction removed
+tasks or introduced new blockers, distinguish preparation prerequisites from
+future execution gates, and propose a targeted resume clarification when existing
+evidence resolves the issue. This is a reasoning aid, not an automatic diagnosis
+or recovery guarantee: genuine missing decisions remain blocked, and the plugin
+does not auto-resume or approve start.
+
+Correction prompts require preserving the plan unless a substantive defect is
+identified. In particular, a ready document requires empty `readiness.reasons`;
+positive justifications belong in `context`. The field-specific validation error
+does not by itself establish missing information or a substantive blocker.
+
 ### Tool preflight is layered
 
 The host persists registered tool IDs, declared ordered permission rules and MCP
