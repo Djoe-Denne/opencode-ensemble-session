@@ -13,6 +13,15 @@ import { PREPARATION_JSON_FALLBACK, PREPARATION_PM_INSTRUCTIONS } from "./prepar
 import { findTeamBySession, type ToolDeps } from "./types"
 import { generateId } from "./util"
 
+const PREPARATION_INPUT_TEXT_LIMIT = 40000
+const PREPARATION_PREPLAN_BYTE_LIMIT = PREPARATION_INPUT_TEXT_LIMIT * 4
+
+function assertPreparationInputLength(field: string, text: string): void {
+  if (text.length > PREPARATION_INPUT_TEXT_LIMIT) {
+    throw new PreparationAdmissionError("mandate", `${field}: Ensemble input limit is ${PREPARATION_INPUT_TEXT_LIMIT} characters; received ${text.length}. Native fork history is not counted.`)
+  }
+}
+
 /** Public prompt payload. No structured-output field is added. */
 export interface PreparationPromptCall {
   sessionID: string
@@ -236,7 +245,8 @@ function preparationDossier(deps: ToolDeps, teamId: string | undefined, supervis
   if (request.before && request.history !== "checkpoint") throw new PreparationAdmissionError("mandate", "Preparation --before requires checkpoint history")
   const objective = (teamId ? storedObjective(deps.db, teamId) : request.text).trim()
   if (!objective) throw new PreparationAdmissionError("mandate", "prepare requires a mandate to open a mission draft")
-  if (request.text.length > 20000 || objective.length > 20000) throw new PreparationAdmissionError("mandate", "Preparation mandate exceeds 20000 characters")
+  assertPreparationInputLength("Preparation mandate", request.text)
+  assertPreparationInputLength("Stored mission objective", objective)
   let preplan: { path: string; content: string; hash: string } | undefined
   if (request.preplan) {
     try {
@@ -244,9 +254,10 @@ function preparationDossier(deps: ToolDeps, teamId: string | undefined, supervis
       const file = realpathSync(resolve(root, request.preplan))
       const local = relative(root, file)
       if (local === ".." || local.startsWith("../") || local.startsWith("..\\") || isAbsolute(local)) throw new Error("outside project")
-      if (!statSync(file).isFile() || statSync(file).size > 80000) throw new Error("must be a file of at most 80000 bytes")
+      if (!statSync(file).isFile() || statSync(file).size > PREPARATION_PREPLAN_BYTE_LIMIT) throw new Error(`Ensemble requires a file of at most ${PREPARATION_PREPLAN_BYTE_LIMIT} bytes`)
       const content = readFileSync(file, "utf8")
-      if (!content.trim() || content.length > 20000) throw new Error("must contain 1 to 20000 characters")
+      if (!content.trim()) throw new Error("must contain non-whitespace text")
+      assertPreparationInputLength("Preparation preplan", content)
       preplan = { path: local, content, hash: createHash("sha256").update(content).digest("hex") }
     } catch (error) { throw new PreparationAdmissionError("mandate", `Preparation preplan: ${messageOf(error)}`) }
   }
@@ -537,13 +548,13 @@ async function boundedWait(port: PreparationPort, sessionId: string): Promise<vo
   }
 }
 
-function documentIssue(reply: string): string {
+function documentIssue(reply: string): string | undefined {
   try {
     parsePreparationDocument(parseJson(reply))
   } catch (error) {
     return error instanceof PreparationDocumentError ? error.message : messageOf(error)
   }
-  return "Preparation document is invalid"
+  return undefined
 }
 
 async function boundedLoop(deps: ToolDeps, port: PreparationPort, runId: string, sessionId: string, teamId: string, agent: string, model: { id: string; variant?: string }, policy: ExecutionPolicy, mandate: string, readOnly: boolean, hooks?: PreparationObserver, initialize?: () => Promise<void>): Promise<PreparationRunResult> {
@@ -566,11 +577,13 @@ async function runBoundedLoop(deps: ToolDeps, port: PreparationPort, runId: stri
   const current = loadRun(deps.db, teamId)
   let issues = readIssues(current?.errors_json ?? null)
   let candidate = current?.candidate_json ?? ""
+  let pendingIssue = candidate.trim() ? documentIssue(candidate) : undefined
   let announced = false
   while (issues.length < PREPARATION_ATTEMPTS) {
-    const text = issues.length === 0
-      ? openingPrompt(dossierPrompt(current, mandate), readOnly)
-      : correctionPrompt(dossierPrompt(current, mandate), issues[issues.length - 1] ?? "Preparation document is invalid", candidate)
+    const mandateText = dossierPrompt(current, mandate)
+    const text = pendingIssue
+      ? correctionPrompt(mandateText, pendingIssue, candidate)
+      : openingPrompt(candidate.trim() ? `${mandateText}\n\nResume the schema-valid preparation using the supervisor clarifications above. Reassess its readiness and current blockers; this candidate was not rejected. Historical schema errors are already resolved and are not new blockers.\n\nPrevious schema-valid candidate (not execution approval):\n${candidate}` : mandateText, readOnly)
     await port.prompt({ sessionID: sessionId, text, delivery: "queue" })
     if (!announced) {
       announced = true
@@ -582,7 +595,8 @@ async function runBoundedLoop(deps: ToolDeps, port: PreparationPort, runId: stri
     const imported = await importReply(deps, port, runId, sessionId, teamId, agent, model, policy, reply)
     if (imported) return imported
     candidate = reply
-    issues = [...issues, documentIssue(reply)]
+    pendingIssue = documentIssue(reply) ?? "Preparation document is invalid"
+    issues = [...issues, pendingIssue]
     deps.db.run("UPDATE preparation_run SET attempts = ?, errors_json = ?, candidate_json = ?, time_updated = ? WHERE id = ? AND status = 'running'", [
       issues.length, JSON.stringify(issues), candidate, Date.now(), runId,
     ])
@@ -703,7 +717,7 @@ export async function executePreparation(deps: ToolDeps, sessionId: string, requ
       const model = modelPair(existingRun.model_id, existingRun.variant)
       const prepared = existingRun.session_id ?? await attachSession(deps, port, existingRun.id, existingRun.agent, model, false, sessionId)
       const initialize = request.resume ? async () => {
-        if (request.text.length > 20000) throw new Error("Resume clarification exceeds 20000 characters")
+        assertPreparationInputLength("Resume clarification", request.text)
         const notes = [...readIssues(existingRun.resume_notes_json), ...(request.text.trim() ? [request.text.trim()] : [])]
         await port.replacePermissions({ sessionID: prepared, agent: existingRun.agent })
         await recordPreflight(deps, port, existingRun.id, prepared, existingRun.agent)

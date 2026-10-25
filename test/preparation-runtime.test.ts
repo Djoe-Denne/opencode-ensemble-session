@@ -323,6 +323,62 @@ describe("preparation model selection", () => {
 })
 
 describe("preparation runtime", () => {
+  test.each([39999, 40000])("accepts a preparation mandate of %i characters without truncation", async length => {
+    const f = runtimeFixture([JSON.stringify(document())])
+    const text = "m".repeat(length)
+    const result = await executePreparation(f.deps, "lead", { kind: "pm", text, history: "fork" }, f.port)
+    expect(result.status).toBe("imported")
+    expect(f.prompts[0]?.text).toContain(text)
+    expect(f.deps.db.query("SELECT mandate FROM preparation_run").get()).toEqual({ mandate: text })
+  })
+
+  test("transmits a 27073-character stored objective alongside a short supplemental mandate", async () => {
+    const f = runtimeFixture([JSON.stringify(document())])
+    const objective = "o".repeat(27073)
+    await prepareMission(f.deps, "lead", objective)
+    await executePreparation(f.deps, "lead", { kind: "pm", text: "Review the stored mission" }, f.port)
+    expect(f.prompts[0]?.text).toContain(objective)
+    expect(f.prompts[0]?.text).toContain("Review the stored mission")
+    expect(f.deps.db.query("SELECT objective FROM mission_policy").get()).toEqual({ objective })
+  })
+
+  test("distinguishes overlong explicit mandates from stored objectives at the 40000-character boundary", async () => {
+    const explicit = runtimeFixture([])
+    await expect(executePreparation(explicit.deps, "lead", { kind: "pm", text: "m".repeat(40001) }, explicit.port)).rejects.toThrow(/Preparation mandate.*Ensemble.*40000.*40001/)
+    expect(explicit.calls.some(call => call.method === "create")).toBe(false)
+    const stored = runtimeFixture([])
+    await prepareMission(stored.deps, "lead", "o".repeat(40001))
+    await expect(executePreparation(stored.deps, "lead", { kind: "pm", text: "Short mandate" }, stored.port)).rejects.toThrow(/Stored mission objective.*Ensemble.*40000.*40001/)
+    expect(stored.calls.some(call => call.method === "create")).toBe(false)
+  })
+
+  test("accepts a 40000-character multibyte preplan without truncation and still bounds larger files", async () => {
+    const f = runtimeFixture([JSON.stringify(document())])
+    const content = "あ".repeat(40000)
+    writeFileSync(join(f.deps.directory, "preplan.md"), content)
+    await executePreparation(f.deps, "lead", { kind: "pm", text: "Objective", preplan: "preplan.md" }, f.port)
+    expect(f.prompts[0]?.text).toContain(content)
+    const row = f.deps.db.query("SELECT dossier_json FROM preparation_run").get() as { dossier_json: string }
+    expect(JSON.parse(row.dossier_json).preplan.content).toBe(content)
+    for (const [size, message] of [[40001, /40000.*40001/], [160001, /160000 bytes/]] as const) {
+      const rejected = runtimeFixture([])
+      writeFileSync(join(rejected.deps.directory, "preplan.md"), "p".repeat(size))
+      await expect(executePreparation(rejected.deps, "lead", { kind: "pm", text: "Objective", preplan: "preplan.md" }, rejected.port)).rejects.toThrow(message)
+      expect(rejected.calls.some(call => call.method === "create")).toBe(false)
+    }
+  })
+
+  test("applies the same explicit 40000-character limit to resume clarifications", async () => {
+    const blocked = { ...document(), readiness: { status: "blocked", reasons: ["Need clarification"], missingInformation: [] }, tasks: [], parallelGroups: [] }
+    const f = runtimeFixture([JSON.stringify(blocked), JSON.stringify(document())])
+    await executePreparation(f.deps, "lead", { kind: "pm", text: "Objective" }, f.port)
+    await expect(executePreparation(f.deps, "lead", { kind: "pm", text: "r".repeat(40001), resume: true }, f.port)).rejects.toThrow(/Resume clarification.*Ensemble.*40000.*40001/)
+    expect(f.prompts).toHaveLength(1)
+    const clarification = "r".repeat(40000)
+    const resumed = await executePreparation(f.deps, "lead", { kind: "pm", text: clarification, resume: true }, f.port)
+    expect(resumed.status).toBe("imported")
+    expect(f.prompts[1]?.text).toContain(clarification)
+  })
   test("retains blocked preparation without importing tasks or spending correction attempts", async () => {
     const blocked = { ...document(), version: 2, readiness: { status: "blocked", reasons: ["Functional objective is missing"], missingInformation: ["Supervisor contract"] }, tooling: { catalogue: "unverified", unavailable: ["serena"] }, tasks: [], parallelGroups: [] }
     const f = runtimeFixture([JSON.stringify(blocked), JSON.stringify(document())])
@@ -342,6 +398,55 @@ describe("preparation runtime", () => {
     expect(f.prompts[1]?.text).toContain("Contract now available")
     expect(f.calls.filter(call => call.method === "create")).toHaveLength(1)
     expect(f.calls.filter(call => call.method === "replacePermissions")).toHaveLength(2)
+  })
+
+  test("resumes valid blocked candidates without replaying resolved schema errors", async () => {
+    const invalid = document()
+    for (const task of invalid.tasks as Array<Record<string, unknown>>) delete (task.planning as Record<string, unknown>).reason
+    const blocked = { ...document(), readiness: { status: "blocked", reasons: ["Need the current contract"], missingInformation: ["Contract"] } }
+    const incomplete = { ...document(), readiness: { status: "incomplete", reasons: ["Need acceptance evidence"], missingInformation: ["Evidence"] } }
+    const f = runtimeFixture([invalid, blocked, incomplete, invalid, document()].map(value => JSON.stringify(value)))
+    const first = await executePreparation(f.deps, "lead", { kind: "pm", text: "Objective", history: "fork" }, f.port)
+    expect(first.status).toBe("blocked")
+    expect(f.prompts[1]?.text).toContain("planning.reason must be a string")
+    const history = f.deps.db.query("SELECT attempts, errors_json FROM preparation_run").get()
+    expect(history).toMatchObject({ attempts: 1 })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 0 })
+    const second = await executePreparation(f.deps, "lead", { kind: "pm", text: "The contract is now available", resume: true }, f.port)
+    expect(second.status).toBe("incomplete")
+    expect(f.prompts[2]?.text).not.toContain("The previous preparation document was rejected.")
+    expect(f.prompts[2]?.text).not.toContain("planning.reason must be a string")
+    expect(f.prompts[2]?.text).toContain(JSON.stringify(blocked))
+    expect(f.prompts[2]?.text).toContain("The contract is now available")
+    expect(f.deps.db.query("SELECT attempts, errors_json FROM preparation_run").get()).toEqual(history)
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 0 })
+    const third = await executePreparation(f.deps, "lead", { kind: "pm", text: "Acceptance evidence supplied", resume: true }, f.port)
+    expect(third.status).toBe("imported")
+    expect(f.prompts[3]?.text).not.toContain("The previous preparation document was rejected.")
+    expect(f.prompts[3]?.text).toContain(JSON.stringify(incomplete))
+    expect(f.prompts[3]?.text).toContain("The contract is now available")
+    expect(f.prompts[3]?.text).toContain("Acceptance evidence supplied")
+    expect(f.prompts[4]?.text).toContain("The previous preparation document was rejected.")
+    expect(f.prompts[4]?.text).toContain("planning.reason must be a string")
+    expect(f.deps.db.query("SELECT attempts FROM preparation_run").get()).toEqual({ attempts: 2 })
+    expect(f.calls.filter(call => call.method === "create")).toHaveLength(1)
+    expect(f.calls.find(call => call.method === "create")?.args).toMatchObject({ history: "fork" })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 1 })
+  })
+
+  test("keeps the schema correction budget across a valid blocked pause", async () => {
+    const invalid = document()
+    for (const task of invalid.tasks as Array<Record<string, unknown>>) delete (task.planning as Record<string, unknown>).reason
+    const blocked = { ...document(), readiness: { status: "blocked", reasons: ["Need contract"], missingInformation: [] } }
+    const f = runtimeFixture([invalid, blocked, ...Array.from({ length: 5 }, () => invalid)].map(value => JSON.stringify(value)))
+    await executePreparation(f.deps, "lead", { kind: "pm", text: "Objective" }, f.port)
+    const result = await executePreparation(f.deps, "lead", { kind: "pm", text: "Contract supplied", resume: true }, f.port)
+    expect(result.status).toBe("exhausted")
+    expect(f.prompts[2]?.text).not.toContain("The previous preparation document was rejected.")
+    expect(f.prompts).toHaveLength(7)
+    expect(f.deps.db.query("SELECT attempts, status FROM preparation_run").get()).toEqual({ attempts: 6, status: "exhausted" })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 0 })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM team_task").get()).toEqual({ c: 0 })
   })
 
   test("rejects a ready candidate with blocking questions or unverified tooling", async () => {

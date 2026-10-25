@@ -39,10 +39,15 @@ and opens execution. Publishing tasks early does not start workers. See
 - On a new session, `<mandat>` is required.
 - On an existing draft, `<mandat>` supplements the stored objective. Both are
   transmitted even when the mandate is explicit. Multiline text is preserved.
+- Explicit mandates, stored objectives and resume clarifications each allow
+  40000 characters (JavaScript string length). This Ensemble guard prevents
+  accidental oversized input; it is not a native OpenCode context limit and
+  does not count fork/checkpoint history. Output-document and intervention
+  limits below remain unchanged.
 - Options precede the mandate; quote paths containing spaces. Unknown and
   duplicate options are rejected. `--` ends option parsing.
 - `--preplan` snapshots a nonempty project-local file (including realpath
-  containment), up to 20000 characters / 80000 bytes. Missing, external and
+  containment), up to 40000 characters / 160000 bytes. Missing, external and
   oversized files fail before native session creation; nothing is truncated.
 - `--history none` (default) creates a fresh child. `fork` explicitly inherits
   the supervisor's projected native context; `checkpoint` requires `--before`

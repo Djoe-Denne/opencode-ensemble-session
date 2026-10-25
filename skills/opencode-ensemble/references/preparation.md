@@ -30,7 +30,11 @@ The validated user command is:
 mandate is required. On an existing draft it is optional, and the stored
 objective is always transmitted; explicit instructions supplement it. Multiline
 mandates are preserved. Options precede the mandate; quote paths with spaces.
-`--preplan` freezes a project-local file (at most 20000 characters / 80000 bytes).
+`--preplan` freezes a project-local file (at most 40000 characters / 160000 bytes).
+Explicit mandates, stored objectives and resume clarifications each allow 40000
+characters (JavaScript string length). These are Ensemble input guards, not native
+OpenCode context limits: fork/checkpoint history is not counted. Output-document
+and intervention-contract limits are separate and unchanged.
 History defaults to none. Fork/checkpoint opt in to the supervisor's projected
 native context, without compaction or fresh fallback; checkpoint requires an
 exclusive source message boundary via --before. The dossier, source and hash
