@@ -11,14 +11,28 @@ function insertTask(db: Database, teamId: string, id: string, status: string, pr
 }
 
 describe("buildLeadSystemPrompt", () => {
+  test("worker reports and milestones do not imply a new user go", () => {
+    const db = setupDb()
+    insertTeam(db, "decisions", "decisions", "lead")
+    const prompt = buildLeadSystemPrompt(db, "decisions")
+    expect(prompt).not.toContain("After spawning all teammates, tell the user what you've set up and wait.")
+    expect(prompt).not.toContain("When all teammates finish, summarize results and suggest next steps.")
+    expect(prompt).toContain("await worker reports, not a new user go")
+    expect(prompt).toContain("continue the next authorized step")
+  })
+
   test("keeps checkpoint reporting with the lead across compaction, not with workers", () => {
     const db = setupDb()
     insertTeam(db, "report-team", "reporting", "lead-sess")
     insertMember(db, "report-team", "worker", "worker-sess")
     const lead = buildLeadSystemPrompt(db, "report-team")
     expect(lead).toContain("Before every user question")
+    expect(lead).toContain("has not read earlier reports")
+    expect(lead).toContain("brief optional glossary")
     expect(lead).toContain(".opencode/missions/report-team/reports")
     expect(buildTeamCompactionContext(db, "report-team", "lead")).toContain("Before every user question")
+    expect(buildTeamCompactionContext(db, "report-team", "lead")).toContain("question-tool payload")
+    expect(buildTeamCompactionContext(db, "report-team", "lead")).toContain("Never use a bare task/acceptance code")
     expect(buildTeammateSystemPrompt(db, "report-team", "worker")).not.toContain("Before every user question")
     expect(buildTeamCompactionContext(db, "report-team", "member", "worker")).not.toContain("Before every user question")
     expect(buildLeadSystemPrompt(db, "missing")).toBe("")

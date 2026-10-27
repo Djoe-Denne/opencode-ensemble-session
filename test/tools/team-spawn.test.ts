@@ -369,6 +369,16 @@ describe("team_spawn", () => {
     expect(text).toContain("<summary>")
   })
 
+  test("routine worker decisions are not escalated as blockers but explicit plan approval remains", async () => {
+    await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "Fix tests", plan_approval: true }, "lead-sess")
+    const promptCall = deps.client.calls.find(c => c.method === "session.promptAsync")
+    const text = (promptCall!.args[0] as { parts: Array<{ text: string }> }).parts[0]!.text
+    expect(text).not.toContain("Do NOT attempt workarounds or make assumptions")
+    expect(text).toContain("safe in-scope alternatives")
+    expect(text).toContain("Do NOT write or modify any files until the lead approves your plan")
+    expect(text).toContain("Wait for the lead's approval message")
+  })
+
   test("read-only agent gets shorter tool list without write tools", async () => {
     await executeTeamSpawn(deps, {
       name: "alice", agent: "explore", prompt: "Research",

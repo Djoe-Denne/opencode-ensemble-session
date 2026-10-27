@@ -371,7 +371,17 @@ export const MIGRATIONS: string[] = [
    ALTER TABLE preparation_run ADD COLUMN dossier_hash TEXT;
    ALTER TABLE preparation_run ADD COLUMN readiness TEXT CHECK(readiness IN ('ready', 'blocked', 'incomplete'));
    ALTER TABLE preparation_run ADD COLUMN preflight_json TEXT;
-   ALTER TABLE preparation_run ADD COLUMN resume_notes_json TEXT;`,
+    ALTER TABLE preparation_run ADD COLUMN resume_notes_json TEXT;`,
+  // Migration 27: deduplicate supervisor recovery and retry failed wake delivery across reloads.
+  `CREATE TABLE supervisor_recovery (
+      team_id TEXT PRIMARY KEY REFERENCES team(id) ON DELETE CASCADE,
+      fingerprint TEXT NOT NULL,
+      message_id TEXT REFERENCES team_message(id) ON DELETE SET NULL,
+      last_attempt INTEGER NOT NULL
+    );`,
+  // Migration 28: task-level context contracts and single-use new-session admission.
+  `ALTER TABLE team_task ADD COLUMN spawn_context TEXT;
+   ALTER TABLE team_member ADD COLUMN context_task_id TEXT;`,
 ]
 
 /**

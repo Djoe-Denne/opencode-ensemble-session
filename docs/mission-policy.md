@@ -57,6 +57,19 @@ Reports include context, observed evidence, limitations and, when a decision is
 needed, options/tradeoffs/recommendation. Link the artifact and summarize it before
 asking. Reuse valid evidence; reporting adds neither approval gates nor test runs.
 
+Reports and questions use plain, natural language for a user who has not read
+previous reports or seen internal reasoning. Lead with the goal, concrete
+problem, practical consequences, why a decision is needed and a recommendation.
+Use descriptive work/feature names before optional internal task IDs. Explain
+unavoidable terms at first use; add a short glossary only when useful. Keep
+hashes, commits, raw paths and dense proof details in a later evidence section.
+The chat summary and the question-tool payload must each be self-contained:
+links are supplementary, not required reading. Option labels describe real
+actions, with their effects, tradeoffs and limits in the descriptions. Preserve
+facts versus hypotheses, meaningful scope/permission limits and unexecuted checks;
+do not simplify by inventing results, timings or costs. Mandatory exact tool
+approval labels remain unchanged and are explained in the question's context.
+
 Canvas is optional and requires a running owned loopback preview backend with
 verified HTTP/content and a recorded handle/URL. Keep it accessible while the user
 decides and stop only the owned preview when no longer needed. If serving is
@@ -69,6 +82,85 @@ report was written or that a preview backend is running. The mission schema and
 approval hash are unchanged. See the operational skill's mission-reporting guide.
 
 ## Durable policy
+
+### Decisions and milestone continuation in both modes
+
+`supervised` does **not** mean requiring user approval at every milestone.
+Supervisors and workers decide routine technical/organizational details within
+the current authorized phase, scope and plan. Ordinary worker disagreements are
+resolved by the lead using evidence. After a checkpoint, review, QA result or
+worker completion, report progress and continue the next authorized step after
+integration and required checks; do not invent a new user go. Waiting for a
+necessary worker result remains legitimate. Workers still stop and report after
+their own assignment; continued mission coordination belongs to the lead.
+
+Ask before changing the mission objective or making an architectural change not
+already authorized in the mandate/plan. Architectural changes materially affect
+system boundaries, component responsibilities, public or persisted contracts,
+storage design or trust/security boundaries. Private helper refactors, local
+implementation choices and compatible fixes are not architectural by themselves.
+An already-approved architectural step does not require duplicate permission.
+
+Explicit user holds, initial or revised policy approval (`config` then `start`),
+mandatory lead plan review, native permissions, budget and safety/QA gates remain
+binding. Explain the exact boundary for a real blocker; continue independent
+authorized work where safe. A stable shared decision-boundary suffix is appended
+to system instructions for both modes and compaction, before any optional
+approved long-run priorities. It does not activate a draft or grant permissions.
+
+### Long-run decision delegation
+
+Long run is an approved delegation of decisions, not just resilience to a failed
+classifier. In the mission draft (policy versions 1, 2 and 3), persist the user's
+general decision priorities independently of classification:
+
+```json
+{
+  "autonomy": {
+    "mode": "long_run",
+    "instructions": [
+      "Preserve the original plan and prioritize quality over speed.",
+      "Choose implementation details without asking me; prefer reversible decisions."
+    ]
+  }
+}
+```
+
+This is a fragment of `model-policy.json`, not global configuration. For a
+speed-oriented mission the user could instead request the fastest correct
+implementation and defer nonessential improvements. Capture the user's actual
+priorities; do not invent them or turn routine choices into a questionnaire.
+Long run requires at least one nonempty instruction (at most 50, 2000 characters
+each). Present the edited policy with `config`; only the user's `start` approves
+and activates that exact revision. A draft, ordinary chat or classifier setting
+cannot activate the delegation.
+
+After approval the plugin appends a separate stable system block **after** the
+existing host/team instructions, for the lead and all workers, including
+compaction. It reads the last approved database revision, never the draft. No
+task state, timestamp or revision counter enters this block. Reconfiguration
+pauses new admission but leaves the existing approved delegation in force until
+another contract is approved. The block changes only when approved autonomy
+changes; appending it preserves the earlier system prefix but does not guarantee
+provider cache hits. Worker model/QA admissions retain their existing revisions.
+
+The model decides technical and organizational choices within its mandate,
+records consequential decisions briefly, and continues without confirmation.
+Uncertainty or multiple valid options alone are not hard blockers. Before
+escalation it checks existing authorization, delivery to workers and safe
+alternatives. Workers escalate unresolved boundaries to the lead through their
+permitted reporting channel; the lead decides within the delegation before
+asking the user. Only a genuine inability to choose compliantly warrants a user
+question: conflicting requirements, indispensable missing authority/access, an
+irreversible action outside the mandate, or an impossible objective. Independent
+work continues where safe. Permissions, explicit prohibitions, approved budgets,
+QA and critical safety/admission stops remain mandatory.
+
+Approve `autonomy: { "mode": "supervised" }` to revoke the delegation. Approved
+autonomy also determines classifier resilience; changing classifier settings
+cannot downgrade it. Existing `classification.missionMode` remains compatible
+for historical resilience-only policies, but does not inject a decision contract
+or silently migrate an existing mission.
 
 QA is configured in the same mission discussion with
 `verification: { "level": "light" | "proportionate" | "reinforced", "commands": [], "acceptance": [] }`.

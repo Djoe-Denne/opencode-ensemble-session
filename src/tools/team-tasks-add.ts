@@ -1,4 +1,5 @@
-import type { ToolDeps } from "../types"
+import type { SpawnContext, ToolDeps } from "../types"
+import { taskSpawnContext } from "../session-continuity"
 import { requireTeamMember } from "./shared"
 import { generateId } from "../util"
 import { pumpTeam } from "../dispatch"
@@ -15,6 +16,8 @@ interface TaskInput {
   depends_on?: string[]
   /** Optional agent type affinity for pool dispatch (docs/task-pool.md). */
   agent?: string
+  /** Requires a new session satisfying this context, never idle-worker reuse. */
+  context?: SpawnContext
   complexity?: number
   risk?: number
   task_type?: string
@@ -42,6 +45,7 @@ export async function executeTeamTasksAdd(
     return value
   }
   const requests = args.tasks.map(task => task.execution === undefined ? undefined : request(task.execution))
+  const contexts = args.tasks.map(task => task.context === undefined ? undefined : taskSpawnContext(task.context, sessionId))
   const updates = decisions.map(decision => ({ taskID: decision.task_id, decision: request(decision) }))
   updates.forEach(({ taskID }) => {
     const row = deps.db.query("SELECT status, assignee, model_routing FROM team_task WHERE id=? AND team_id=?").get(taskID, teamInfo.teamId) as { status: string; assignee: string | null; model_routing: string | null } | null
@@ -120,6 +124,7 @@ export async function executeTeamTasksAdd(
         "INSERT INTO team_task (id, team_id, content, status, priority, depends_on, agent, complexity, risk, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [id, teamInfo.teamId, task.content, resolved ? "pending" : "blocked", task.priority, depsJson, agent, task.complexity ?? null, task.risk ?? null, now, now]
       )
+      if (contexts[index]) deps.db.run("UPDATE team_task SET spawn_context=? WHERE id=?", [JSON.stringify(contexts[index]), id])
       deps.db.run("UPDATE team_task SET task_type = ?, classification_input = ?, classification_status = ? WHERE id = ?",
         [task.task_type ?? null, task.classification_input ? JSON.stringify(task.classification_input) : null,
           policy && (policy.method !== "manual" || (policy.specialized && task.task_type === "x86")) && (task.complexity === undefined || task.risk === undefined) ? "pending" : "not_required", id])

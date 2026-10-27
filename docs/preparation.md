@@ -293,9 +293,19 @@ underscore, or hyphen.
 | `sources[].note` | 1 to 2000 characters saying what the path contributes |
 
 Unknown keys are rejected, including `kind`, `mode`, `model`, `variant`,
-`reason`, `priority`, and `agent`. The business type is the only type field.
+`reason`, and `priority`. The business type is the only type field.
 Execution kind and planned/direct mode are derived later. They are not JSON
 input.
+
+Tasks may also include `agent` (a verified native profile, 1 to 200 characters)
+and `context` using the `team_spawn` shape: `mode` is `fresh`, `fork`,
+`checkpoint`, or `compact_fork`, with optional `from` and a checkpoint-only
+exclusive native `messageID`. These are preserved on the imported board task.
+Explicit context requires a new session and enforces the requested profile;
+it cannot be satisfied by reusing an old worker. Independent review/QA should
+specify `{ "mode": "fresh" }`. Omitted context preserves pool reuse. For imported
+tasks, omitted `from`/`current` means the supervisor session, not the temporary
+PM session. See [task pool](task-pool.md) for capacity and failure behavior.
 
 Dependencies must form a DAG. An unknown id, a duplicate id, a self-dependency,
 and a longer cycle are all rejected. The cycle message names the ids in order.

@@ -1,5 +1,6 @@
 import { CANONICAL_EFFORTS, canonicalizeVariantLabel, type CanonicalEffort } from "./variant-effort"
 import { validateVerificationPolicy, type VerificationPolicy } from "./verification-policy"
+import { validateMissionAutonomyPolicy, type MissionAutonomyPolicy } from "./mission-autonomy"
 
 /** An exact native provider/model identity, optional native variant, and optional effort annotation. */
 export interface MissionPolicyModel {
@@ -22,6 +23,7 @@ export interface MissionModelPolicy {
   groups: Record<string, MissionPolicyModel[]>
   matrix: string[][]
   verification?: VerificationPolicy
+  autonomy?: MissionAutonomyPolicy
 }
 
 /** A deterministic primary and ordered fallback route, with zero-based band indexes. */
@@ -130,8 +132,9 @@ function validateModel(value: unknown, path: string, providers: Set<string>): as
 export function validateMissionModelPolicy(policy: unknown): asserts policy is MissionModelPolicy {
   assertObject(policy, "policy", [
     "version", "providers", "assessment", "complexityBands", "riskBands", "groups", "matrix",
-  ], ["verification"])
+  ], ["verification", "autonomy"])
   if (policy.verification !== undefined) validateVerificationPolicy(policy.verification)
+  if (policy.autonomy !== undefined) validateMissionAutonomyPolicy(policy.autonomy)
   if (policy.version !== 1) invalid("policy.version", "must be 1")
 
   assertArray(policy.providers, "policy.providers")

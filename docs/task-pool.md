@@ -12,7 +12,7 @@ existing behavior exactly.
 1. **Determinism for arithmetic, judgment for matching.** A cap and a queue
    are arithmetic — the plugin enforces them. Task affinity (which agent type
    should take which task) is judgment — the lead declares it, members can
-   still claim freely.
+    still claim freely unless a task explicitly requires a new-session context.
 2. **Explicit refusal over silent queueing.** When the cap is reached,
    `team_spawn` fails with a clear error. No hidden spawn queue, no hidden
    state machine: the lead decides whether to shut a member down or raise the
@@ -53,8 +53,43 @@ Migration 12 adds a nullable `agent` column to `team_task`:
 - `team_tasks_add` accepts an optional `agent` per task (the agent *type*,
   e.g. `"build"`). Empty/whitespace values are stored as NULL.
 - `team_tasks_list` renders it as `@agent`.
-- Manual `team_claim` is unchanged — any member may claim any pending task.
-  Affinity guides dispatch ordering; it never forbids a claim.
+- Without a task `context`, manual `team_claim` is unchanged: affinity only
+  guides dispatch ordering. With `context`, the requested profile is enforced
+  at new-session admission.
+
+## Task Context Contracts
+
+`team_tasks_add` accepts `context` per task, as does each task in a PM preparation
+document. The contract is persisted before dispatch can run:
+
+```ts
+team_tasks_add({ tasks: [{
+  content: "Independent review of the implementation",
+  agent: "qa", // Use an available native profile.
+  context: { mode: "fresh" },
+}] })
+```
+
+- Omitted `context` preserves existing pool reuse. Explicit `fresh` requires a
+  new session without inherited conversation history, not merely an idle agent
+  whose original spawn was fresh.
+- `fork`, `checkpoint`, and `compact_fork` use the same `from` and `messageID`
+  contract as `team_spawn`. Checkpoint boundaries are exclusive. Compaction
+  changes the distinct idle source before forking it.
+- A task's omitted `from`/`current` is frozen to the task creator. In PM imports
+  it means the supervisor session, not the temporary PM session. Use an explicit
+  source for any other team session; a task ID is not a session or checkpoint.
+- Existing sessions cannot take context-bound tasks through auto-dispatch or
+  manual `team_claim`. `team_spawn({ claim_task: id, ... })` inherits the stored
+  context and profile when omitted; conflicting overrides are rejected before
+  allocating resources. Admission is single-use: retrying released work needs
+  another new session.
+- With `autoScale`, the pool spawns the required session within its usual cap.
+  With scaling disabled or no free slot, the task stays pending. Shut down an
+  idle member or adjust the cap explicitly; the plugin never discards its work
+  to free a slot. Unsupported inheritance fails without a fresh/reuse fallback.
+- `team_tasks_list` displays the stored context alongside the profile. Old tasks
+  are not retroactively given a context contract.
 
 ## Auto-Dispatch (`autoDispatch`)
 
@@ -64,7 +99,7 @@ adapter), after the existing idle-without-report nudge:
 1. **Guards** — `autoDispatch` on, member row `status = 'ready'`,
    `spawn_pending = 0`, session known to the registry.
 2. **Selection** (`pickNextTask`) — tasks with `status = 'pending'` and
-   `assignee IS NULL` where `agent IS NULL OR agent = <member agent>`,
+    `assignee IS NULL`, no context contract, and `agent IS NULL OR agent = <member agent>`,
    ordered: exact affinity match first, then high > medium > low, then FIFO.
 3. **Atomic claim** — `claimTask` (the same invariant as `team_claim`). On a
    lost race the next candidate is tried (bounded at 5).
@@ -112,10 +147,8 @@ and use `team_shutdown`/`team_cleanup` to reclaim.
 
 - **Per-agent-type caps** — one global cap; per-slot pools need demand.
 - **Queued spawns** — refused, not buffered.
-- **Continuity-aware chaining** — dispatch reuses the member's current
-  session as-is. Per-task `fork`/`checkpoint`/`handoff` chaining (fresh
-  context per unrelated task) is future work; until then, prefer shutting a
-  member down between unrelated missions over long unbounded sessions.
+- **Automatic handoff chaining** — task context contracts create new sessions;
+  in-place profile changes still require explicit `team_handoff`.
 - **Auto-shutdown at queue drain** — the lead shuts down; dispatch never
   terminates members.
 
@@ -129,3 +162,5 @@ and use `team_shutdown`/`team_cleanup` to reclaim.
   default, refused spawn allocates no worktree.
 - `test/tools/team-tasks.test.ts` — `agent` stored, rendered in list.
 - `test/config.test.ts` — parsing + env override.
+- `test/task-context.test.ts` — persisted context, new-session-only claims,
+  fresh/fork/checkpoint/compact-fork scheduling, capacity and failure guards.

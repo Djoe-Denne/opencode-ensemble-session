@@ -655,13 +655,37 @@ on critical budget or cleanup failures without aborting existing workers.
 See [task classification](docs/task-classification.md) for configuration,
 provenance, user-approved policy updates and restart recovery.
 
+In both modes, routine implementation and coordination decisions stay with the
+agents within the authorized phase and plan. A milestone, QA result or completed
+worker does not require a new user go. Ask before an unapproved architectural
+change or a change to the mission objective; explicit holds, permissions,
+budgets, QA and initial/revised policy approval remain binding. Long-run decision
+priorities are configured separately in the approved `autonomy` contract; see
+[mission decision boundaries](docs/mission-policy.md#decisions-and-milestone-continuation-in-both-modes).
+
+## Permission diagnostics
+
+On V2, recognized permission/tool-access failures are recorded locally under
+`~/.config/opencode/diagnostics/permissions/YYYY-MM-DD.jsonl`. Records identify the
+session, known parent/agent/team, tool and catalogue namespace without retaining
+tool arguments, raw errors or credentials. The read-only viewer distinguishes
+permission refusals from user rejection, filesystem/remote authorization failures
+and unavailable tools; it never changes rights or retries a failed action.
+
+```sh
+bun run diagnose:permissions -- --session ses_example --limit 25
+```
+
+See [permission diagnostics](docs/permission-diagnostics.md) for filters, JSON
+export, privacy, partial-result warnings and limits of native event coverage.
+
 ## Best practices
 
 - Start with 2-3 teammates. More agents means more coordination overhead.
 - Give each teammate specific, self-contained tasks. Vague prompts produce vague results.
 - Choose profiles and context transitions for the mission. Reuse relevant native research through a fork, continue a session through handoff, or start fresh when independence is useful.
 - Use `worktree: false` for read-only agents (research, review, code analysis).
-- Use `plan_approval: true` for risky changes. The teammate sends a plan first, you review and approve before they write any code.
+- Use `plan_approval: true` when the mission/project requires plan review. The teammate sends a plan and the lead approves before implementation; this is not automatically a new user go.
 - Don't micromanage. Teammates message you when done or when they're blocked.
 - Don't poll `team_status` in a loop. Wait for messages.
 

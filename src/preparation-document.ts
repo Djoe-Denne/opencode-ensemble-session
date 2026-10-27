@@ -1,4 +1,6 @@
 import { validateExecutionPolicy, validateTaskExecutionDecision, type ExecutionPolicy, type TaskExecutionDecision } from "./execution-policy"
+import type { SpawnContext } from "./types"
+import { parseSpawnContext } from "./session-continuity"
 
 /** Version of the PM preparation document. */
 export const PREPARATION_DOCUMENT_VERSION = 2
@@ -35,6 +37,8 @@ export interface PreparationTask {
   acceptanceCriteria: string[]
   verification: string[]
   handoff: PreparationHandoff
+  agent?: string
+  context?: SpawnContext
 }
 
 /** Question returned to the supervisor, never delegated as a worker note. */
@@ -82,7 +86,7 @@ const TASK_KIND: Record<PreparationTaskType, TaskExecutionDecision["kind"]> = {
 
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/
 const DOCUMENT_KEYS = ["version", "context", "openQuestions", "tasks", "parallelGroups"]
-const TASK_KEYS = ["id", "title", "type", "goal", "dependsOn", "planning", "acceptanceCriteria", "verification", "handoff"]
+const TASK_KEYS = ["id", "title", "type", "goal", "dependsOn", "planning", "acceptanceCriteria", "verification", "handoff", "agent", "context"]
 const MAX_DOCUMENT_JSON = 200_000
 
 /** Validation failure that lists every document issue. */
@@ -241,6 +245,12 @@ function readTask(value: unknown, index: number, issues: string[]): PreparationT
   const acceptanceCriteria = readStringList(value.acceptanceCriteria, `${field}.acceptanceCriteria`, issues)
   const verification = readStringList(value.verification, `${field}.verification`, issues)
   const handoff = readHandoff(value.handoff, `${field}.handoff`, issues)
+  const agent = value.agent === undefined ? undefined : readText(value.agent, `${field}.agent`, issues, 1, 200)
+  let context: SpawnContext | undefined
+  if (value.context !== undefined) {
+    try { context = parseSpawnContext(value.context) }
+    catch (error) { issues.push(`${field}.context: ${error instanceof Error ? error.message : String(error)}`) }
+  }
   const type = typeof value.type === "string" && isTaskType(value.type) ? value.type : undefined
   if (!type) issues.push(`${field}.type must be one of ${PREPARATION_TASK_TYPES.join(", ")}`)
   let planning: PreparationTask["planning"] | undefined
@@ -252,7 +262,7 @@ function readTask(value: unknown, index: number, issues: string[]): PreparationT
     if (typeof value.planning.required === "boolean" && reason) planning = { required: value.planning.required, reason }
   }
   if (!id || !title || !type || !goal || !dependsOn || !planning || !acceptanceCriteria || !verification || !handoff) return undefined
-  return { id, title, type, goal, dependsOn, planning, acceptanceCriteria, verification, handoff }
+  return { id, title, type, goal, dependsOn, planning, acceptanceCriteria, verification, handoff, ...(agent ? { agent } : {}), ...(context ? { context } : {}) }
 }
 
 function readTasks(value: unknown, issues: string[]): { ok: boolean; tasks: PreparationTask[] } {

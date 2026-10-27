@@ -3,10 +3,11 @@ import { requireTeamMember } from "./shared"
 import type { TaskExecutionDecision } from "../execution-policy"
 
 function executionSummary(task: Record<string, unknown>): string {
+  const context = typeof task.spawn_context === "string" ? ` [context:${task.spawn_context}]` : ""
   const raw = task.execution_decision ?? task.execution_request
-  if (typeof raw !== "string") return ""
+  if (typeof raw !== "string") return context
   const decision = JSON.parse(raw) as TaskExecutionDecision
-  return ` [execution:${task.execution_decision ? "authorized" : "proposed"} ${decision.mode} ${decision.kind}${decision.model ? ` ${decision.model}${decision.variant ? `#${decision.variant}` : ""}` : ""}${decision.reason ? ` reason:${JSON.stringify(decision.reason)}` : ""}]`
+  return `${context} [execution:${task.execution_decision ? "authorized" : "proposed"} ${decision.mode} ${decision.kind}${decision.model ? ` ${decision.model}${decision.variant ? `#${decision.variant}` : ""}` : ""}${decision.reason ? ` reason:${JSON.stringify(decision.reason)}` : ""}]`
 }
 
 /**

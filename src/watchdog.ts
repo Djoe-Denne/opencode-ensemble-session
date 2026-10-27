@@ -9,6 +9,7 @@ import { getMemberPromptModel } from "./member-model"
 import { notifyLead } from "./notify"
 import { log } from "./log"
 import { liveCheckoutBranch, storePreservedBranch } from "./worktree-state"
+import { SupervisorRecovery } from "./supervisor-recovery"
 
 interface WatchdogOpts {
   db: Database
@@ -52,6 +53,7 @@ export class Watchdog {
   private readonly peerMessageLimit: number
   private readonly peerMessageWindowMs: number
   private timer: ReturnType<typeof setInterval> | undefined
+  private readonly supervisorRecovery?: SupervisorRecovery
 
   constructor(opts: WatchdogOpts) {
     this.db = opts.db
@@ -66,6 +68,7 @@ export class Watchdog {
     this.cwd = opts.cwd
     this.peerMessageLimit = opts.peerMessageLimit ?? 0
     this.peerMessageWindowMs = opts.peerMessageWindowMs ?? 300_000
+    if (opts.cwd) this.supervisorRecovery = new SupervisorRecovery({ db: opts.db, client: opts.client, projectId: opts.cwd })
   }
 
   private static STALE_THRESHOLD_MS = Number(process.env.STALE_WORKTREE_THRESHOLD_MS) || 300_000
@@ -318,10 +321,12 @@ export class Watchdog {
   start(): void {
     if (this.timer) return
     this.timer = setInterval(() => this.check(), this.checkIntervalMs)
+    this.supervisorRecovery?.start()
   }
 
   /** Stop the periodic check. */
   stop(): void {
+    this.supervisorRecovery?.stop()
     if (this.timer) {
       clearInterval(this.timer)
       this.timer = undefined

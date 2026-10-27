@@ -5,7 +5,7 @@ import { MEMBER_TOOLS } from "../v2-continuity"
 import { lintAgentProfile } from "../profile-lint"
 import { admitWorktree, isEnsembleWorktree, worktreeSlug } from "../worktree-guard"
 import { storePreservedBranch } from "../worktree-state"
-import { resolveSpawnContext, rollbackInheritedSpawn } from "../session-continuity"
+import { parseSpawnContext, resolveSpawnContext, rollbackInheritedSpawn } from "../session-continuity"
 import { validateMemberName } from "../util"
 import { requireLead } from "./shared"
 import { claimTask } from "./team-claim"
@@ -94,7 +94,6 @@ export async function executeTeamSpawn(
   // Normalize agent: the tool schema defaults to "build", but Zod's .default()
   // only fires on undefined — an explicit null slips through and would violate
   // the team_member.agent NOT NULL constraint (issue #28).
-  const agent = args.agent ?? "build"
   const finalResponse = args.report_mode === "final_response"
   if (args.report_mode !== undefined && !["team_message", "final_response"].includes(args.report_mode)) throw new Error("Invalid report_mode")
 
@@ -102,10 +101,21 @@ export async function executeTeamSpawn(
   if (nameError) throw new Error(nameError)
 
   const teamInfo = requireLead(deps, sessionId)
+  const taskContract = args.claim_task
+    ? deps.db.query("SELECT agent, spawn_context FROM team_task WHERE id=? AND team_id=?").get(args.claim_task, teamInfo.teamId) as { agent: string | null; spawn_context: string | null } | null
+    : null
+  const taskContext = taskContract?.spawn_context != null ? parseSpawnContext(JSON.parse(taskContract.spawn_context)) : undefined
+  const agent = args.agent ?? (taskContext ? taskContract?.agent : undefined) ?? "build"
+  if (taskContext && taskContract?.agent && agent !== taskContract.agent) throw new Error("Task context requires the requested agent profile")
   assertMissionAdmission(deps.db, teamInfo.teamId)
   const mission = deps.db.query("SELECT mission_state FROM team WHERE id = ?").get(teamInfo.teamId) as { mission_state: string }
   if (mission.mission_state === "critical") throw new Error("Mission is critical; resolve the classification safety/budget failure before spawning")
-  const inheritance = resolveSpawnContext(deps, args.context, teamInfo.teamId, sessionId)
+  const inheritance = resolveSpawnContext(deps, taskContext ?? args.context, teamInfo.teamId, sessionId)
+  if (taskContext && args.context !== undefined) {
+    if (parseSpawnContext(args.context).mode !== taskContext.mode) throw new Error("Spawn context conflicts with the task context contract")
+    const explicit = resolveSpawnContext(deps, args.context, teamInfo.teamId, sessionId)
+    if (JSON.stringify(explicit) !== JSON.stringify(inheritance)) throw new Error("Spawn context conflicts with the task context contract")
+  }
   const inherited = inheritance.mode !== "fresh"
   const continuity = deps.client.continuity
 
@@ -373,7 +383,7 @@ export async function executeTeamSpawn(
 
   // Auto-claim a task for this teammate when claim_task is provided (issue #27).
   // Claims atomically so a task is never double-assigned when the lead hands out
-  // more tasks than there are teammates. Read-only agents cannot claim tasks.
+  // more tasks than there are teammates. Context-bound reviews also admit read-only agents.
   let claimedTaskContent: string | null = null
   let claimWarning: string | null = null
   const allocatedSessionId = childSessionId
@@ -412,14 +422,15 @@ export async function executeTeamSpawn(
       if (JSON.stringify(current) !== JSON.stringify(policyRouting)) throw new Error("Task execution decision changed during spawn allocation")
     } catch (error) { return rejectPolicySpawn(error) }
   }
-  if (args.claim_task && (!isReadOnly || finalResponse)) {
+  if (args.claim_task && (!isReadOnly || finalResponse || taskContext)) {
     try {
+      if (taskContext) deps.db.run("UPDATE team_member SET context_task_id=? WHERE team_id=? AND name=?", [args.claim_task, teamInfo.teamId, args.name])
       claimedTaskContent = claimTask(deps.db, teamInfo.teamId, args.claim_task, args.name)
       log(`spawn:claim:ok name=${args.name} task=${args.claim_task}`)
     } catch (err) {
       claimWarning = err instanceof Error ? err.message : String(err)
       log(`spawn:claim:failed name=${args.name} task=${args.claim_task} err=${claimWarning}`)
-      if (policyRouting) return rejectPolicySpawn(err)
+      if (policyRouting || taskContext) return rejectPolicySpawn(err)
       if (inherited) {
         await rollbackInheritedSpawn(deps, teamInfo.teamId, args.name)
         throw new Error(`Cannot claim task for inherited teammate "${args.name}": ${claimWarning}`)
@@ -544,9 +555,9 @@ export async function executeTeamSpawn(
     context.push(
       `${lastStep}. STOP. Do not send follow-up confirmations, status updates, or 'standing by' messages.`,
       "",
-      "If you are blocked:",
-      "- Send ONE message to the lead via team_message describing the specific blocker.",
-      "- Do NOT attempt workarounds or make assumptions. Wait for the lead's response.",
+      "If you encounter uncertainty or a blocker:",
+      "- First consider safe in-scope alternatives and reasonable reversible assumptions under the assigned plan. Routine choices are yours; do not bypass permissions, explicit plan approval, architecture boundaries or the mission objective.",
+      "- If no compliant choice remains, send ONE message to the lead via team_message describing the specific boundary, and wait for the lead's response for that blocked work; continue independent authorized work where possible.",
       "",
       "Use team_message for explicit structured reports. Native final output can be recovered for lead review, but does not complete a task.",
     )

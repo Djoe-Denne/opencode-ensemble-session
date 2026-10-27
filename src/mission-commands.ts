@@ -17,6 +17,7 @@ import { PreparationAdmissionError } from "./preparation-admission"
 import { executePreparation, PREPARATION_SESSION_TITLE, preparationSessionReference, type PreparationPort, type PreparationRunResult, type PreparationRequest } from "./preparation-runtime"
 
 const QA_CONFIG_GUIDANCE = 'Discuss mission QA interactively: light (targeted checks), proportionate (risk-based checks; default), or reinforced (explicit verification plan and independent review). Offer the current/default choice for confirmation, not a new questionnaire per task. Ask only for consequential commands and acceptance criteria. Persist corrections in verification: { level, commands?, acceptance? } before presenting config again. Project safety/mandatory rules cannot be silently waived; surface conflicts for explicit arbitration. Do not impose a fixed QA agent pipeline.'
+const AUTONOMY_CONFIG_GUIDANCE = 'When the user requests long_run, persist their general decision priorities in autonomy: { mode: "long_run", instructions: ["user decision priorities"] }, independently of classification. Capture priorities such as quality/fidelity to the plan or fastest correct implementation; do not invent preferences or create a routine questionnaire. Resolve most choices within that mandate, retaining permissions, QA and explicit limits. This draft is not active until user start approves the exact presented revision. To revoke delegation, propose autonomy: { mode: "supervised" }. Do not use classification.missionMode as a substitute for the decision contract.'
 
 /** A generic mission command; project workflows remain in project instructions. */
 export interface MissionCommand {
@@ -284,7 +285,7 @@ export async function registerMissionCommands(host: MissionCommandHost, deps: To
           const proposal = openMissionConfiguration(deps, mission.teamId, input.sessionID, true)
           await healDraftClassification(deps, proposal)
           await deliverProposal(host, deps, proposal, { ...input.prompt, sessionID: input.sessionID, delivery: input.delivery,
-            text: `${formatProposal(deps, proposal)}\n\nPrepare a bounded plan using this project's instructions. No particular planner profile or agent sequence is required. ${proposal.policy.version !== 1 ? "Default catalogue execution needs no difficulty scores or classifier. Use classification only when explicitly requested." : "Evaluate complexity and risk separately using the mission criteria."} You may publish proposed tasks, but no Ensemble worker or classifier can start before approval. Present the actual policy and task preview to the user; invite chat corrections or the user's /ensemble-mission start command. Do not invoke start on the user's behalf. ${QA_CONFIG_GUIDANCE}` })
+            text: `${formatProposal(deps, proposal)}\n\nPrepare a bounded plan using this project's instructions. No particular planner profile or agent sequence is required. ${proposal.policy.version !== 1 ? "Default catalogue execution needs no difficulty scores or classifier. Use classification only when explicitly requested." : "Evaluate complexity and risk separately using the mission criteria."} You may publish proposed tasks, but no Ensemble worker or classifier can start before approval. Present the actual policy and task preview to the user; invite chat corrections or the user's /ensemble-mission start command. Do not invoke start on the user's behalf. ${QA_CONFIG_GUIDANCE}\n${AUTONOMY_CONFIG_GUIDANCE}` })
           return
         }
         const team = findTeamBySession(deps.db, deps.registry, input.sessionID)
@@ -295,7 +296,7 @@ export async function registerMissionCommands(host: MissionCommandHost, deps: To
           const instructions = command.text
             ? `User corrections (not execution approval):\n${command.text}\n\nUpdate only this mission's draft to represent these corrections. Classification corrections belong in a top-level "classification" object of the draft; config applies it and strips it from the policy. Never add fields outside the policy schema (${proposal.policy.version !== 1 ? `version, providers, models, startingIntelligence, classificationBeta, verification${proposal.policy.version === 3 ? ", planningIntelligenceRange" : ""}` : "version, providers, assessment, complexityBands, riskBands, groups, matrix, verification"}). Keep the policy structurally valid and providers, exact native models and variants consistent. Do not change global settings. Explain the diff and ask the user to run /ensemble-mission config again to present the edited policy before start.`
             : "Present this authoritative policy and task preview in the chat. No new execution is admitted until the user runs /ensemble-mission start. Subsequent chat corrections must be written to the mission draft and presented again with config; do not keep them only in context."
-          await deliverProposal(host, deps, proposal, { ...input.prompt, sessionID: input.sessionID, delivery: input.delivery, resume: Boolean(command.text), text: `${formatProposal(deps, proposal)}\n\n${instructions}\n${QA_CONFIG_GUIDANCE}` }, !command.text)
+          await deliverProposal(host, deps, proposal, { ...input.prompt, sessionID: input.sessionID, delivery: input.delivery, resume: Boolean(command.text), text: `${formatProposal(deps, proposal)}\n\n${instructions}\n${QA_CONFIG_GUIDANCE}\n${AUTONOMY_CONFIG_GUIDANCE}` }, !command.text)
           return
         }
         if (!availableModels) throw new Error("Native model catalogue API unavailable; mission cannot be approved on this host")
@@ -354,6 +355,9 @@ function classificationProposal(deps: ToolDeps, teamId: string): string[] {
 
 function formatProposal(deps: ToolDeps, proposal: MissionPolicySnapshot): string {
   const { policy } = proposal
+  const autonomy = policy.autonomy
+    ? [`Proposed autonomy: ${policy.autonomy.mode} (not active until user start).`, ...(policy.autonomy.instructions ?? []).map((instruction, index) => `Decision priority ${index + 1}: ${instruction}`)]
+    : ["No decision delegation proposed; legacy classification resilience is not an autonomy contract."]
   if (policy.version !== 1) return [
     "Mission policy proposal — execution is paused, not approved.", `Objective: ${proposal.objective}`,
     `Draft: ${proposal.policyPath}`, `Proposal hash: ${proposal.hash}`,
@@ -365,6 +369,7 @@ function formatProposal(deps: ToolDeps, proposal: MissionPolicySnapshot): string
       "The supervisor may choose an explicit planned pair within the range via execution_decisions with a reason, or authorize qualified direct code/mixed/documentation/research from the full catalogue. Planning remains the default; permissions, QA and safety gates still apply.",
     ] : []),
     verificationInstructions(policy.verification),
+    ...autonomy,
     missionReportingInstructions(join(dirname(proposal.policyPath), "reports")),
     "Each task keeps the same session and model. The worker chooses its implementation reasoning and may raise or lower it within the approved catalogue.",
     ...policy.models.map(model => `${model.id} (${model.reasoningEffort ?? "default"}): intelligence ${model.intelligenceScore}, cost/task ${model.averageCostPerTask}`),
@@ -391,6 +396,7 @@ function formatProposal(deps: ToolDeps, proposal: MissionPolicySnapshot): string
     `Draft: ${proposal.policyPath}`, `Proposal hash: ${proposal.hash}`, `Allowed providers: ${policy.providers.join(", ")}`,
     ...proposal.warnings.map(warning => `Draft repair: ${warning}`),
     verificationInstructions(policy.verification),
+    ...autonomy,
     missionReportingInstructions(join(dirname(proposal.policyPath), "reports")),
     "Risk and complexity remain independent integers 0–100. The first candidate is primary; alternatives are not automatic retries.",
     ...cells, ...groups, ...calibration,

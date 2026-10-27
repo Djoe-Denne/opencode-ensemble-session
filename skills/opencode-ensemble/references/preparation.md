@@ -141,7 +141,15 @@ missing information, unverified catalogue or unavailable required tools. These
 are reported evidence, not a guarantee of plan quality or execution approval.
 Task keys are only `id`,
 `title`, `type`, `goal`, `dependsOn`, `planning`, `acceptanceCriteria`,
-`verification`, and `handoff`. `planning` is `{ required: boolean, reason }`.
+`verification`, and `handoff`, plus optional `agent` and `context`.
+`agent` names a verified native profile. `context` accepts the same
+`fresh`/`fork`/`checkpoint`/`compact_fork` contract as `team_spawn` and is
+preserved on the imported board task. Explicit context requires a new session
+of the requested profile; omit it only when existing-worker reuse is acceptable.
+Independent review/QA should specify `{ "mode": "fresh" }`. Omitted
+`from`/`current` in an imported task means the supervisor session, not the PM.
+Use real team sources and exclusive native checkpoint message IDs, never
+invent them. `planning` is `{ required: boolean, reason }`.
 `kind`, `mode`, and `model` are rejected.
 
 Ids start with a letter and then use letters, digits, `_`, or `-`.

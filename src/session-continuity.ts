@@ -2,18 +2,34 @@ import type { SpawnContext, ToolDeps } from "./types"
 import { releaseMemberTasks } from "./tasks"
 import { log } from "./log"
 
-/** Validate and resolve a context source inside the caller's team. */
-export function resolveSpawnContext(deps: ToolDeps, context: SpawnContext | undefined, teamId: string, sessionId: string): { mode: SpawnContext["mode"]; source?: string; before?: string } {
-  if (context === undefined) return { mode: "fresh" }
-  if (!context || !["fresh", "fork", "checkpoint", "compact_fork"].includes(context.mode)) throw new Error("Invalid context.mode")
+/** Validate a context contract without allocating a native session or requiring host capabilities. */
+export function parseSpawnContext(value: unknown): SpawnContext {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid context")
+  const context = value as SpawnContext
+  if (!["fresh", "fork", "checkpoint", "compact_fork"].includes(context.mode)) throw new Error("Invalid context.mode")
   if (Object.keys(context).some(key => !["mode", "from", "messageID"].includes(key))) throw new Error("Unknown context option")
   if (context.mode === "fresh") {
     if (context.from !== undefined || context.messageID !== undefined) throw new Error("fresh context cannot specify from or messageID")
     return { mode: "fresh" }
   }
+  if (context.from !== undefined && (typeof context.from !== "string" || !context.from.trim())) throw new Error("Invalid context.from")
   if (context.mode === "checkpoint") {
     if (typeof context.messageID !== "string" || !context.messageID.startsWith("msg_")) throw new Error("checkpoint requires a native messageID (exclusive boundary)")
   } else if (context.messageID !== undefined) throw new Error("messageID requires checkpoint mode")
+  return { mode: context.mode, ...(context.from !== undefined ? { from: context.from } : {}), ...(context.messageID !== undefined ? { messageID: context.messageID } : {}) }
+}
+
+/** Freeze task-relative current to its creator, not the later dispatcher or spawning lead. */
+export function taskSpawnContext(value: unknown, creatorSessionId: string): SpawnContext {
+  const context = parseSpawnContext(value)
+  return context.mode === "fresh" ? context : { ...context, from: !context.from || context.from === "current" ? creatorSessionId : context.from }
+}
+
+/** Validate and resolve a context source inside the caller's team. */
+export function resolveSpawnContext(deps: ToolDeps, context: SpawnContext | undefined, teamId: string, sessionId: string): { mode: SpawnContext["mode"]; source?: string; before?: string } {
+  if (context === undefined) return { mode: "fresh" }
+  context = parseSpawnContext(context)
+  if (context.mode === "fresh") return { mode: "fresh" }
   if (!deps.client.continuity) throw new Error("Session inheritance requires OpenCode V2 continuity capabilities; no fresh fallback was performed")
   const team = deps.db.query("SELECT lead_session_id FROM team WHERE id = ?").get(teamId) as { lead_session_id: string }
   const from = context.from ?? "current"

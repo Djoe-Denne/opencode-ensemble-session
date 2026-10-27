@@ -1,6 +1,12 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { setupEnsemble, extractQuestionOutput, type V2SetupContext } from "../src/v2-setup"
 import type { MissionCommandDefinition } from "../src/mission-commands"
+import { createHash } from "node:crypto"
+import { historicalModelPolicy, setupDeps } from "./helpers"
+import { SupervisorRecovery } from "../src/supervisor-recovery"
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 /** Mock V2 setup context: hook registry + programmable event intake. */
 function mockSetupCtx() {
   const hooks: Record<string, Array<(event: never) => unknown>> = {}
@@ -70,6 +76,126 @@ function seedLeadAndMember(handle: Awaited<ReturnType<typeof setupEnsemble>>) { 
 }
 
 describe("v2-setup (issue #36)", () => {
+  test("journals native sub-agent MCP denials and isolation failures without changing permission decisions", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ensemble-permission-integration-"))
+    const f = mockSetupCtx()
+    const evaluations: Array<(event: { sessionID: string; action: string; effect: string }) => void> = []
+    f.ctx.permission = { hook: async (_name, cb) => { evaluations.push(cb) } }
+    f.ctx.tool.list = async () => [{ id: "serena.read", input: { type: "object" }, options: { namespace: { name: "serena" } } }]
+    const handle = await setupEnsemble(f.ctx, { dbPath: ":memory:", dashboardPort: 0, permissionLogDir: directory })
+    try {
+      seedLeadAndMember(handle)
+      await handle.dispatch({ type: "session.created", data: { sessionID: "native-child", parentID: "ses_alice" } })
+      const context = { sessionID: "native-child", agent: "read-only-agent", system: [] as Array<{ type: string; text: string }> }
+      await f.hooks.session![0]!(context as never)
+      const pending = { sessionID: "native-child", action: "serena.read", effect: "ask" }
+      evaluations.forEach(evaluate => evaluate(pending))
+      expect(pending.effect).toBe("ask")
+      expect(readdirSync(directory)).toHaveLength(0)
+      await f.hooks.tool![1]!({ sessionID: "native-child", agent: "read-only-agent", messageID: "message", id: "call1", tool: "serena.read",
+        status: "error", input: { token: "not-for-the-journal" }, error: { message: "Permission denied not-for-the-journal" } } as never)
+      await handle.dispatch({ type: "session.message.content.updated", location: { directory: f.ctx.location.directory }, data: {
+        sessionID: "native-child", messageID: "message", content: [{ type: "tool", name: "serena.read", id: "call2", state: {
+          status: "error", error: { type: "Tool.Error", message: "Permission denied not-for-the-journal" }, input: {},
+        } }],
+      } })
+      expect(() => f.hooks.tool![0]!({ sessionID: "native-child", agent: "read-only-agent", id: "call3", tool: "team_message" } as never)).toThrow("sub-agents")
+      const raw = readdirSync(directory).filter(file => file.endsWith(".jsonl")).map(file => readFileSync(join(directory, file), "utf8")).join("")
+      const records = raw.trim().split("\n").map(line => JSON.parse(line))
+      expect(records).toHaveLength(3)
+      expect(records[0]).toMatchObject({ sessionID: "native-child", parentSessionID: "ses_alice", agent: "read-only-agent", namespace: "serena", ownerMemberName: "alice" })
+      expect(records[1]).toMatchObject({ observation: "native_tool_state", agent: "read-only-agent" })
+      expect(records[2]).toMatchObject({ category: "ensemble_isolation_denied" })
+      expect(raw).not.toContain("not-for-the-journal")
+      expect(pending.effect).toBe("ask")
+    } finally {
+      await handle.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test("owns a ten-minute supervisor recovery timer and disposes it with the plugin", async () => {
+    const f = mockSetupCtx()
+    const deliveries: Record<string, unknown>[] = []
+    f.ctx.session.synthetic = async input => { deliveries.push(input); return {} }
+    let permissions: unknown[] = [{}]
+    f.ctx.permission = { ...f.ctx.permission, list: async () => ({ data: permissions }) }
+    const interval = spyOn(globalThis, "setInterval")
+    const check = spyOn(SupervisorRecovery.prototype, "check")
+    const stop = spyOn(SupervisorRecovery.prototype, "stop")
+    const handle = await setupEnsemble(f.ctx, { dbPath: ":memory:", dashboardPort: 0 })
+    try {
+      seedLeadAndMember(handle)
+      handle.db.run("INSERT INTO project (id, name, path, time_created, time_updated) VALUES (?, 'Recovery fixture', ?, 1, 1)", [f.ctx.location.directory, f.ctx.location.directory])
+      handle.db.run("UPDATE team SET project_id = ?, time_updated = 1", [f.ctx.location.directory])
+      handle.db.run("UPDATE team_member SET time_updated = 1")
+      handle.db.run("INSERT INTO team_task (id, team_id, content, status, priority, time_created, time_updated) VALUES ('stranded', 'team1', 'Resume work', 'pending', 'medium', 1, 1)")
+      const recoveryTimer = interval.mock.calls.find(call => call[1] === 600_000)
+      expect(recoveryTimer).toBeDefined()
+      const callback = recoveryTimer![0]
+      if (typeof callback !== "function") throw new Error("Recovery timer callback missing")
+      callback()
+      await check.mock.results.at(-1)!.value
+      expect(deliveries).toHaveLength(0)
+      permissions = [{ sessionID: "ses_lead" }]
+      callback()
+      await check.mock.results.at(-1)!.value
+      expect(deliveries).toHaveLength(0)
+      permissions = []
+      callback()
+      await check.mock.results.at(-1)!.value
+      expect(deliveries).toHaveLength(1)
+      expect(deliveries[0]).toMatchObject({ sessionID: "ses_lead" })
+    } finally {
+      await handle.dispose()
+      try { expect(stop).toHaveBeenCalledTimes(1) } finally {
+        interval.mockRestore()
+        check.mockRestore()
+        stop.mockRestore()
+      }
+    }
+  })
+
+  test("approved autonomy is a stable final system block for lead, workers and compaction", async () => {
+    const f = mockSetupCtx()
+    const handle = await setupEnsemble(f.ctx, { dbPath: ":memory:", dashboardPort: 0 })
+    try {
+      seedLeadAndMember(handle)
+      const prefix = { type: "text", text: "Stable host instructions" }
+      const before = { sessionID: "ses_lead", system: [prefix] }
+      await f.hooks.session![0]!(before as never)
+      expect(before.system.some(part => part.text.includes("Approved long-run autonomy"))).toBe(false)
+      expect(before.system.at(-1)!.text).toContain("In both supervised and long_run")
+      expect(before.system[0]).toBe(prefix)
+      const policyDeps = setupDeps()
+      policyDeps.config = { ...policyDeps.config, modelRouting: { ...policyDeps.config.modelRouting,
+        models: [{ id: "fixture/worker", intelligenceScore: 60, averageCostPerTask: 1, available: true }] } }
+      const policy = { ...historicalModelPolicy(policyDeps), autonomy: { mode: "long_run", instructions: ["Choose quality and fidelity to the plan."] } }
+      const json = JSON.stringify(policy)
+      handle.db.run("INSERT INTO mission_policy_revision (team_id, revision, policy_hash, policy_json, time_created) VALUES ('team1', 1, ?, ?, 1)", [createHash("sha256").update(json).digest("hex"), json])
+      const tails: string[] = []
+      for (const sessionID of ["ses_lead", "ses_alice"]) {
+        for (const hook of f.hooks.session!) {
+          const event = { sessionID, system: [prefix] }
+          await hook!(event as never)
+          expect(event.system[0]).toBe(prefix)
+          const tail = event.system.at(-1)!.text
+          expect(tail).toContain("Approved long-run autonomy")
+          expect(tail).toContain("Choose quality and fidelity to the plan.")
+          expect(event.system.filter(part => part.text.includes("Approved long-run autonomy"))).toHaveLength(1)
+          tails.push(tail)
+        }
+      }
+      expect(new Set(tails).size).toBe(1)
+      handle.db.run("UPDATE team SET mission_state = 'critical'")
+      const resumed = { sessionID: "ses_alice", system: [prefix] }
+      await f.hooks.session![0]!(resumed as never)
+      expect(resumed.system.at(-1)!.text).toBe(tails[0]!)
+    } finally {
+      await handle.dispose()
+    }
+  })
+
   test("permission evaluation and context hints preserve the final-response profile", async () => {
     const f = mockSetupCtx()
     const evaluators: Array<(event: { sessionID: string; action: string; effect: string }) => void> = []
@@ -281,13 +407,15 @@ describe("v2-setup (issue #36)", () => {
     const contextHook = sessionHooks[0]
     const event = { sessionID: "ses_lead", system: [] as Array<{ type: string; text: string }> }
     await contextHook?.(event as never)
-    expect(event.system.length).toBe(1)
+    expect(event.system.length).toBe(2)
     expect(event.system[0]?.text).toContain("alpha")
+    expect(event.system.at(-1)?.text).toContain("Mission decision boundaries")
     // Member sessions get the Code Mode invocation hint; leads do not.
     const memberEvent = { sessionID: "ses_alice", system: [] as Array<{ type: string; text: string }> }
     await contextHook?.(memberEvent as never)
-    expect(memberEvent.system.length).toBe(2)
+    expect(memberEvent.system.length).toBe(3)
     expect(memberEvent.system[1]?.text).toContain("execute")
+    expect(memberEvent.system.at(-1)?.text).toContain("Mission decision boundaries")
     await handle.dispose()
   })
 

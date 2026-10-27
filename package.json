@@ -35,10 +35,11 @@
     "lint": "bunx biome lint src/",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "diagnose:permissions": "bun src/permission-diagnostics-cli.ts",
     "eval:smoke": "bun eval/smoke.ts",
     "eval:continuity": "bun eval/native-continuity.ts",
     "eval:classification": "bun eval/native-classification.ts",
-    "build": "bun build src/index.ts --outdir dist --target node",
+    "build": "bun build src/index.ts src/permission-diagnostics-cli.ts --outdir dist --target node",
     "prepublishOnly": "bun run typecheck && bun test && bun run build"
   },
   "engines": {

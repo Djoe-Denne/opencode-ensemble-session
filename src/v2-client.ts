@@ -31,6 +31,7 @@ export interface V2Context {
     refresh(input?: Record<string, unknown>): Promise<unknown>
   }
   permission?: {
+    list?(input?: { location?: { directory: string } }): Promise<unknown>
     rules?(input: Record<string, unknown>): Promise<unknown>
     hook?(name: "evaluate", callback: (event: { sessionID: string; action: string; effect: string }) => void): Promise<unknown>
   }

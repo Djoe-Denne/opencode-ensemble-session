@@ -35,10 +35,17 @@ Resolve unknowns directly or through a focused research mission before committin
 - Use `team_results` for full content when a message is truncated or consequential.
 - Forward relevant findings between teammates when it changes their work.
 - Reject unclear plans instead of approving them under time pressure.
-- Stop and ask the user if teammate outputs conflict with each other or with the user's goal.
+- Resolve ordinary conflicts between teammate proposals from evidence and the approved plan; do not forward routine arbitration to the user.
+- In both supervised and long run, decide implementation and coordination details within the authorized phase. Milestones, completed reviews and worker completion do not require a new user go; review/integrate/verify and continue the next authorized step.
+- Ask before changing the mission objective or introducing an architectural change not already authorized. Also preserve explicit user holds, mandatory config/start or plan approvals, permissions, budgets and safety/QA gates. Explain the exact boundary when a real blocker remains; continue independent authorized work where possible.
 - Present a linked checkpoint report between meaningful stages, and a current
   decision report before every user question: context, evidence, limits, options,
   consequences and recommendation. Group related questions; do not add approvals.
+- Before asking, check that both the chat summary and question-tool text make
+  sense without opening a report: concrete purpose/problem, practical impact,
+  real actions/options and a recommendation. Replace unexplained task codes and
+  jargon with descriptive names; explain necessary terms and add a small glossary
+  only when useful. Preserve important scope, permission and evidence limits.
 - Use Markdown by default. A Canvas requires an owned running preview backend
   and a verified loopback URL/content; otherwise use Markdown. Track its handle
   and keep it available during the decision, then stop it when no longer needed.

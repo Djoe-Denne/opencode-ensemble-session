@@ -85,6 +85,15 @@ function count(db: EnsembleDatabase, table: string): number {
 }
 
 describe("preparation import", () => {
+  test("preserves the PM profile and context strategy on the board", () => {
+    const db = setupDb()
+    const teamId = draft(db)
+    const raw = document([task("plan", { agent: "qa", context: { mode: "fresh" } })])
+    const result = importPreparationDocument(db, teamId, raw, policies().v3)
+    expect(db.query("SELECT * FROM team_task WHERE id=?").get(result.mapping[0]!.taskId)).toMatchObject({ agent: "qa", spawn_context: '{"mode":"fresh"}' })
+    expect(importPreparationDocument(db, teamId, raw).replayed).toBe(true)
+  })
+
   test("replays a historical v1 import without upgrading its document or decisions", () => {
     const db = setupDb()
     const team = draft(db)

@@ -9,6 +9,7 @@ import {
 /** Minimal structural shape of a V2 server event. */
 export interface V2EventLike {
   type: string
+  location?: { directory?: string }
   data?: {
     sessionID?: string
     parentID?: string
@@ -16,6 +17,9 @@ export interface V2EventLike {
     attempt?: number
     at?: number
     error?: { message?: string }
+    messageID?: string
+    content?: unknown[]
+    agent?: string
   }
 }
 

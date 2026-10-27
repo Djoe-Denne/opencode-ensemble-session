@@ -11,7 +11,7 @@ export interface ClassificationScores {
 export interface ClassifierTool {
   id: string
   input: unknown
-  options?: { permission?: string; codemode?: boolean; pinned?: boolean }
+  options?: { permission?: string; codemode?: boolean; pinned?: boolean; namespace?: { name: string } }
 }
 
 /** Validated classification suitable for the deterministic execution router. */

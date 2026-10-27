@@ -32,6 +32,11 @@ later `team_handoff({ reasoning: "<allowed variant>" })` may raise or lower effo
 Write chat corrections to the mission draft rather than retaining them only in
 context. Do not invoke `start` on the user's behalf. Read
 [mission policy](references/mission-policy.md) for the approval and revision flow.
+For long run, persist the user's decision priorities in `autonomy: { mode:
+"long_run", instructions: [...] }` and include them in that approval. Only an
+approved contract enters the system prompt; a classifier's resilience mode alone
+does not delegate decisions. Once active, decide routine choices within the
+mandate instead of requesting confirmation; preserve explicit safety boundaries.
 Optional PM discovery before `start` uses
 `/ensemble-mission prepare [--pm <agent>] [--preplan <file>] [--history none|fork|checkpoint] [--before <messageID>] <mandat>`.
 A new session requires the objective; an existing draft always transmits its
@@ -51,7 +56,7 @@ retain the legacy assignment workflow below.
 
 1. Define each mission's scope, deliverable, ownership boundaries, and verification criteria.
 2. Create a team with `team_create` when coordination is justified.
-3. Add tasks with `team_tasks_add`. Record the real returned IDs; use `depends_on` only for tasks already in this team. A dependent task must be unblocked before it can be claimed.
+3. Add tasks with `team_tasks_add`. Record the real returned IDs; use `depends_on` only for tasks already in this team. A dependent task must be unblocked before it can be claimed. Put any required `context` (fresh/fork/checkpoint/compact_fork) on the task before dispatch, alongside its `agent` profile. Explicit context requires a new session and blocks old-worker claims/reuse; omitted context keeps pool reuse. A later spawn's context alone cannot protect a task already published to the pool.
    When classification is enabled, wait for notifications only for tasks needing classification. Fully manual scores make a task `not_required` immediately with zero attempts and no classifier notification; observe that board state once instead of waiting for a notification that will never arrive.
 4. Choose a profile, context strategy, worktree policy, and model strategy for each mission. Discover available profiles/models rather than assuming example names exist.
 5. Spawn teammates one at a time, waiting for each tool result; their work runs asynchronously. Use `claim_task` for a claimable implementation task. Built-in `explore`/`plan` spawns do not auto-claim tasks.
@@ -59,16 +64,44 @@ retain the legacy assignment workflow below.
 7. Wait for teammate messages. Use `team_results` for full content when a report is truncated or consequential; use status tools for a specific diagnostic, not a waiting loop.
 8. After completion, use `team_shutdown`, then `team_merge` once the teammate is shut down. Inspect the diff and run the project's verification before `team_cleanup` and before claiming success.
 
+In **both supervised and long run**, decide routine implementation and coordination
+choices within the authorized phase. Resolve ordinary worker disagreements using
+evidence and the approved plan. A milestone, successful QA or completed worker is
+not a reason to wait for another user go: review/integrate and continue the next
+authorized step. Waiting for necessary worker results is not waiting for the user.
+Ask before changing the mission objective or introducing an architectural change
+not already authorized. Preserve explicit user holds, initial/revised `config` /
+`start` approval, required lead plan approvals, native permissions, budget and
+safety/QA gates. Worker `plan_approval` is normally the lead's decision, not a new
+user checkpoint. Workers still stop after their assigned deliverable and report
+according to their mode; the lead owns ongoing coordination and closure.
+
 ## Supervisor Reports
 
 Present a concise report between meaningful stages and **before every question
 to the user**, including approvals and blockers. Markdown is the default; save
 it in the mission's reports directory, link it and give the decision context in
 chat before asking. A report is not a new approval gate or a reason to rerun QA.
+Assume the user has not read earlier reports or internal reasoning. Explain the
+goal, concrete problem, consequences, options and recommendation in natural
+language. The question-tool payload must also make sense on its own. Use
+descriptive task names before optional IDs, explain unfamiliar terms at first
+use, and add a short glossary only if useful. Put dense technical evidence in a
+later section; a report link is supplementary, not required homework.
 For Canvas, start/reuse an owned loopback preview backend and verify the working
 URL and report content before presenting it; otherwise fall back to Markdown.
 Read [mission reporting](references/mission-reporting.md) for the template,
 privacy, permission fallback and preview-server lifecycle.
+
+## Permission and MCP Failures
+
+V2 records recognized tool-permission failures in a local journal with safe
+session/call correlation metadata, not arguments or secrets. Use the read-only
+permission diagnostic CLI when your native profile permits it; distinguish
+denied rights, user rejection, filesystem/remote authorization and unavailable
+tools instead of guessing a cause or broadening permissions. See
+[permission diagnostics](references/permission-diagnostics.md) for the journal,
+filters, privacy constraints and capture limitations.
 
 ## Choose Context Deliberately
 

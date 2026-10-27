@@ -1,7 +1,8 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test"
+import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test"
 import { setupDeps, insertTeam, insertMember } from "./helpers"
 import { Watchdog } from "../src/watchdog"
 import { ProgressTracker } from "../src/progress"
+import { SupervisorRecovery } from "../src/supervisor-recovery"
 
 describe("Watchdog", () => {
   let deps: ReturnType<typeof setupDeps>
@@ -9,6 +10,23 @@ describe("Watchdog", () => {
   beforeEach(() => {
     deps = setupDeps()
     insertTeam(deps.db, "t1", "my-team", "lead-sess")
+  })
+
+  test("owns the shared supervisor safety timer on legacy hosts with a project directory", () => {
+    const start = spyOn(SupervisorRecovery.prototype, "start")
+    const stop = spyOn(SupervisorRecovery.prototype, "stop")
+    const watchdog = new Watchdog({ db: deps.db, client: deps.client, registry: deps.registry, ttlMs: 0, cwd: "/tmp/test-project" })
+    try {
+      watchdog.start()
+      watchdog.start()
+      expect(start).toHaveBeenCalledTimes(1)
+      watchdog.stop()
+      expect(stop).toHaveBeenCalledTimes(1)
+    } finally {
+      watchdog.stop()
+      start.mockRestore()
+      stop.mockRestore()
+    }
   })
 
   test("times out a member that has been busy longer than TTL", async () => {

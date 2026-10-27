@@ -3,6 +3,7 @@ import type { MissionPolicyModel } from "./mission-model-policy"
 import { createHash } from "node:crypto"
 import type { MissionPolicyRoute } from "./mission-model-policy"
 import { validateVerificationPolicy, type VerificationPolicy } from "./verification-policy"
+import { validateMissionAutonomyPolicy, type MissionAutonomyPolicy } from "./mission-autonomy"
 
 /** A catalogue snapshot shared by default and explicitly classified execution. */
 export interface ExecutionPolicy {
@@ -12,6 +13,7 @@ export interface ExecutionPolicy {
   classificationBeta: number
   models: RoutingModel[]
   verification?: VerificationPolicy
+  autonomy?: MissionAutonomyPolicy
   planningIntelligenceRange?: PlanningIntelligenceRange
 }
 
@@ -125,9 +127,10 @@ export function validateTaskExecutionDecision(value: unknown, policy?: Execution
 export function validateExecutionPolicy(value: unknown): asserts value is ExecutionPolicy {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid execution policy")
   const policy = value as ExecutionPolicy
-  const fields = ["version", "providers", "models", "startingIntelligence", "classificationBeta", "verification", ...(policy.version === 3 ? ["planningIntelligenceRange"] : [])]
+  const fields = ["version", "providers", "models", "startingIntelligence", "classificationBeta", "verification", "autonomy", ...(policy.version === 3 ? ["planningIntelligenceRange"] : [])]
   if (![2, 3].includes(policy.version) || Object.keys(policy).some(key => !fields.includes(key))) throw new Error("Invalid execution policy fields")
   if (policy.verification !== undefined) validateVerificationPolicy(policy.verification)
+  if (policy.autonomy !== undefined) validateMissionAutonomyPolicy(policy.autonomy)
   if (!Number.isFinite(policy.startingIntelligence) || policy.startingIntelligence < 0) throw new Error("Invalid starting intelligence threshold")
   if (policy.version === 3) validatePlanningIntelligenceRange(policy.planningIntelligenceRange, policy.startingIntelligence)
   validateModelRoutingConfig({ beta: policy.classificationBeta, models: policy.models })

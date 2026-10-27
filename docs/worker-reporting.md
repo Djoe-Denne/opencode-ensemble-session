@@ -98,3 +98,38 @@ during graceful shutdown, and retries pending lead inbox wake signals. Explicit
 execution failure remains a failure; a later duplicate idle event cannot erase
 it or resurrect a shut-down worker. The V1 event path also supports native
 candidate recovery, subject to the message metadata exposed by its SDK.
+
+## Supervisor liveness safety check
+
+While the plugin is loaded, an internal timer checks each project's active
+missions every **ten minutes**. No external cron or OS scheduled task is needed.
+This is a conditional recovery backstop, not a periodic task reminder to workers
+and not a replacement for normal event-driven report delivery.
+
+A wake is eligible only when unfinished board work (`pending`/`in_progress`) or
+unreviewed worker reports remain, the mission is running under its approved
+policy (legacy teams retain their existing admission rules), and recorded work
+has not changed for at least ten minutes. The check consults native session
+activity, including the lead, workers and classification helpers; stale SQLite
+`busy` flags alone cannot conceal an inactive worker. A native busy/retry/unknown
+state, worker initialization, pending configuration, an archived project/team or
+an attention/critical stop suppresses the wake. Completed/blocked-only missions
+without pending reports are left alone. Pending native permission requests also
+suppress V2 recovery when the host exposes the public permission-list API; failed
+or malformed status/permission inspection is not treated as proof of idleness.
+
+Immediately before waking, activity and admission are checked again. A concise
+diagnostic is saved to the lead's team inbox, then a persistent synthetic message
+wakes the idle lead to inspect missing reports and resume permitted coordination.
+The check never spawns, aborts, completes tasks, changes the mission policy or
+grants permissions. It does not certify that a worker finished successfully.
+
+An unchanged incident reuses the same inbox diagnostic, and persisted recovery
+state limits delivery to at most one attempt per team per ten-minute window,
+including across concurrent plugin instances and reloads. If the lead remains
+inactive with unattended work, a later check may retry; transport acceptance
+alone is not proof that coordination resumed. `promptAsync` is never awaited.
+The V2 timer stops on plugin disposal; V1 runs the same safety check through the
+existing watchdog lifecycle. No recovery runs while the OpenCode service/plugin
+is stopped, and this backstop does not by itself identify the original cause of
+a lost report, dead event subscription or failed model execution.

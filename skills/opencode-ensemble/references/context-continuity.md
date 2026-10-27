@@ -29,6 +29,23 @@ These are choices, not sequential stages:
 
 Sources default to `current`; `lead`, member names, and native IDs from the same team are supported. A completed member remains a valid source while its native session exists. An initializing source is rejected. Only the lead can spawn, even when the useful source belongs to another member.
 
+## Task-Level Context
+
+Put `context` on the task itself in `team_tasks_add` or the PM preparation
+document when it is a requirement, not just on a later `team_spawn` call.
+Explicit `fresh` means a new session without inherited conversation history.
+All four modes require a new session; old workers cannot manually claim or be
+auto-dispatched that task. The task's `agent` is enforced for this admission.
+Spawn with `claim_task` inherits its stored context/profile and rejects conflicts.
+Omitted task context retains normal pool reuse. Auto-scale creates the required
+session within capacity; otherwise work stays pending until an explicit spawn
+or capacity becomes available. Never silently substitute reuse or fresh history.
+
+For added tasks, omitted `from`/`current` is bound to the task creator. For PM
+imports it means the supervisor session, not the temporary PM session. Checkpoint
+requires a real exclusive native `messageID`; source names/IDs must belong to
+the team. See `docs/task-pool.md` for scheduling details.
+
 ## Handoff
 
 Inside the session that should change profile:

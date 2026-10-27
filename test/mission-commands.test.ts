@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseMissionCommand, registerMissionCommands, type MissionCommandDefinition, type MissionCommandInvocation } from "../src/mission-commands"
 import { setupDeps, historicalModelPolicy } from "./helpers"
+import { buildMissionAutonomyPrompt } from "../src/mission-autonomy"
 
 const directories: string[] = []
 afterEach(() => {
@@ -57,6 +58,24 @@ describe("mission command parsing", () => {
 })
 
 describe("native mission command", () => {
+  test("config presents decision priorities and only user start activates the autonomy suffix", async () => {
+    const f = commandFixture()
+    await registerMissionCommands(f.host, f.deps, f.models)
+    await f.invoke("Fix cache")
+    expect((f.prompts.at(-1) as { text: string }).text).toContain("autonomy: { mode")
+    const row = f.deps.db.query("SELECT team_id, policy_path FROM mission_policy").get() as { team_id: string; policy_path: string }
+    const policy = JSON.parse(readFileSync(row.policy_path, "utf8"))
+    writeFileSync(row.policy_path, JSON.stringify({ ...policy, autonomy: { mode: "long_run", instructions: ["Prioritize quality and the original plan."] } }))
+    await f.invoke("config")
+    const preview = (f.prompts.at(-1) as { text: string }).text
+    expect(preview).toContain("Proposed autonomy: long_run")
+    expect(preview).toContain("Prioritize quality and the original plan.")
+    expect(preview).toContain("not active until user start")
+    expect(buildMissionAutonomyPrompt(f.deps.db, row.team_id)).toBe("")
+    await f.invoke("start")
+    expect(buildMissionAutonomyPrompt(f.deps.db, row.team_id)).toContain("Prioritize quality and the original plan.")
+  })
+
   test("presents version 3 bounds and distinct explicit/automatic planning candidates", async () => {
     const f = commandFixture()
     Object.assign(f.deps.config, { missionPolicy: null, startingIntelligence: 20, planningIntelligenceRange: { min: 10, max: 30 }, classification: { ...f.deps.config.classification, mode: "off" } })
@@ -81,6 +100,9 @@ describe("native mission command", () => {
       const reportDirectory = join(row.policy_path, "..", "reports")
       expect(text).toContain("Before every user question")
       expect(text).toContain("Markdown by default")
+      expect(text).toContain("plain, natural language")
+      expect(text).toContain("question-tool payload")
+      expect(text).toContain("descriptive task names before internal IDs")
       expect(text).toContain(JSON.stringify(reportDirectory))
     }
     await f.invoke("Fix cache")

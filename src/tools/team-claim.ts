@@ -19,8 +19,8 @@ export function claimTask(db: Database, teamId: string, taskId: string, assignee
   assertMissionAdmission(db, teamId)
   const mission = db.query("SELECT mission_state FROM team WHERE id = ?").get(teamId) as { mission_state: string } | null
   if (mission?.mission_state === "critical") throw new Error("Mission is critical; resolve the classification safety/budget failure before claiming work")
-  const task = db.query("SELECT content, status, assignee, classification_status, execution_request, execution_decision FROM team_task WHERE id = ? AND team_id = ?")
-    .get(taskId, teamId) as { content: string; status: string; assignee: string | null; classification_status: string; execution_request: string | null; execution_decision: string | null } | null
+  const task = db.query("SELECT content, status, assignee, classification_status, execution_request, execution_decision, spawn_context, agent FROM team_task WHERE id = ? AND team_id = ?")
+    .get(taskId, teamId) as { content: string; status: string; assignee: string | null; classification_status: string; execution_request: string | null; execution_decision: string | null; spawn_context: string | null; agent: string | null } | null
   if (!task) throw new Error(`Task "${taskId}" not found`)
   if (task.execution_request && !task.execution_decision) throw new Error("Task execution proposal requires a supervisor decision before admission")
   if (!["not_required", "completed"].includes(task.classification_status)) throw new Error(`Task "${taskId}" is awaiting classification (${task.classification_status})`)
@@ -31,6 +31,11 @@ export function claimTask(db: Database, teamId: string, taskId: string, assignee
   // Atomic claim: UPDATE only if still pending and unassigned
   const route = routeMissionTask(db, teamId, taskId)
   db.transaction(() => {
+    if (task.spawn_context !== null) {
+      const admission = db.run("UPDATE team_member SET context_task_id=NULL WHERE team_id=? AND name=? AND context_task_id=? AND (? IS NULL OR agent=?)",
+        [teamId, assignee, taskId, task.agent, task.agent])
+      if (!admission.changes) throw new Error("Task context requires a new session with the requested profile; use team_spawn with claim_task")
+    }
     if (route) {
       const active = db.query("SELECT id FROM team_task WHERE team_id = ? AND assignee = ? AND status = 'in_progress' AND id != ?").get(teamId, assignee, taskId)
       if (active) throw new Error(`Assignee ${assignee} already has an in-progress mission task`)

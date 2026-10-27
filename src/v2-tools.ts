@@ -1,4 +1,4 @@
-import type { ToolDeps } from "./types"
+import type { SpawnContext, ToolDeps } from "./types"
 import { executeTeamCreate } from "./tools/team-create"
 import { executeTeamSpawn } from "./tools/team-spawn"
 import { executeTeamHandoff } from "./tools/team-handoff"
@@ -134,7 +134,7 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
         "Spawn a new teammate that works in parallel. The teammate starts immediately with the given prompt. " +
         "Each teammate gets their own git worktree for file isolation. " +
         "Teammates work asynchronously and will message you when done. Do not poll for their status. " +
-        "Context is fresh by default; opt into fork/checkpoint/compact_fork to inherit a team's session history. Lead only.",
+        "Context is fresh by default; opt into fork/checkpoint/compact_fork to inherit a team's session history. claim_task inherits a task's context/profile contract and rejects conflicting overrides. Lead only.",
       input: {
         type: "object",
         properties: {
@@ -247,6 +247,16 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
                   type: "string",
                   description: "Agent type affinity for auto-dispatch (e.g. build). Omit for any member.",
                 },
+                context: {
+                  type: "object",
+                  description: "Requires a new session, never idle-worker reuse. Same contract as team_spawn; omitted context retains pool reuse. from/current is frozen to the task creator.",
+                  properties: {
+                    mode: { type: "string", enum: ["fresh", "fork", "checkpoint", "compact_fork"] },
+                    from: str("current (default), lead, or a team member/session; compact_fork requires a distinct idle source"),
+                    messageID: str("checkpoint only: exclusive native message boundary"),
+                  },
+                  required: ["mode"], additionalProperties: false,
+                },
                 complexity: { type: "integer", minimum: 0, maximum: 100, description: "Task complexity for deterministic model routing" },
                 risk: { type: "integer", minimum: 0, maximum: 100, description: "Task risk for model routing only (not review policy)" },
                 task_type: str("Explicit task kind supplied to the fixed classification protocol"),
@@ -267,7 +277,7 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
       },
       execute: async (input: unknown, context: { sessionID: string }) => {
         const args = input as {
-          tasks: Array<{ content: string; priority?: string; depends_on?: string[]; agent?: string; complexity?: number; risk?: number; task_type?: string; classification_input?: Record<string, unknown>; execution?: TaskExecutionDecision }>
+          tasks: Array<{ content: string; priority?: string; depends_on?: string[]; agent?: string; context?: SpawnContext; complexity?: number; risk?: number; task_type?: string; classification_input?: Record<string, unknown>; execution?: TaskExecutionDecision }>
           execution_decisions?: Array<TaskExecutionDecision & { task_id: string }>
         }
         const content = await executeTeamTasksAdd(
@@ -278,6 +288,7 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
               priority: normalizePriority(task.priority),
               ...(task.depends_on ? { depends_on: task.depends_on } : {}),
               ...(task.agent ? { agent: task.agent } : {}),
+              ...(task.context !== undefined ? { context: task.context } : {}),
               ...(task.complexity !== undefined ? { complexity: task.complexity } : {}),
               ...(task.risk !== undefined ? { risk: task.risk } : {}),
               ...(task.task_type !== undefined ? { task_type: task.task_type } : {}),

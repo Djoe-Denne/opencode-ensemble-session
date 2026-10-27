@@ -72,7 +72,7 @@ function requireLead(deps: ToolDeps, teamId: string, sessionId: string): void {
 }
 
 /** Root fields the model policy schema accepts; everything else is draft noise. */
-const POLICY_FIELDS = ["version", "providers", "assessment", "complexityBands", "riskBands", "groups", "matrix", "verification"]
+const POLICY_FIELDS = ["version", "providers", "assessment", "complexityBands", "riskBands", "groups", "matrix", "verification", "autonomy"]
 
 interface DraftRead {
   policy: ModelPolicy
@@ -115,7 +115,7 @@ function readPolicyDraft(record: PolicyRow): DraftRead {
       }
     }
     Object.keys(draft).forEach(key => {
-      if (!(draft.version === 2 || draft.version === 3 ? ["version", "providers", "models", "startingIntelligence", "classificationBeta", "verification", ...(draft.version === 3 ? ["planningIntelligenceRange"] : [])] : POLICY_FIELDS).includes(key)) {
+      if (!(draft.version === 2 || draft.version === 3 ? ["version", "providers", "models", "startingIntelligence", "classificationBeta", "verification", "autonomy", ...(draft.version === 3 ? ["planningIntelligenceRange"] : [])] : POLICY_FIELDS).includes(key)) {
         dirty = true
         delete draft[key]
         warnings.push(`draft.${key} was removed: the model policy accepts only ${POLICY_FIELDS.join(", ")}.`)
@@ -243,9 +243,12 @@ export function approveMission(deps: ToolDeps, teamId: string, sessionId: string
   const latest = deps.db.query("SELECT revision, policy_hash, policy_json FROM mission_policy_revision WHERE team_id = ? ORDER BY revision DESC LIMIT 1")
     .get(teamId) as { revision: number; policy_hash: string; policy_json: string } | null
   if (latest?.policy_hash === snapshot.hash) {
-    const restored = deps.db.run("UPDATE mission_policy SET approved_hash = ?, approved_json = ?, time_updated = MAX(time_updated + 1, ?) WHERE team_id = ? AND presented_hash = ? AND revision = ? AND time_updated = ?",
-      [snapshot.hash, latest.policy_json, Date.now(), teamId, snapshot.hash, record.revision, record.time_updated])
-    if (!restored.changes) throw new Error("Mission policy approval raced with another configuration; run config again")
+    deps.db.transaction(() => {
+      const restored = deps.db.run("UPDATE mission_policy SET approved_hash = ?, approved_json = ?, time_updated = MAX(time_updated + 1, ?) WHERE team_id = ? AND presented_hash = ? AND revision = ? AND time_updated = ?",
+        [snapshot.hash, latest.policy_json, Date.now(), teamId, snapshot.hash, record.revision, record.time_updated])
+      if (!restored.changes) throw new Error("Mission policy approval raced with another configuration; run config again")
+      if (snapshot.policy.autonomy) deps.db.run("UPDATE team SET mission_mode = ? WHERE id = ?", [snapshot.policy.autonomy.mode, teamId])
+    })()
     return { ...snapshot, revision: latest.revision, approved: true }
   }
   const previous: unknown = record.approved_json ? JSON.parse(record.approved_json) : undefined
@@ -258,6 +261,7 @@ export function approveMission(deps: ToolDeps, teamId: string, sessionId: string
     const updated = deps.db.run("UPDATE mission_policy SET approved_hash = ?, approved_json = ?, revision = ?, time_updated = MAX(time_updated + 1, ?) WHERE team_id = ? AND presented_hash = ? AND revision = ? AND time_updated = ?",
       [snapshot.hash, JSON.stringify(snapshot.policy), revision, Date.now(), teamId, snapshot.hash, record.revision, record.time_updated])
     if (!updated.changes) throw new Error("Mission policy approval raced with another configuration; run config again")
+    if (snapshot.policy.autonomy) deps.db.run("UPDATE team SET mission_mode = ? WHERE id = ?", [snapshot.policy.autonomy.mode, teamId])
     if (rubricChanged && classifier && (classifier.method !== "manual" || classifier.specialized)) {
       // Old in-flight tokens cannot publish scores under a newly approved rubric.
       // Re-evaluate only unassigned work; never reset aggregate mission budgets
@@ -309,7 +313,7 @@ export function missionPolicySummary(db: Database, teamId: string): string | und
     }
   }
   const verification = record.approved_json ? verificationInstructions((JSON.parse(record.approved_json) as ModelPolicy).verification) : "QA scope is proposed in /ensemble-mission config."
-  return `Mission policy: ${state}; file=${record.policy_path}. Use /ensemble-mission config then /ensemble-mission start. New admission is gated in code; already-admitted tasks retain their policy revision. Follow the admitted task's execution policy; do not substitute an unapproved model. ${verification}`
+  return `Mission policy: ${state}; file=${record.policy_path}. Use /ensemble-mission config/start only for initial approval or a policy revision, not as a new go at each milestone. New admission is gated in code; already-admitted tasks retain their policy revision. Follow the admitted task's execution policy; do not substitute an unapproved model. ${verification}`
 }
 
 /** Resolve a score-free planning start or explicitly supplied classification, without overriding task scores. */

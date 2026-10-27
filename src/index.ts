@@ -18,6 +18,7 @@ import { getMemberPromptModel, parseModelId } from "./member-model"
 import { liveCheckoutBranch, storePreservedBranch } from "./worktree-state"
 import { preserveBranch } from "./tools/merge-helper"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
+import { buildMissionDecisionPrompt } from "./mission-autonomy"
 import { log, initLog } from "./log"
 import { findTeamBySession } from "./types"
 import { loadConfig } from "./config"
@@ -466,6 +467,8 @@ const plugin: Plugin = async (input) => {
         : buildTeammateSystemPrompt(db, teamInfo.teamId, teamInfo.memberName ?? "unknown")
       log(`system-prompt:injected role=${teamInfo.role} len=${prompt.length}`)
       output.system.push(prompt)
+      const decisions = buildMissionDecisionPrompt(db, teamInfo.teamId)
+      if (decisions) output.system.push(decisions)
     },
 
     // Compaction safety — preserves team context when sessions get long
@@ -474,6 +477,8 @@ const plugin: Plugin = async (input) => {
       if (!teamInfo) return
       const context = buildTeamCompactionContext(db, teamInfo.teamId, teamInfo.role, teamInfo.memberName)
       output.context.push(context)
+      const decisions = buildMissionDecisionPrompt(db, teamInfo.teamId)
+      if (decisions) output.context.push(decisions)
     },
 
     // Team-aware shell environment for scripts and hooks
@@ -529,7 +534,7 @@ const plugin: Plugin = async (input) => {
           "Teammates work asynchronously and will message you when done. Do not poll for their status.",
         args: {
           name: tool.schema.string().describe("Teammate name (lowercase alphanumeric with hyphens)"),
-          agent: tool.schema.string().default("build").describe("Agent type (e.g. 'build', 'plan', 'explore')"),
+          agent: tool.schema.string().optional().describe("Agent type; defaults to the context-bound task profile, otherwise build"),
           prompt: tool.schema.string().describe("Task instructions for the teammate"),
           model: tool.schema.string().optional().describe("Model in provider/model format (optional, uses default)"),
           variant: tool.schema.string().optional().describe("Native reasoning variant for an explicit/configured model; routed models use the catalogue effort"),
@@ -547,7 +552,7 @@ const plugin: Plugin = async (input) => {
         },
         async execute(args, ctx) {
           const result = await executeTeamSpawn(deps, args, ctx.sessionID)
-          ctx.metadata({ title: `Spawned ${args.name} (${args.agent})` })
+          ctx.metadata({ title: `Spawned ${args.name} (${args.agent ?? "task/default profile"})` })
           return result
         },
       }),
@@ -622,6 +627,11 @@ const plugin: Plugin = async (input) => {
             priority: tool.schema.enum(["high", "medium", "low"]).default("medium").describe("Task priority"),
             depends_on: tool.schema.array(tool.schema.string()).optional().describe("Task IDs this depends on"),
             agent: tool.schema.string().optional().describe("Agent type affinity for auto-dispatch (e.g. build). Omit for any member."),
+            context: tool.schema.object({
+              mode: tool.schema.enum(["fresh", "fork", "checkpoint", "compact_fork"]),
+              from: tool.schema.string().optional(),
+              messageID: tool.schema.string().optional().describe("Exclusive native checkpoint boundary"),
+            }).strict().optional().describe("Requires a new session with this context and task profile; never idle-worker reuse. Omit to retain pool reuse. from/current is frozen to the task creator."),
             complexity: tool.schema.number().int().min(0).max(100).optional().describe("Task complexity for deterministic model routing"),
           risk: tool.schema.number().int().min(0).max(100).optional().describe("Task risk for model routing only (not review policy)"),
             task_type: tool.schema.string().optional().describe("Task kind for classification"),

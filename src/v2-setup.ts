@@ -21,6 +21,9 @@ import { loadConfig, loadPreparationProfiles } from "./config"
 import { TokenBucket } from "./rate-limit"
 import { ActivityBuffer, recordFromToolBefore, recordFromToolAfter } from "./activity"
 import { buildLeadSystemPrompt, buildTeammateSystemPrompt, buildTeamCompactionContext } from "./system-prompt"
+import { buildMissionDecisionPrompt } from "./mission-autonomy"
+import { SupervisorRecovery } from "./supervisor-recovery"
+import { PermissionDiagnostics, defaultPermissionLogDirectory, type PermissionToolContext } from "./permission-diagnostics"
 import { startDashboard, type DashboardServer } from "./dashboard"
 import { EnsembleRpc, emitMemberEvent, emitNoticeEvent } from "./v2-rpc"
 import { isWorktreeInstance } from "./util"
@@ -97,6 +100,8 @@ export interface SetupOptions {
   dashboardPort?: number
   /** Skills directory override for tests; defaults to the running package's own. */
   skillsDir?: string
+  /** Permission incident journal override; false disables, in-memory tests default to disabled. */
+  permissionLogDir?: string | false
 }
 
 /** Live handle for a V2 ensemble instance. */
@@ -119,7 +124,8 @@ export async function setupEnsemble(
   ctx: V2SetupContext,
   options: SetupOptions = {},
 ): Promise<EnsembleHandle> {
-  const db = createDb(options.dbPath ?? getDbPath())
+  const dbPath = options.dbPath ?? getDbPath()
+  const db = createDb(dbPath)
   const config = loadConfig(ctx.location.directory)
   const registry: MemberRegistry = new MemberRegistryImpl()
   const tracker: DescendantTracker = new DescendantTrackerImpl()
@@ -127,6 +133,10 @@ export async function setupEnsemble(
   const activityBuffer = new ActivityBuffer()
   const progressTracker = new ProgressTracker()
   const nudgedMembers = new Set<string>()
+  const permissionDiagnostics = new PermissionDiagnostics({ db, tracker, projectDirectory: ctx.location.directory,
+    directory: options.permissionLogDir ?? (dbPath === ":memory:" ? false : defaultPermissionLogDirectory(dbPath)),
+    onWriteError: () => vlog("permission-diagnostics:journal-unavailable; a refusal could not be saved. Authorization was not changed."),
+  })
   const continuityOptions = { apiUrl: config.v2ApiUrl, authorization: process.env.OPENCODE_ENSEMBLE_V2_AUTHORIZATION }
   await recoverSessionContinuity({ db, registry, tracker, purgeApprovals, progressTracker, config,
     directory: ctx.location.directory, client: createV2Client(ctx, continuityOptions) })
@@ -193,6 +203,7 @@ export async function setupEnsemble(
 
   const dispatch = async (event: V2EventLike): Promise<void> => {
     const transition = dispatchV2Event(db, registry, tracker, event)
+    permissionDiagnostics.observeNativeEvent(event)
     // Status and execution events may arrive in either order. An already-ready
     // member still needs harvesting when its final response becomes durable.
     if (!transition && event.data?.sessionID && ["session.execution.succeeded", "session.idle", "session.status"].includes(event.type)) {
@@ -280,8 +291,11 @@ export async function setupEnsemble(
   }
 
   await ctx.tool.hook("execute.before", (raw) => {
-    const input = raw as unknown as { tool: string; sessionID: string }
-    checkToolIsolation(registry, tracker, input.tool, input.sessionID, db)
+    const input = raw as unknown as PermissionToolContext
+    try { checkToolIsolation(registry, tracker, input.tool, input.sessionID, db) } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Team tools are not available to sub-agents.")) permissionDiagnostics.recordIsolation(input)
+      throw error
+    }
     if (input.tool.startsWith("team_")) {
       if (!rateLimiter.tryConsume()) {
         return rateLimiter.waitForToken().then(() => undefined)
@@ -291,6 +305,7 @@ export async function setupEnsemble(
   })
 
   await ctx.tool.hook("execute.after", (raw) => {
+    permissionDiagnostics.observeToolAfter(raw)
     const event = raw as unknown as {
       tool: string
       sessionID: string
@@ -330,10 +345,12 @@ export async function setupEnsemble(
   await ctx.session.hook("context", (raw) => {
     const event = raw as unknown as {
       sessionID: string
+      agent?: string
       system: Array<{ type: string; text: string }>
       messages?: unknown[]
     }
     if (!event.sessionID) return
+    permissionDiagnostics.noteSession(event.sessionID, event.agent)
     // Native switchAgent can wake an idle fork. Stop dispatch until isolation is
     // bound; no provider/tools may run at the source location during preparation.
     const preparing = db.query("SELECT spawn_pending FROM team_member WHERE session_id = ?").get(event.sessionID) as { spawn_pending: number } | null
@@ -361,6 +378,10 @@ export async function setupEnsemble(
         text: 'Ensemble tools on this platform are called through the execute tool, e.g. tools.team_message({ to: "lead", text: "..." }). Do not call them directly.',
       })
     }
+    // Preserve the host prefix. Shared boundaries are static; long-run priorities
+    // are appended here only from an approved mission revision.
+    const decisions = buildMissionDecisionPrompt(db, teamInfo.teamId)
+    if (decisions) event.system.push({ type: "text", text: decisions })
   })
 
   await ctx.session.hook("compaction", (raw) => {
@@ -375,6 +396,8 @@ export async function setupEnsemble(
     if (!teamInfo) return
     const context = buildTeamCompactionContext(db, teamInfo.teamId, teamInfo.role, teamInfo.memberName)
     event.system.push({ type: "text", text: context })
+    const decisions = buildMissionDecisionPrompt(db, teamInfo.teamId)
+    if (decisions) event.system.push({ type: "text", text: decisions })
   })
 
   // Modern V2 removed permission.rules. Keep the same scoped team-tool grants,
@@ -413,6 +436,9 @@ export async function setupEnsemble(
   const listMissionModels = ctx.model?.list.bind(ctx.model)
   if (listMissionModels) deps.nativeModels = async () => nativeMissionModels((await listMissionModels({ location: { directory: ctx.location.directory } })).data)
   await registerV2Tools(ctx.tool, deps)
+  try { if (ctx.tool.list) permissionDiagnostics.noteTools(await ctx.tool.list()) } catch {
+    vlog("permission-diagnostics:catalogue-unavailable; incidents will retain tool names without namespace enrichment.")
+  }
   const preparationPort = createPreparationPort(ctx, true, async () => deps.nativeModels ? await deps.nativeModels() : [], client.continuity)
   const missionCommands = await registerMissionCommands(ctx, deps, deps.nativeModels, preparationPort)
   // Self-register the shipped skills so instructions follow the running
@@ -459,6 +485,22 @@ export async function setupEnsemble(
   const recoverable = db.query("SELECT id FROM team WHERE project_id = ? AND status = 'active' AND (id IN (SELECT team_id FROM team_task WHERE classification_status IN ('pending', 'running')) OR id IN (SELECT team_id FROM classification_helper))").all(ctx.location.directory) as Array<{ id: string }>
   recoverable.forEach(team => { resumeClassifications(team.id) })
 
+  const supervisorRecovery = new SupervisorRecovery({ db, client, projectId: ctx.location.directory,
+    hasPendingPermission: async sessions => {
+      if (!ctx.permission?.list) return false
+      const response = await ctx.permission.list({ location: { directory: ctx.location.directory } })
+      const requests: unknown = Array.isArray(response) ? response
+        : response && typeof response === "object" && "data" in response ? response.data : undefined
+      if (!Array.isArray(requests)) throw new Error("Unknown native permission response")
+      const pendingSessions = requests.map((request: unknown) => {
+        if (!request || typeof request !== "object" || !("sessionID" in request) || typeof request.sessionID !== "string") throw new Error("Unknown native permission request")
+        return request.sessionID
+      })
+      return pendingSessions.some(sessionID => sessions.includes(sessionID))
+    },
+  })
+  supervisorRecovery.start()
+
   // Dashboard mirrors V1: main instance only, skipped when port is 0.
   let dashboard: DashboardServer | null = null
   const dashboardPort = options.dashboardPort ?? config.dashboardPort
@@ -476,6 +518,7 @@ export async function setupEnsemble(
     dispatch,
     dispose: async () => {
       controller.abort()
+      supervisorRecovery.stop()
       await missionCommands?.dispose()
       classificationTimers.forEach(clearTimeout)
       dashboard?.stop()

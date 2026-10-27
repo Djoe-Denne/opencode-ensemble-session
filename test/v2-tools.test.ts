@@ -81,6 +81,19 @@ async function run(defs: V2ToolDef[], name: string, input: unknown, sessionID: s
 }
 
 describe("v2-tools (issue #36, DRY: same execute fns as V1)", () => {
+  test("task context is exposed and preserved by the V2 normalizer", async () => {
+    const { defs, domain } = mockToolDomain()
+    const deps = mockDeps()
+    await registerV2Tools(domain, deps)
+    await run(defs, "team_create", { name: "context-board" }, "context-lead")
+    expect(defs.find(def => def.name === "team_tasks_add")?.input).toMatchObject({ properties: { tasks: { items: { properties: {
+      context: { properties: { mode: { enum: ["fresh", "fork", "checkpoint", "compact_fork"] } }, required: ["mode"], additionalProperties: false },
+    } } } } })
+    await run(defs, "team_tasks_add", { tasks: [{ content: "Independent review", agent: "qa", context: { mode: "fresh" } }] }, "context-lead")
+    expect(deps.db.query("SELECT agent, spawn_context FROM team_task").get()).toEqual({ agent: "qa", spawn_context: '{"mode":"fresh"}' })
+    await expect(run(defs, "team_tasks_add", { tasks: [{ content: "Invalid", context: null }] }, "context-lead")).rejects.toThrow(/context/)
+  })
+
   test("planned model selection and its reason survive the V2 schema and normalizer", async () => {
     const { defs, domain } = mockToolDomain()
     const deps = mockDeps()

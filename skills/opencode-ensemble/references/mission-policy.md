@@ -52,6 +52,66 @@ configuration generation. Pending or failed preview delivery cannot authorize
 execution. Publishing tasks early does not start workers or classifiers. Missing
 scores never become zero, and explicit model/score overrides cannot evade policy.
 
+## Decision boundaries in both modes
+
+Supervised mode does not mean seeking a user go at every step. Decide routine
+technical and organizational details within the authorized phase, scope and
+approved plan. Resolve ordinary worker disagreements yourself from evidence.
+After a milestone, checkpoint, review or QA result, report progress, integrate
+results as needed, and continue the next authorized step. Wait for necessary
+prerequisite results, not an invented user approval. Check remaining tasks and
+reports when no worker is active rather than entering standby automatically.
+
+Ask the user before changing the mission objective or making an architectural
+change not already authorized. Architecture means material changes to system
+boundaries, component responsibilities, public/persisted contracts, storage or
+trust/security boundaries; local implementation details, private helper refactors
+and compatible fixes are not automatically architectural. An architectural step
+already explicitly approved in the plan does not require duplicate approval.
+
+Explicit user holds, initial/revised `config`/`start`, mandatory plan review,
+native permissions, budgets and safety/QA gates still apply. Worker plan review
+normally needs the lead's approval, not a new user go. Explain the exact missing
+authority or unresolved conflict for a genuine blocker, and continue independent
+authorized work where safe. Workers stop after their own deliverable under their
+reporting mode; the lead continues coordination and closes the mission.
+
+A stable shared system suffix carries these boundaries for leads, workers and
+compaction in both modes. It does not approve draft execution or change a model,
+QA contract or permission. The optional approved long-run priorities below are
+appended after it, preserving the earlier host-system prefix.
+
+## Long-run autonomy
+
+When the user requests long run, persist their general decision priorities in
+the mission draft as `autonomy: { mode: "long_run", instructions: [...] }`.
+This works with policy versions 1, 2 and 3, independently of classification.
+Use the user's actual priorities (quality/fidelity to the plan, fastest correct
+implementation, etc.). Do not invent preferences or ask a routine questionnaire
+when the mandate already provides a reasonable basis. At least one nonempty
+instruction is required; each is limited to 2000 characters, at most 50 total.
+Present the exact contract with `config`; only the user's `start` activates it.
+`classification.missionMode` alone is legacy resilience, not decision delegation.
+
+After approval, a separate stable system block is appended after existing system
+instructions for the lead and workers, including compaction and subsequent
+resumption. It comes from the last approved revision, not mutable draft files or
+task state. Pending configuration keeps the previous approved delegation for
+existing work while new admission remains paused. To revoke it, present and
+approve `autonomy: { mode: "supervised" }`. Model and QA admissions are unchanged.
+
+Under this delegation, decide technical and organizational choices within scope
+using those priorities. Record important decisions and continue without seeking
+validation. Prefer reasonable reversible assumptions; uncertainty or several
+valid options alone are not hard blockers. Before escalation, check agreements
+already granted, delivery to workers and safe alternatives. A worker reports an
+unresolved boundary to the lead through its permitted reporting channel; the
+lead arbitrates within its mandate before asking the user. Escalate to the user
+only if no compliant decision remains: conflicting requirements, indispensable
+missing authority/access, an irreversible action outside the mandate, or an
+impossible objective. Continue independent work where safe. Never bypass native
+permissions, explicit prohibitions, QA, budget limits or critical safety stops.
+
 ## Mission verification
 
 `config` proposes a QA level: `light`, `proportionate` (default), or `reinforced`.

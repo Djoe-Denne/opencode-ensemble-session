@@ -33,6 +33,7 @@ export function pickNextTask(db: Database, teamId: string, agentType: string, li
   const rows = db.query(
     `SELECT id, content, agent, priority FROM team_task
       WHERE team_id = ? AND status = 'pending' AND assignee IS NULL
+        AND spawn_context IS NULL
         AND classification_status IN ('not_required', 'completed')
         AND (execution_request IS NULL OR execution_decision IS NOT NULL)
         AND team_id IN (SELECT id FROM team WHERE mission_state != 'critical')
