@@ -1079,8 +1079,12 @@ and correction count. The same running session can resume after a transport
 failure; simultaneous loops for that run are refused. A missing, failed,
 interrupted, or unchanged assistant response is not counted as invalid JSON.
 The host must provide `session.wait`, `session.context`, `session.get`, and
-`session.interrupt`; the wait has a ten-minute deadline. A timeout interrupts
-the helper rather than inventing a JSON response.
+`session.interrupt`. PM discovery has no plugin-imposed wall-clock deadline:
+wait for native completion, explicit interruption or a genuine host failure.
+Elapsed time alone never interrupts the PM. A host wait error remains visible
+and resumable without automatically interrupting the helper or inventing a JSON
+response. The initial candidate plus five schema corrections remain bounded
+independently of how long discovery takes.
 
 After an import commits, retrying `prepare` returns the stored task ids,
 decisions, hold reasons, questions, and parallel groups. It does not need a new

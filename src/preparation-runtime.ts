@@ -34,8 +34,6 @@ export interface PreparationPromptCall {
 export interface PreparationPort {
   hooksReady: boolean
   confirmedStructuredOutput?: { prompt(input: PreparationPromptCall): Promise<unknown> }
-  /** Test override for the host wait deadline. Production uses ten minutes. */
-  waitBoundMs?: number
   assertCapabilities(): Promise<void>
   probeAgent(agent: string): Promise<"available" | "unavailable">
   describeAgent(agent: string): Promise<{ readOnly: boolean; permissions: readonly string[] }>
@@ -154,7 +152,6 @@ interface ContextRow {
 }
 
 const PREPARATION_ATTEMPTS = 6
-const PREPARATION_WAIT_MS = 10 * 60 * 1000
 const NO_ASSISTANT_REPLY = "Preparation received no new assistant reply"
 const activePreparationLoops = new Set<string>()
 
@@ -520,38 +517,6 @@ async function importReply(deps: ToolDeps, port: PreparationPort, runId: string,
   }
 }
 
-function waitLimit(port: PreparationPort): number {
-  return typeof port.waitBoundMs === "number" && Number.isFinite(port.waitBoundMs) && port.waitBoundMs > 0 ? port.waitBoundMs : PREPARATION_WAIT_MS
-}
-
-async function boundedWait(port: PreparationPort, sessionId: string): Promise<void> {
-  const controller = new AbortController()
-  let timer: ReturnType<typeof setTimeout> | undefined
-  let rejectTimeout: (error: Error) => void = () => undefined
-  const timeout = new Promise<never>((_, reject) => {
-    rejectTimeout = reject
-    timer = setTimeout(() => {
-      controller.abort()
-      reject(new Error("Preparation wait timed out"))
-    }, waitLimit(port))
-  })
-  const waiting = port.wait({ sessionID: sessionId, signal: controller.signal }).then(() => undefined)
-  waiting.catch(() => undefined)
-  timeout.catch(() => undefined)
-  try {
-    await Promise.race([waiting, timeout])
-  } catch (error) {
-    if (controller.signal.aborted || (error instanceof Error && /timed out/i.test(error.message))) {
-      await port.abort({ sessionID: sessionId }).catch(() => undefined)
-      throw new Error("Preparation wait timed out")
-    }
-    throw error
-  } finally {
-    if (timer) clearTimeout(timer)
-    rejectTimeout(new Error("Preparation wait finished"))
-  }
-}
-
 function documentIssue(reply: string): string | undefined {
   try {
     parsePreparationDocument(parseJson(reply))
@@ -593,7 +558,7 @@ async function runBoundedLoop(deps: ToolDeps, port: PreparationPort, runId: stri
       announced = true
       hooks?.onReady?.({ sessionID: sessionId })
     }
-    await boundedWait(port, sessionId)
+    await port.wait({ sessionID: sessionId, signal: new AbortController().signal })
     const reply = await port.readAssistant({ sessionID: sessionId })
     if (!reply.trim()) throw new Error(NO_ASSISTANT_REPLY)
     const imported = await importReply(deps, port, runId, sessionId, teamId, agent, model, policy, reply)

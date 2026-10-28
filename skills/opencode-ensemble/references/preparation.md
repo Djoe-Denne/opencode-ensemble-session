@@ -55,6 +55,12 @@ returns its result or error separately. An active repeated `prepare` keeps the
 same session without a second PM prompt. Preserve the selected PM's own native
 permissions rather than the supervisor's inherited rules.
 
+PM discovery has no plugin-imposed wall-clock deadline. Wait for native completion,
+explicit interruption or a genuine host failure; elapsed time alone never
+interrupts the PM. A host failure remains visible and resumable, not a reason to
+invent a result or automatically abort the helper. The initial candidate plus five
+schema corrections are bounded independently of discovery duration.
+
 The running-work menu need not retain an idle child after completion. Report
 the final mapping/questions in the supervisor's conversation. Older independent
 PM sessions are not silently reparented or restarted.

@@ -100,17 +100,33 @@ task state. Pending configuration keeps the previous approved delegation for
 existing work while new admission remains paused. To revoke it, present and
 approve `autonomy: { mode: "supervised" }`. Model and QA admissions are unchanged.
 
-Under this delegation, decide technical and organizational choices within scope
-using those priorities. Record important decisions and continue without seeking
-validation. Prefer reasonable reversible assumptions; uncertainty or several
-valid options alone are not hard blockers. Before escalation, check agreements
-already granted, delivery to workers and safe alternatives. A worker reports an
-unresolved boundary to the lead through its permitted reporting channel; the
-lead arbitrates within its mandate before asking the user. Escalate to the user
-only if no compliant decision remains: conflicting requirements, indispensable
-missing authority/access, an irreversible action outside the mandate, or an
-impossible objective. Continue independent work where safe. Never bypass native
-permissions, explicit prohibitions, QA, budget limits or critical safety stops.
+Under this delegation, necessary technical decisions and operational validations
+within the approved mandate are delegated by default, not just implementation
+details. This includes contract ratification, SDK publication, Kind operations
+and comparable steps: these are not categorical exceptions or automatic
+user-approval gates. Check prerequisites and existing authority, execute authorized
+steps, record consequential decisions briefly and continue without a new go.
+Progress reports are informational, not permission requests.
+
+Read authorization from the approved objective, mandate and decision delegation,
+not from whether every necessary architectural or contract decision was listed in
+the plan. Do not change the objective or expand scope. Initial `config`/`start`
+and required model/QA policy revisions still apply; domain contract ratification
+does not itself revise that policy. Explicitly reserved user decisions remain
+reserved; the operation's category alone establishes no such reservation.
+
+Prefer reasonable reversible assumptions; uncertainty, several valid options or
+technical difficulty alone are not hard blockers. Research, test and arbitrate
+before asking the user about a consequential dilemma that cannot reasonably be
+resolved. Check agreements already granted, delivery to workers and safe
+alternatives. A worker reports an unresolved boundary to the lead through its
+permitted reporting channel; the lead arbitrates within its mandate first.
+Escalate only if no reasonable compliant decision remains: that unresolved
+dilemma, conflicting requirements, indispensable missing authority/access, an
+irreversible action outside the mandate, or an impossible objective. Explain the
+specific unresolved decision or missing authority, not just an operation category.
+Continue independent work where safe. Never bypass native permissions, explicit
+prohibitions, QA, budget limits or critical safety stops.
 
 ## Mission verification
 

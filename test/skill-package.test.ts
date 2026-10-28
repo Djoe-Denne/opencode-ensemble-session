@@ -65,4 +65,18 @@ describe("opencode-ensemble agent skill", () => {
       expect(existsSync(join(skillDir, "references", file))).toBe(true);
     }
   });
+
+  test.each([
+    skillPath,
+    join(skillDir, "references", "mission-policy.md"),
+    join(skillDir, "references", "lead-checklists.md"),
+    join(root, "docs", "mission-policy.md"),
+  ])("documents default long-run operational delegation in %s", path => {
+    const text = read(path);
+    expect(text).toContain("delegated by default");
+    expect(text).toContain("contract ratification");
+    expect(text).toContain("SDK publication");
+    expect(text).toContain("Kind operations");
+    expect(text).toContain("not categorical exceptions");
+  });
 });

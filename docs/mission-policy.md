@@ -144,17 +144,34 @@ another contract is approved. The block changes only when approved autonomy
 changes; appending it preserves the earlier system prefix but does not guarantee
 provider cache hits. Worker model/QA admissions retain their existing revisions.
 
-The model decides technical and organizational choices within its mandate,
-records consequential decisions briefly, and continues without confirmation.
-Uncertainty or multiple valid options alone are not hard blockers. Before
-escalation it checks existing authorization, delivery to workers and safe
+Necessary technical decisions and operational validations within the approved
+mandate are delegated by default, not just implementation details. This includes
+contract ratification, SDK publication, Kind operations and comparable steps:
+these are not categorical exceptions or automatic user-approval gates. The model
+checks prerequisites and existing authority, performs authorized steps, records
+consequential decisions briefly and continues without confirmation. Progress
+reports are informational, not permission requests. These defaults accompany any
+approved long-run priorities; users need not repeat them in `instructions`.
+
+Authorization comes from the approved objective, mandate and decision delegation,
+not from enumerating every necessary architectural or contract decision in the
+plan. This does not change the objective or expand scope. Initial `config`/`start`
+and required model/QA policy revisions remain binding; domain contract ratification
+is not itself such a revision. An explicitly reserved user decision stays reserved,
+but an operation category alone is not evidence of a reservation.
+
+Uncertainty, multiple valid options or technical difficulty alone are not hard
+blockers. Research, tests, existing instructions and reasonable assumptions must
+be considered before escalating a consequential unresolved dilemma. Before
+escalation the model checks existing authorization, delivery to workers and safe
 alternatives. Workers escalate unresolved boundaries to the lead through their
-permitted reporting channel; the lead decides within the delegation before
-asking the user. Only a genuine inability to choose compliantly warrants a user
-question: conflicting requirements, indispensable missing authority/access, an
-irreversible action outside the mandate, or an impossible objective. Independent
-work continues where safe. Permissions, explicit prohibitions, approved budgets,
-QA and critical safety/admission stops remain mandatory.
+permitted reporting channel; the lead decides within the delegation first. Only
+a genuine inability to choose compliantly warrants a user question: that unresolved
+dilemma, conflicting requirements, indispensable missing authority/access, an
+irreversible action outside the mandate, or an impossible objective. Explain the
+specific unresolved decision or missing authority, not just an operation category.
+Independent work continues where safe. Permissions, explicit prohibitions, approved
+budgets, QA and critical safety/admission stops remain mandatory.
 
 Approve `autonomy: { "mode": "supervised" }` to revoke the delegation. Approved
 autonomy also determines classifier resilience; changing classifier settings

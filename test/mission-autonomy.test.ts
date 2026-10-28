@@ -161,6 +161,29 @@ describe("approved long-run autonomy", () => {
     expect(text).toContain("independent work")
   })
 
+  test.each([1, 2, 3] as const)("version %s delegates operational validations by default without category-based approval gates", async version => {
+    const f = await fixture(version)
+    f.edit({ mode: "long_run", instructions: ["Prioritize quality."] })
+    expect(buildMissionDecisionPrompt(f.deps.db, f.teamId)).not.toContain("Contract ratification")
+    f.approve()
+    const text = buildMissionDecisionPrompt(f.deps.db, f.teamId)
+    expect(text).toContain("operational validations within the approved mandate are delegated by default")
+    expect(text).toContain("Contract ratification, SDK publication, Kind operations")
+    expect(text).toContain("not categorical exceptions or automatic user-approval gates")
+    expect(text).toContain("Check their prerequisites")
+    expect(text).toContain("Progress reports are informational, not permission requests")
+    expect(text).toContain("research, tests, existing instructions or reasonable assumptions")
+    expect(text).toContain("Technical difficulty alone")
+    expect(text).toContain("specific missing authority")
+    expect(text).toContain("initial config/start approval")
+    expect(text).toContain("explicit prohibitions")
+    expect(text).toContain("do not gain tools or permissions")
+    expect(text).not.toContain("These priorities do not authorize")
+    f.edit({ mode: "supervised" })
+    f.approve()
+    expect(buildMissionDecisionPrompt(f.deps.db, f.teamId)).not.toContain("Contract ratification")
+  })
+
   test.each([null, {}, { mode: "fast" }, { mode: "long_run" }, { mode: "long_run", instructions: [] },
     { mode: "long_run", instructions: [" "] }, { mode: "long_run", instructions: [3] },
     { mode: "long_run", instructions: ["x".repeat(2001)] }, { mode: "long_run", instructions: Array(51).fill("x") },

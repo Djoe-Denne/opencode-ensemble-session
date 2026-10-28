@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, spyOn, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -1128,23 +1128,42 @@ describe("preparation QA blockers", () => {
     expect(f.deps.db.query("SELECT status, attempts FROM preparation_run").get()).toEqual({ status: "imported", attempts: 0 })
   })
 
-  test("QA: aborts a wait that has no deadline and stays resumable", async () => {
+  test("QA: PM discovery waits for completion without scheduling a wall-clock deadline", async () => {
     const f = runtimeFixture([JSON.stringify(document())])
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    let waitSignal: AbortSignal | undefined
     f.port.wait = async input => {
-      const signal = (input as { signal?: AbortSignal }).signal
-      if (!signal) throw new Error("wait was not bounded by a signal")
-      await new Promise((_, reject) => {
-        const timer = setTimeout(() => reject(new Error("signal did not abort the wait")), 250)
-        signal.addEventListener("abort", () => {
-          clearTimeout(timer)
-          reject(new Error("Preparation wait timed out"))
-        })
-      })
+      waitSignal = input.signal
+      entered.resolve()
+      await release.promise
     }
-    ;(f.port as PreparationPort & { waitBoundMs?: number }).waitBoundMs = 30
-    await expect(executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, f.port)).rejects.toThrow(/timed out|signal/)
-    expect(f.calls.some(call => call.method === "abort")).toBe(true)
+    const timers = spyOn(globalThis, "setTimeout")
+    const running = executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, f.port)
+    try {
+      await entered.promise
+      const scheduledDeadlines = timers.mock.calls.length
+      expect(f.deps.db.query("SELECT status, attempts FROM preparation_run").get()).toEqual({ status: "running", attempts: 0 })
+      expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 0 })
+      release.resolve()
+      expect((await running).status).toBe("imported")
+      expect(scheduledDeadlines).toBe(0)
+      expect(waitSignal?.aborted).toBe(false)
+      expect(f.calls.some(call => call.method === "abort")).toBe(false)
+      expect(f.calls.filter(call => call.method === "create")).toHaveLength(1)
+    } finally {
+      release.resolve()
+      await running.finally(() => timers.mockRestore())
+    }
+  })
+
+  test.each(["native wait timed out", "Preparation native session interrupted"])("QA: preserves host wait failure %s without an automatic PM abort and stays resumable", async message => {
+    const f = runtimeFixture([JSON.stringify(document())])
+    f.port.wait = async () => { throw new Error(message) }
+    await expect(executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, f.port)).rejects.toThrow(message)
+    expect(f.calls.some(call => call.method === "abort")).toBe(false)
     expect(f.deps.db.query("SELECT status, attempts FROM preparation_run").get()).toEqual({ status: "running", attempts: 0 })
+    expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 0 })
     f.port.wait = async () => undefined
     const resumed = await executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, f.port)
     expect(resumed.status).toBe("imported")
@@ -1422,7 +1441,7 @@ describe("preparation QA blockers", () => {
     expect(f.deps.db.query("SELECT context FROM preparation_import").get()).not.toEqual({ context: "old prose" })
   })
 
-  test("QA: native wait receives the abort signal as request options", async () => {
+  test("QA: native wait receives explicit cancellation as request options without a runtime deadline", async () => {
     const f = runtimeFixture([])
     const waits: Array<{ input: unknown; options?: { signal?: AbortSignal } }> = []
     const port = createPreparationPort({
@@ -1440,9 +1459,7 @@ describe("preparation QA blockers", () => {
           const signal = options?.signal
           if (!signal) throw new Error("AbortSignal missing from request options")
           await new Promise((_, reject) => {
-            const timer = setTimeout(() => reject(new Error("signal was not aborted")), 300)
             signal.addEventListener("abort", () => {
-              clearTimeout(timer)
               reject(new Error("host wait aborted"))
             }, { once: true })
           })
@@ -1451,13 +1468,15 @@ describe("preparation QA blockers", () => {
         interrupt: async () => undefined,
       },
     }, true, async () => nativeCatalogue())
-    port.waitBoundMs = 30
-    await expect(executePreparation(f.deps, "lead", { kind: "pm", text: "Ship the cache boundary" }, port)).rejects.toThrow(/timed out/)
+    const controller = new AbortController()
+    const waiting = port.wait({ sessionID: "pm-native", signal: controller.signal })
+    expect(controller.signal.aborted).toBe(false)
+    controller.abort()
+    await expect(waiting).rejects.toThrow("host wait aborted")
     expect(waits).toHaveLength(1)
     expect(waits[0]?.input).toEqual({ sessionID: "pm-native" })
     expect(waits[0]?.options?.signal).toBeInstanceOf(AbortSignal)
     expect(waits[0]?.options?.signal?.aborted).toBe(true)
-    expect(f.deps.db.query("SELECT status, attempts FROM preparation_run").get()).toEqual({ status: "running", attempts: 0 })
     expect(f.deps.db.query("SELECT COUNT(*) AS c FROM preparation_import").get()).toEqual({ c: 0 })
   })
 

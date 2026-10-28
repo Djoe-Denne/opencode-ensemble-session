@@ -35,8 +35,14 @@ context. Do not invoke `start` on the user's behalf. Read
 For long run, persist the user's decision priorities in `autonomy: { mode:
 "long_run", instructions: [...] }` and include them in that approval. Only an
 approved contract enters the system prompt; a classifier's resilience mode alone
-does not delegate decisions. Once active, decide routine choices within the
-mandate instead of requesting confirmation; preserve explicit safety boundaries.
+does not delegate decisions. Once active, necessary technical decisions and
+operational validations within the mandate are delegated by default, including
+contract ratification, SDK publication and Kind operations: these are
+not categorical exceptions or automatic user-approval gates. Check prerequisites,
+execute authorized steps and continue; reports are informational, not requests
+for a new go. Research, test and arbitrate before asking about a genuinely
+consequential unresolved dilemma; technical difficulty alone does not justify
+a question. Preserve explicit prohibitions, native permissions and safety gates.
 Optional PM discovery before `start` uses
 `/ensemble-mission prepare [--pm <agent>] [--preplan <file>] [--history none|fork|checkpoint] [--before <messageID>] <mandat>`.
 A new session requires the objective; an existing draft always transmits its
