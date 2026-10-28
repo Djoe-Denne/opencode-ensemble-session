@@ -382,6 +382,25 @@ export const MIGRATIONS: string[] = [
   // Migration 28: task-level context contracts and single-use new-session admission.
   `ALTER TABLE team_task ADD COLUMN spawn_context TEXT;
    ALTER TABLE team_member ADD COLUMN context_task_id TEXT;`,
+  // Migration 29: explicit isolation/reporting contracts; legacy tasks retain defaults.
+  `ALTER TABLE team_task ADD COLUMN spawn_options TEXT;`,
+  // Migration 30: reversible pre-admission publication and explicit supervisor acceptance.
+  `ALTER TABLE team_task ADD COLUMN publication TEXT NOT NULL DEFAULT 'published' CHECK(publication IN ('published','deferred'));
+   ALTER TABLE team_task ADD COLUMN completion_policy TEXT NOT NULL DEFAULT 'assignee' CHECK(completion_policy IN ('assignee','lead'));
+   ALTER TABLE team_task ADD COLUMN control_revision INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE team_task ADD COLUMN admitted_at INTEGER;
+   UPDATE team_task SET admitted_at=time_updated WHERE assignee IS NOT NULL OR model_routing IS NOT NULL OR status IN ('in_progress','completed','cancelled');
+   CREATE TABLE task_control_event (
+     id TEXT PRIMARY KEY,
+     team_id TEXT NOT NULL REFERENCES team(id) ON DELETE CASCADE,
+     task_id TEXT NOT NULL REFERENCES team_task(id) ON DELETE CASCADE,
+     actor TEXT NOT NULL,
+     reason TEXT NOT NULL,
+     before_json TEXT NOT NULL,
+     after_json TEXT NOT NULL,
+     time_created INTEGER NOT NULL
+   );
+   CREATE INDEX task_control_event_task_idx ON task_control_event(team_id, task_id, time_created);`,
 ]
 
 /**

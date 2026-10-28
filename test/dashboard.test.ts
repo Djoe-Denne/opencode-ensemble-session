@@ -57,6 +57,18 @@ describe("dashboard", () => {
   })
 
   describe("GET /api/state", () => {
+    test("does not publish deferred task IDs, descriptions or dependency references", async () => {
+      insertTeam(db, "t1", "private", "lead")
+      insertTask(db, "t1", "secret-id", "SECRET audit")
+      db.run("UPDATE team_task SET publication='deferred' WHERE id='secret-id'")
+      insertTask(db, "t1", "consumer", "Visible work", "blocked", "medium", null, '["secret-id"]')
+      server = await startDashboard(db, port)
+      const text = await (await fetch(`http://localhost:${port}/api/state`)).text()
+      expect(text).not.toContain("SECRET")
+      expect(text).not.toContain("secret-id")
+      expect(text).toContain("Visible work")
+    })
+
     test("returns empty teams array when no teams exist", async () => {
       server = await startDashboard(db, port)
       const res = await fetch(`http://localhost:${port}/api/state`)

@@ -25,7 +25,7 @@ export function hasAutonomousAssignment(deps: ToolDeps, sessionID: string): bool
 
 /** Describe the current task boundary without adding another prompt or reminder. */
 export function taskExecutionInstructions(deps: Pick<ToolDeps, "db">, sessionID: string): string {
-  const row = deps.db.query("SELECT model_routing FROM team_member WHERE session_id = ?").get(sessionID) as { model_routing: string | null } | null
+  const row = deps.db.query("SELECT model_routing,report_mode FROM team_member WHERE session_id = ?").get(sessionID) as { model_routing: string | null; report_mode: string } | null
   if (!row?.model_routing) return ""
   const route = JSON.parse(row.model_routing) as Assignment
   if (!Number.isInteger(route.policyRevision)) return ""
@@ -34,6 +34,7 @@ export function taskExecutionInstructions(deps: Pick<ToolDeps, "db">, sessionID:
   if (!revision) return ""
   const policy = JSON.parse(revision.policy_json) as ExecutionPolicy | MissionModelPolicy
   const verification = verificationInstructions(policy.verification)
+  if (row.report_mode === "final_response") return `${verification}\nNative-profile candidate mode; fixed model: ${route.selected.id}. Use only your native profile permissions for the assigned planning/review. Return the candidate in your final response and stop. No phase transition, team-tool grant or task completion is implied; the lead reviews and accepts it.`
   if (!route.execution || policy.version === 1) return verification
   const variants = policy.models.filter(model => model.id === route.selected.id).map(model => model.reasoningEffort ?? "default")
   const boundary = route.execution.phase === "planning"
@@ -74,6 +75,7 @@ function store(deps: ToolDeps, teamId: string, memberName: string, taskId: strin
 
 /** Apply the admitted initial boundary (planning by default, direct only when authorized). */
 export async function startTaskPlanning(deps: ToolDeps, teamId: string, memberName: string, sessionID: string): Promise<void> {
+  if ((deps.db.query("SELECT report_mode FROM team_member WHERE session_id=?").get(sessionID) as { report_mode: string } | null)?.report_mode === "final_response") return
   if (!hasAutonomousAssignment(deps, sessionID)) return
   await transition(deps, teamId, memberName, sessionID, {}, true)
 }
@@ -89,6 +91,7 @@ export async function transitionTaskExecution(deps: ToolDeps, teamId: string, me
 async function transition(deps: ToolDeps, teamId: string, memberName: string, sessionID: string,
   args: { agent?: string; phase?: "implementation"; reasoning?: string }, starting: boolean, signal?: AbortSignal): Promise<void> {
   const { member, route, policy, taskId } = assignment(deps, teamId, memberName, starting)
+  if ((deps.db.query("SELECT report_mode FROM team_member WHERE session_id=?").get(sessionID) as { report_mode: string } | null)?.report_mode === "final_response") throw new Error("Final-response candidate sessions cannot transition execution phase or reasoning")
   if (args.agent !== undefined && args.agent !== member.agent) throw new Error("An autonomous task cannot change its profile; use phase/ reasoning instead")
   if (!starting && args.phase === undefined && args.reasoning === undefined) throw new Error("Specify the implementation phase or reasoning for this task")
   if (!starting && route.execution.phase === "planning" && args.phase !== "implementation") throw new Error("Choose the implementation phase before adjusting reasoning")

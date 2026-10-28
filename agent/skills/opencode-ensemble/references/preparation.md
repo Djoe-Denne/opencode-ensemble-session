@@ -141,7 +141,19 @@ missing information, unverified catalogue or unavailable required tools. These
 are reported evidence, not a guarantee of plan quality or execution approval.
 Task keys are only `id`,
 `title`, `type`, `goal`, `dependsOn`, `planning`, `acceptanceCriteria`,
-`verification`, and `handoff`. `planning` is `{ required: boolean, reason }`.
+`verification`, and `handoff`, plus optional `agent`, `context`, `complexity`,
+`risk`, `worktree`, and `report_mode`. Scores are integers 0–100; isolation is
+boolean; reporting is `team_message` or `final_response`. These fields survive
+import atomically and apply equally to auto-scale and manual spawn; conflicting
+spawn overrides are refused. Explicit context or isolation/reporting requires a
+new session with the requested profile, never idle-worker reuse. Independent
+review/QA should specify `context:{mode:"fresh"}`. For imported tasks,
+`from`/`current` means the supervisor, not the temporary PM.
+For restrictive readers use `worktree:false` and `report_mode:"final_response"`:
+the approved model is pinned without adding permissions, team tools or phase
+transitions; the lead reviews the retained candidate before completing the
+task. A first-task runtime qualification gates authors, not preparation of that
+task. Import does not launch a worker. `planning` is `{ required: boolean, reason }`.
 `kind`, `mode`, and `model` are rejected.
 
 Ids start with a letter and then use letters, digits, `_`, or `-`.
@@ -182,7 +194,8 @@ and a `note` that says what the path contributes. The parser does not open the
 path. At least one source is required. Acceptance criteria and verification
 are non-empty lists.
 
-`parallelGroups[].isolation` is exactly `separate-worktrees`. `integrationNotes`
+`parallelGroups[].isolation` is exactly `separate-worktrees`; it cannot include a
+`worktree:false` task. `integrationNotes`
 tells the supervisor how to reconcile those branches. A direct or transitive
 dependency inside the group is rejected. Do not schedule two writers in one
 shared worktree and call it a parallel group.

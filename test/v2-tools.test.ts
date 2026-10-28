@@ -81,6 +81,24 @@ async function run(defs: V2ToolDef[], name: string, input: unknown, sessionID: s
 }
 
 describe("v2-tools (issue #36, DRY: same execute fns as V1)", () => {
+  test("publication and lead acceptance survive the V2 schema and normalizer", async () => {
+    const { defs, domain } = mockToolDomain()
+    const deps = mockDeps()
+    await registerV2Tools(domain, deps)
+    await run(defs, "team_create", { name: "private-board" }, "lead")
+    expect(defs.find(def => def.name === "team_tasks_add")?.input).toMatchObject({ properties: {
+      tasks: { items: { properties: { publication: { enum: ["published", "deferred"] }, completion_policy: { enum: ["assignee", "lead"] } } } },
+      task_controls: { items: { required: ["task_id", "reason"] } },
+    } })
+    await run(defs, "team_tasks_add", { tasks: [{ content: "Private audit", publication: "deferred", completion_policy: "lead" }] }, "lead")
+    const row = deps.db.query("SELECT id,publication,completion_policy FROM team_task").get() as { id: string }
+    expect(row).toMatchObject({ publication: "deferred", completion_policy: "lead" })
+    await run(defs, "team_tasks_add", { tasks: [], task_controls: [{ task_id: row.id, publication: "published", reason: "Audit phase admitted" }] }, "lead")
+    expect(deps.db.query("SELECT publication FROM team_task").get()).toEqual({ publication: "published" })
+    await expect(run(defs, "team_tasks_add", { tasks: [{ content: "Bad", publication: "cancelled" }] }, "lead")).rejects.toThrow(/publication/)
+    deps.db.close()
+  })
+
   test("task context is exposed and preserved by the V2 normalizer", async () => {
     const { defs, domain } = mockToolDomain()
     const deps = mockDeps()
@@ -88,9 +106,10 @@ describe("v2-tools (issue #36, DRY: same execute fns as V1)", () => {
     await run(defs, "team_create", { name: "context-board" }, "context-lead")
     expect(defs.find(def => def.name === "team_tasks_add")?.input).toMatchObject({ properties: { tasks: { items: { properties: {
       context: { properties: { mode: { enum: ["fresh", "fork", "checkpoint", "compact_fork"] } }, required: ["mode"], additionalProperties: false },
+      worktree: { type: "boolean" }, report_mode: { enum: ["team_message", "final_response"] },
     } } } } })
-    await run(defs, "team_tasks_add", { tasks: [{ content: "Independent review", agent: "qa", context: { mode: "fresh" } }] }, "context-lead")
-    expect(deps.db.query("SELECT agent, spawn_context FROM team_task").get()).toEqual({ agent: "qa", spawn_context: '{"mode":"fresh"}' })
+    await run(defs, "team_tasks_add", { tasks: [{ content: "Independent review", agent: "qa", context: { mode: "fresh" }, worktree: false, report_mode: "final_response" }] }, "context-lead")
+    expect(deps.db.query("SELECT agent, spawn_context, spawn_options FROM team_task").get()).toEqual({ agent: "qa", spawn_context: '{"mode":"fresh"}', spawn_options: '{"worktree":false,"report_mode":"final_response"}' })
     await expect(run(defs, "team_tasks_add", { tasks: [{ content: "Invalid", context: null }] }, "context-lead")).rejects.toThrow(/context/)
   })
 

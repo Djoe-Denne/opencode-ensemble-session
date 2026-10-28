@@ -45,15 +45,16 @@ export async function executeTeamStatus(
   const teamInfo = requireTeamMember(deps, sessionId)
 
   const now = Date.now()
-  const last = lastCallTime.get(teamInfo.teamId)
+  const statusKey = teamInfo.role === "lead" ? teamInfo.teamId : `${teamInfo.teamId}:member`
+  const last = lastCallTime.get(statusKey)
   const currentMarker = computeStateMarker(deps, teamInfo.teamId)
   // The 30s throttle's purpose is preventing hammering, not lying about state — only
   // short-circuit when nothing has actually changed since the last real read.
-  if (last !== undefined && (now - last) < RATE_LIMIT_MS && lastKnownState.get(teamInfo.teamId) === currentMarker) {
+  if (last !== undefined && (now - last) < RATE_LIMIT_MS && lastKnownState.get(statusKey) === currentMarker) {
     return "No changes since last check."
   }
-  lastCallTime.set(teamInfo.teamId, now)
-  lastKnownState.set(teamInfo.teamId, currentMarker)
+  lastCallTime.set(statusKey, now)
+  lastKnownState.set(statusKey, currentMarker)
 
   const members = deps.db.query(
     "SELECT name, session_id, agent, status, execution_status, worktree_branch, checkout_branch, preserved_branch, worktree_state, worktree_dir, plan_approval, time_updated, last_nudged_at, retry_until, retry_attempt FROM team_member WHERE team_id = ? ORDER BY time_created ASC"
@@ -63,8 +64,8 @@ export async function executeTeamStatus(
   }>
 
   const tasks = deps.db.query(
-    "SELECT status FROM team_task WHERE team_id = ?"
-  ).all(teamInfo.teamId) as Array<{ status: string }>
+    "SELECT status FROM team_task WHERE team_id = ? AND (? = 1 OR publication = 'published')"
+  ).all(teamInfo.teamId, teamInfo.role === "lead" ? 1 : 0) as Array<{ status: string }>
 
   const lines: string[] = []
   lines.push(`Team: ${teamInfo.teamName} (you are the ${teamInfo.role})`)
@@ -77,7 +78,7 @@ export async function executeTeamStatus(
     const policy = JSON.parse(mission.classification_policy) as { method: string; toolId: string; helperModel: string; generalModel?: string }
     const budget = mission.classification_runtime ? JSON.parse(mission.classification_runtime) as { calls: number; bytes: number } : { calls: 0, bytes: 0 }
     lines.push(`Mission: ${mission.mission_mode}/${mission.mission_state}; classification=${policy.method} (${policy.toolId || policy.generalModel || "manual"}); calls=${budget.calls}, input bytes=${budget.bytes}`)
-    const counts = deps.db.query("SELECT classification_status AS state, COUNT(*) AS count FROM team_task WHERE team_id = ? GROUP BY classification_status").all(teamInfo.teamId) as Array<{ state: string; count: number }>
+    const counts = deps.db.query("SELECT classification_status AS state, COUNT(*) AS count FROM team_task WHERE team_id = ? AND (? = 1 OR publication = 'published') GROUP BY classification_status").all(teamInfo.teamId, teamInfo.role === "lead" ? 1 : 0) as Array<{ state: string; count: number }>
     lines.push(`Classification: ${counts.map(row => `${row.count} ${row.state}`).join(", ") || "no tasks"}`)
     const incidents = deps.db.query("SELECT kind, detail FROM classification_incident WHERE team_id = ? ORDER BY time_created DESC, id DESC LIMIT 3").all(teamInfo.teamId) as Array<{ kind: string; detail: string }>
     incidents.forEach(row => { lines.push(`  classification ${row.kind}: ${row.detail}`) })

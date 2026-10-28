@@ -30,6 +30,19 @@ async function team(f: ReturnType<typeof fixture>) {
 }
 
 describe("mission classification and board admission", () => {
+  test("a deferred task is not sent to a classifier until the lead publishes it", async () => {
+    const f = fixture()
+    const id = await team(f)
+    await executeTeamTasksAdd(f.deps, { tasks: [{ content: "Private audit", priority: "medium", publication: "deferred" }] }, "lead")
+    await classifyBoardTasks(f.deps, id)
+    expect(f.invocations).toHaveLength(0)
+    const task = f.deps.db.query("SELECT id FROM team_task").get() as { id: string }
+    await executeTeamTasksAdd(f.deps, { tasks: [], task_controls: [{ task_id: task.id, publication: "published", reason: "Independent audit prepared" }] }, "lead")
+    await classifyBoardTasks(f.deps, id)
+    expect(f.invocations).toHaveLength(1)
+    f.deps.db.close()
+  })
+
   test("capabilities are resolved once and frozen independently of global config changes", async () => {
     const f = fixture()
     const id = await team(f)

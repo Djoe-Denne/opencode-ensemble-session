@@ -1,6 +1,9 @@
 import { validateExecutionPolicy, validateTaskExecutionDecision, type ExecutionPolicy, type TaskExecutionDecision } from "./execution-policy"
 import type { SpawnContext } from "./types"
 import { parseSpawnContext } from "./session-continuity"
+import { taskSpawnOptions, type TaskSpawnOptions } from "./task-admission"
+import { taskPublication, type TaskPublication } from "./task-publication"
+import { validateTaskRoutingScores } from "./model-router"
 
 /** Version of the PM preparation document. */
 export const PREPARATION_DOCUMENT_VERSION = 2
@@ -27,7 +30,7 @@ export interface PreparationHandoff {
 }
 
 /** One PM task before its plugin id exists. */
-export interface PreparationTask {
+export interface PreparationTask extends TaskSpawnOptions, TaskPublication {
   id: string
   title: string
   type: PreparationTaskType
@@ -39,6 +42,8 @@ export interface PreparationTask {
   handoff: PreparationHandoff
   agent?: string
   context?: SpawnContext
+  complexity?: number
+  risk?: number
 }
 
 /** Question returned to the supervisor, never delegated as a worker note. */
@@ -86,7 +91,7 @@ const TASK_KIND: Record<PreparationTaskType, TaskExecutionDecision["kind"]> = {
 
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/
 const DOCUMENT_KEYS = ["version", "context", "openQuestions", "tasks", "parallelGroups"]
-const TASK_KEYS = ["id", "title", "type", "goal", "dependsOn", "planning", "acceptanceCriteria", "verification", "handoff", "agent", "context"]
+const TASK_KEYS = ["id", "title", "type", "goal", "dependsOn", "planning", "acceptanceCriteria", "verification", "handoff", "agent", "context", "complexity", "risk", "worktree", "report_mode", "publication", "completion_policy"]
 const MAX_DOCUMENT_JSON = 200_000
 
 /** Validation failure that lists every document issue. */
@@ -246,6 +251,15 @@ function readTask(value: unknown, index: number, issues: string[]): PreparationT
   const verification = readStringList(value.verification, `${field}.verification`, issues)
   const handoff = readHandoff(value.handoff, `${field}.handoff`, issues)
   const agent = value.agent === undefined ? undefined : readText(value.agent, `${field}.agent`, issues, 1, 200)
+  let options: TaskSpawnOptions = {}
+  try { options = taskSpawnOptions(value) }
+  catch (error) { issues.push(`${field}: ${error instanceof Error ? error.message : String(error)}`) }
+  let publication: TaskPublication = {}
+  try { publication = taskPublication(value) }
+  catch (error) { issues.push(`${field}: ${error instanceof Error ? error.message : String(error)}`) }
+  const scores = { ...(value.complexity !== undefined ? { complexity: value.complexity as number } : {}), ...(value.risk !== undefined ? { risk: value.risk as number } : {}) }
+  try { validateTaskRoutingScores(scores) }
+  catch (error) { issues.push(`${field}: ${error instanceof Error ? error.message : String(error)}`) }
   let context: SpawnContext | undefined
   if (value.context !== undefined) {
     try { context = parseSpawnContext(value.context) }
@@ -262,7 +276,7 @@ function readTask(value: unknown, index: number, issues: string[]): PreparationT
     if (typeof value.planning.required === "boolean" && reason) planning = { required: value.planning.required, reason }
   }
   if (!id || !title || !type || !goal || !dependsOn || !planning || !acceptanceCriteria || !verification || !handoff) return undefined
-  return { id, title, type, goal, dependsOn, planning, acceptanceCriteria, verification, handoff, ...(agent ? { agent } : {}), ...(context ? { context } : {}) }
+  return { id, title, type, goal, dependsOn, planning, acceptanceCriteria, verification, handoff, ...(agent ? { agent } : {}), ...(context ? { context } : {}), ...scores, ...options, ...publication }
 }
 
 function readTasks(value: unknown, issues: string[]): { ok: boolean; tasks: PreparationTask[] } {
@@ -352,6 +366,8 @@ function readGroups(value: unknown, issues: string[], tasks: readonly Preparatio
     if (taskIds && taskList?.some(id => !taskIds.has(id))) issues.push(`${field}.taskIds contains an unknown task id`)
     const coupled = tasks && taskList ? dependentPair(taskList, tasks) : undefined
     if (coupled) issues.push(`${field}.taskIds couples dependent tasks ${coupled[0]} and ${coupled[1]}`)
+    const shared = tasks?.find(task => taskList?.includes(task.id) && task.worktree === false)
+    if (shared) issues.push(`${field}.taskIds includes worktree:false task ${shared.id}`)
     if (!taskList || !reason || !integrationNotes || item.isolation !== "separate-worktrees" || !known || coupled) ok = false
     else groups.push({ taskIds: taskList, reason, integrationNotes, isolation: "separate-worktrees" })
   })

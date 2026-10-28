@@ -1,4 +1,5 @@
 import type { SpawnContext, ToolDeps } from "./types"
+import type { TaskControl, TaskPublication } from "./task-publication"
 import { executeTeamCreate } from "./tools/team-create"
 import { executeTeamSpawn } from "./tools/team-spawn"
 import { executeTeamHandoff } from "./tools/team-handoff"
@@ -226,7 +227,7 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
 
     editor.add({
       name: "team_tasks_add",
-      description: "Add tasks or propose execution boundaries. Only the lead authorizes execution_decisions before admission: direct scope, or v3 planned model/variant within its approved range with a reason. Use tasks: [] for existing proposals.",
+      description: "Add tasks or propose execution boundaries. Only the lead authorizes execution_decisions or task_controls before admission. task_controls defer/publish existing unassigned tasks or require lead completion, with a reason. Deferral cannot erase prior disclosures. Use tasks: [] for existing tasks.",
       input: {
         type: "object",
         properties: {
@@ -259,6 +260,10 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
                 },
                 complexity: { type: "integer", minimum: 0, maximum: 100, description: "Task complexity for deterministic model routing" },
                 risk: { type: "integer", minimum: 0, maximum: 100, description: "Task risk for model routing only (not review policy)" },
+                worktree: { type: "boolean", description: "Isolation contract for a new session; preserved by auto-scale and cannot be overridden at spawn" },
+                publication: { type: "string", enum: ["published", "deferred"], description: "Lead-only: deferred tasks stay private and cannot be admitted until explicitly published" },
+                completion_policy: { type: "string", enum: ["assignee", "lead"], description: "Lead-only: reserve completion for supervisor acceptance after integration" },
+                report_mode: { type: "string", enum: ["team_message", "final_response"], description: "Reporting contract; final_response preserves native permissions and leaves acceptance to the lead" },
                 task_type: str("Explicit task kind supplied to the fixed classification protocol"),
                 classification_input: { type: "object", additionalProperties: true, description: "Task-specific classification data, treated as data rather than instructions" },
                 execution: { type: "object", properties: taskExecutionProperties(), required: ["mode", "kind"], additionalProperties: false,
@@ -271,14 +276,23 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
           execution_decisions: { type: "array", description: "Lead-only decisions for existing unassigned, not-yet-admitted tasks", items: {
             type: "object", properties: { task_id: str("Existing task ID"), ...taskExecutionProperties() }, required: ["task_id", "mode", "kind"], additionalProperties: false,
           } },
+          task_controls: { type: "array", description: "Lead-only, atomic publication/acceptance changes for unassigned tasks before first admission; use tasks: []", items: {
+            type: "object", properties: {
+              task_id: str("Existing task ID"),
+              publication: { type: "string", enum: ["published", "deferred"] },
+              completion_policy: { type: "string", enum: ["assignee", "lead"] },
+              reason: { type: "string", minLength: 1, maxLength: 2000 },
+            }, required: ["task_id", "reason"], additionalProperties: false,
+          } },
         },
         required: ["tasks"],
         additionalProperties: false,
       },
       execute: async (input: unknown, context: { sessionID: string }) => {
         const args = input as {
-          tasks: Array<{ content: string; priority?: string; depends_on?: string[]; agent?: string; context?: SpawnContext; complexity?: number; risk?: number; task_type?: string; classification_input?: Record<string, unknown>; execution?: TaskExecutionDecision }>
+          tasks: Array<TaskPublication & { content: string; priority?: string; depends_on?: string[]; agent?: string; context?: SpawnContext; complexity?: number; risk?: number; worktree?: boolean; report_mode?: "team_message" | "final_response"; task_type?: string; classification_input?: Record<string, unknown>; execution?: TaskExecutionDecision }>
           execution_decisions?: Array<TaskExecutionDecision & { task_id: string }>
+          task_controls?: TaskControl[]
         }
         const content = await executeTeamTasksAdd(
           deps,
@@ -291,11 +305,16 @@ export async function registerV2Tools(domain: V2ToolDomain, deps: ToolDeps): Pro
               ...(task.context !== undefined ? { context: task.context } : {}),
               ...(task.complexity !== undefined ? { complexity: task.complexity } : {}),
               ...(task.risk !== undefined ? { risk: task.risk } : {}),
+              ...(task.worktree !== undefined ? { worktree: task.worktree } : {}),
+              ...(task.report_mode !== undefined ? { report_mode: task.report_mode } : {}),
+              ...(task.publication !== undefined ? { publication: task.publication } : {}),
+              ...(task.completion_policy !== undefined ? { completion_policy: task.completion_policy } : {}),
               ...(task.task_type !== undefined ? { task_type: task.task_type } : {}),
               ...(task.classification_input !== undefined ? { classification_input: task.classification_input } : {}),
               ...(task.execution !== undefined ? { execution: task.execution } : {}),
             })),
             ...(args.execution_decisions !== undefined ? { execution_decisions: args.execution_decisions } : {}),
+            ...(args.task_controls !== undefined ? { task_controls: args.task_controls } : {}),
           },
           context.sessionID,
         )

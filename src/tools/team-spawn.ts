@@ -18,6 +18,7 @@ import { routeNormalizedModel, validateTaskRoutingScores, type TaskRoutingScores
 import { getTeamResourceParts, preserveBranch, preservedBranchName } from "./merge-helper"
 import { releaseMemberTasks } from "../tasks"
 import { planningPermissions, startTaskPlanning, taskExecutionInstructions } from "../task-execution"
+import { taskSpawnOptions } from "../task-admission"
 
 /** Tracks consecutive spawn failures per team for circuit breaker. */
 export const spawnFailures = new Map<string, { count: number; lastError: string }>()
@@ -94,19 +95,26 @@ export async function executeTeamSpawn(
   // Normalize agent: the tool schema defaults to "build", but Zod's .default()
   // only fires on undefined — an explicit null slips through and would violate
   // the team_member.agent NOT NULL constraint (issue #28).
-  const finalResponse = args.report_mode === "final_response"
-  if (args.report_mode !== undefined && !["team_message", "final_response"].includes(args.report_mode)) throw new Error("Invalid report_mode")
+  taskSpawnOptions(args)
 
   const nameError = validateMemberName(args.name)
   if (nameError) throw new Error(nameError)
 
   const teamInfo = requireLead(deps, sessionId)
   const taskContract = args.claim_task
-    ? deps.db.query("SELECT agent, spawn_context FROM team_task WHERE id=? AND team_id=?").get(args.claim_task, teamInfo.teamId) as { agent: string | null; spawn_context: string | null } | null
+    ? deps.db.query("SELECT agent, spawn_context, spawn_options, publication, completion_policy, control_revision FROM team_task WHERE id=? AND team_id=?").get(args.claim_task, teamInfo.teamId) as { agent: string | null; spawn_context: string | null; spawn_options: string | null; publication: string; completion_policy: string; control_revision: number } | null
     : null
+  if (taskContract?.publication === "deferred") throw new Error("Publish the deferred task before spawning its worker")
   const taskContext = taskContract?.spawn_context != null ? parseSpawnContext(JSON.parse(taskContract.spawn_context)) : undefined
-  const agent = args.agent ?? (taskContext ? taskContract?.agent : undefined) ?? "build"
-  if (taskContext && taskContract?.agent && agent !== taskContract.agent) throw new Error("Task context requires the requested agent profile")
+  const options = taskContract?.spawn_options != null ? taskSpawnOptions(JSON.parse(taskContract.spawn_options)) : undefined
+  if (options?.worktree !== undefined && args.worktree !== undefined && options.worktree !== args.worktree) throw new Error("Spawn worktree conflicts with the task admission contract")
+  if (options?.report_mode !== undefined && args.report_mode !== undefined && options.report_mode !== args.report_mode) throw new Error("Spawn report_mode conflicts with the task admission contract")
+  const worktree = options?.worktree ?? args.worktree
+  const reportMode = options?.report_mode ?? args.report_mode ?? "team_message"
+  const finalResponse = reportMode === "final_response"
+  const taskBound = Boolean(taskContext || options)
+  const agent = args.agent ?? (taskBound ? taskContract?.agent : undefined) ?? "build"
+  if (taskBound && taskContract?.agent && agent !== taskContract.agent) throw new Error("Task context requires the requested agent profile")
   assertMissionAdmission(deps.db, teamInfo.teamId)
   const mission = deps.db.query("SELECT mission_state FROM team WHERE id = ?").get(teamInfo.teamId) as { mission_state: string }
   if (mission.mission_state === "critical") throw new Error("Mission is critical; resolve the classification safety/budget failure before spawning")
@@ -160,9 +168,10 @@ export async function executeTeamSpawn(
   validateTaskRoutingScores(scores)
   const hasScores = scores.complexity !== undefined || scores.risk !== undefined || classified !== undefined
   const policyRouting = routeMissionTask(deps.db, teamInfo.teamId, args.claim_task, { complexity: args.complexity, risk: args.risk })
-  const autonomous = Boolean(policyRouting && "execution" in policyRouting)
+  const governed = Boolean(policyRouting && "execution" in policyRouting)
+  const autonomous = governed && !finalResponse
   if (autonomous && (!deps.client.continuity || !deps.client.session.switchModel || !deps.nativeModels)) throw new Error("Autonomous execution requires OpenCode V2 model catalogue and permission switching")
-  if (autonomous && (!args.claim_task || finalResponse)) throw new Error("Autonomous workers require claim_task and collaborative reporting")
+  if (governed && !args.claim_task) throw new Error("Autonomous workers require claim_task")
   if (policyRouting && taskScores && (taskScores.status !== "pending" || taskScores.assignee)) throw new Error(`Cannot claim mission task ${args.claim_task}: it is not unassigned and pending`)
   if (policyRouting && args.claim_task && !finalResponse && (agent === "plan" || agent === "explore")) throw new Error("Built-in read-only agents cannot claim mission tasks; use complete standalone scores or an appropriate task-owning profile")
   if (policyRouting && ((args.model !== undefined && args.model !== policyRouting.selected.id) || (args.variant !== undefined && args.variant !== policyRouting.selected.variant))) {
@@ -184,7 +193,8 @@ export async function executeTeamSpawn(
   if (routing) log(`spawn:routing name=${args.name} demand=${routing.demand} ${routing.reason}`)
 
   const isReadOnly = agent === "plan" || agent === "explore"
-  const useWorktree = args.worktree !== false && !isReadOnly && (inherited || !isWorktreeDirectory(deps.directory))
+  if (isReadOnly && worktree === true) throw new Error("Built-in read-only profiles cannot satisfy worktree:true")
+  const useWorktree = worktree !== false && !isReadOnly && (worktree === true || inherited || !isWorktreeDirectory(deps.directory))
   const usePlanApproval = args.plan_approval === true
 
   log(`spawn:start name=${args.name} agent=${agent} worktree=${useWorktree}`)
@@ -311,7 +321,8 @@ export async function executeTeamSpawn(
         deps.client.session.create({
           parentID: sessionId,
           title: `${args.name} (@${agent} teammate)`,
-          ...(finalResponse ? {} : { permission }),
+          // Clear inherited supervisor overrides without adding any grants.
+          permission: finalResponse ? [] : permission,
           ...(workspaceId ? { workspaceID: workspaceId } : {}),
         }),
         getSpawnTimeout(), `session.create for "${args.name}"`
@@ -366,7 +377,7 @@ export async function executeTeamSpawn(
   deps.db.run("UPDATE team_member SET model_variant = ?, model_routing = ? WHERE team_id = ? AND name = ?",
     [resolvedVariant ?? null, policyRouting ? JSON.stringify(policyRouting) : routing ? JSON.stringify(routing) : null, teamInfo.teamId, args.name])
   deps.db.run("UPDATE team_member SET report_mode = ?, report_started_at = ?, report_message_cursor = (SELECT COALESCE(MAX(rowid), 0) FROM team_message) WHERE team_id = ? AND name = ?",
-    [args.report_mode ?? "team_message", now, teamInfo.teamId, args.name])
+    [reportMode, now, teamInfo.teamId, args.name])
   const admitted = admitWorktree({ agent, worktree: useWorktree ? undefined : false, directory: worktreeDir, branch: worktreeBranch })
   if (admitted.state === "failed") throw new Error(`Worktree admission failed for "${args.name}": ${admitted.reason}`)
   deps.db.run("UPDATE team_member SET worktree_state = ?, checkout_branch = ? WHERE team_id = ? AND name = ?",
@@ -422,20 +433,32 @@ export async function executeTeamSpawn(
       if (JSON.stringify(current) !== JSON.stringify(policyRouting)) throw new Error("Task execution decision changed during spawn allocation")
     } catch (error) { return rejectPolicySpawn(error) }
   }
-  if (args.claim_task && (!isReadOnly || finalResponse || taskContext)) {
+  if (taskContract && args.claim_task) {
+    const current = deps.db.query("SELECT agent, spawn_context, spawn_options, publication, completion_policy, control_revision FROM team_task WHERE id=? AND team_id=?").get(args.claim_task, teamInfo.teamId)
+    if (JSON.stringify(current) !== JSON.stringify(taskContract)) return rejectPolicySpawn(new Error("Task admission contract changed during spawn allocation"))
+  }
+  if (args.claim_task && (!isReadOnly || finalResponse || taskBound)) {
     try {
-      if (taskContext) deps.db.run("UPDATE team_member SET context_task_id=? WHERE team_id=? AND name=?", [args.claim_task, teamInfo.teamId, args.name])
+      if (taskBound) deps.db.run("UPDATE team_member SET context_task_id=? WHERE team_id=? AND name=?", [args.claim_task, teamInfo.teamId, args.name])
       claimedTaskContent = claimTask(deps.db, teamInfo.teamId, args.claim_task, args.name)
       log(`spawn:claim:ok name=${args.name} task=${args.claim_task}`)
     } catch (err) {
       claimWarning = err instanceof Error ? err.message : String(err)
       log(`spawn:claim:failed name=${args.name} task=${args.claim_task} err=${claimWarning}`)
-      if (policyRouting || taskContext) return rejectPolicySpawn(err)
+      if (policyRouting || taskBound) return rejectPolicySpawn(err)
       if (inherited) {
         await rollbackInheritedSpawn(deps, teamInfo.teamId, args.name)
         throw new Error(`Cannot claim task for inherited teammate "${args.name}": ${claimWarning}`)
       }
     }
+  }
+
+  // Legacy built-in readers deliberately skip ownership, but delivery is still
+  // an admission/disclosure: never allow their referenced task to be deferred later.
+  if (args.claim_task && taskContract && isReadOnly && !finalResponse && !taskBound) {
+    const admitted = deps.db.run("UPDATE team_task SET admitted_at=COALESCE(admitted_at, ?) WHERE id=? AND team_id=? AND publication='published' AND control_revision=?",
+      [Date.now(), args.claim_task, teamInfo.teamId, taskContract.control_revision])
+    if (!admitted.changes) return rejectPolicySpawn(new Error("Task changed during read-only admission"))
   }
 
   if (autonomous) {
@@ -448,7 +471,8 @@ export async function executeTeamSpawn(
     `You are "${args.name}", a teammate in team "${teamInfo.teamName}".`,
     `Your agent type is "${agent}".`,
   ]
-  if (autonomous) context.push(taskExecutionInstructions(deps, childSessionId))
+  if (governed) context.push(taskExecutionInstructions(deps, childSessionId))
+  if (taskContract?.completion_policy === "lead") context.push("Integration gate: do not call team_tasks_complete for this task. Report your deliverable; only the lead closes the task after review and integration.")
   if (inherited) context.push(`[Ensemble task ${childSessionId}]`, "You inherited the source session's projected research/history. This message defines your new identity and task; historical teammate roles and instructions belong to the source, not to you.")
 
   // Show other teammates so this agent knows who to message
@@ -535,10 +559,10 @@ export async function executeTeamSpawn(
     if (deps.client.continuity && !autonomous) context.push("Use team_handoff to change your own agent in this same session when needed. Use team_results, team_status and team_view for inspection.")
     if (!isReadOnly && worktreeBranch) {
       context.push(`1. Commit your changes: git add -A && git commit -m "your summary"`)
-      context.push("2. If you claimed a task, mark it complete using team_tasks_complete.")
+      context.push(taskContract?.completion_policy === "lead" ? "2. Leave the task open for lead acceptance after integration." : "2. If you claimed a task, mark it complete using team_tasks_complete.")
       context.push("3. Send ONE message to the lead using team_message with this format:")
     } else if (!isReadOnly) {
-      context.push("1. If you claimed a task, mark it complete using team_tasks_complete.")
+      context.push(taskContract?.completion_policy === "lead" ? "1. Leave the task open for lead acceptance after integration." : "1. If you claimed a task, mark it complete using team_tasks_complete.")
       context.push("2. Send ONE message to the lead using team_message with this format:")
     } else {
       context.push("1. Send ONE message to the lead using team_message with this format:")

@@ -116,10 +116,13 @@ function buildState(db: Database): EnsembleDashboardState {
   const projects = db.query("SELECT id, name, path, status, time_created, time_updated FROM project ORDER BY time_updated DESC").all() as ProjectRow[]
   const teams = db.query("SELECT id, name, project_id, lead_session_id, status, lead_agent, time_created, time_updated FROM team ORDER BY time_created DESC").all() as TeamRow[]
   const memberStmt = db.query("SELECT name, agent, status, execution_status, session_id, worktree_branch, checkout_branch, preserved_branch, worktree_state, short_path, prompt, model, plan_approval, time_created, time_updated, last_nudged_at, retry_until, retry_attempt, retry_provider, retry_message FROM team_member WHERE team_id = ?")
-  const taskStmt = db.query("SELECT id, content, status, priority, assignee, depends_on, time_created, time_updated FROM team_task WHERE team_id = ?")
+  const taskStmt = db.query("SELECT id, content, status, priority, assignee, depends_on, time_created, time_updated FROM team_task WHERE team_id = ? AND publication = 'published'")
   const msgStmt = db.query("SELECT id, from_name, to_name, content, delivered, read, time_created FROM team_message WHERE team_id = ? ORDER BY time_created DESC LIMIT 50")
 
   const mappedTeams = teams.map((t) => {
+    // This endpoint has no caller-specific lead authentication: publish only the shared projection.
+    const tasks = taskStmt.all(t.id) as TaskRow[]
+    const visibleTaskIds = new Set(tasks.map(task => task.id))
     const members = (memberStmt.all(t.id) as MemberRow[]).map((m) => ({
       name: m.name,
       agent: m.agent,
@@ -156,13 +159,13 @@ function buildState(db: Database): EnsembleDashboardState {
       timeCreated: t.time_created,
       timeUpdated: t.time_updated,
       members,
-      tasks: (taskStmt.all(t.id) as TaskRow[]).map((tk) => ({
+      tasks: tasks.map((tk) => ({
         id: tk.id,
         content: tk.content,
         status: tk.status,
         priority: tk.priority,
         assignee: tk.assignee,
-        dependsOn: parseDependsOn(tk.depends_on),
+        dependsOn: parseDependsOn(tk.depends_on).filter(id => visibleTaskIds.has(id)),
         timeCreated: tk.time_created,
         timeUpdated: tk.time_updated,
       })),

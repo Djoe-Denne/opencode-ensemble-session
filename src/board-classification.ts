@@ -19,6 +19,7 @@ interface ClassificationTask {
   status: string
   assignee: string | null
   classification_token: string | null
+  publication: string
 }
 
 const inFlight = new WeakMap<Database, Map<string, Promise<void>>>()
@@ -92,12 +93,12 @@ async function drain(deps: ToolDeps, teamId: string): Promise<void> {
     if (team?.status !== "active" || team.mission_state === "critical") return
     const policy = getMissionClassification(deps.db, teamId)
     if (!policy || (policy.method === "manual" && !policy.specialized)) return
-    const task = deps.db.query("SELECT * FROM team_task WHERE team_id = ? AND classification_status = 'pending' AND status IN ('pending', 'blocked') AND assignee IS NULL ORDER BY time_created, id")
+    const task = deps.db.query("SELECT * FROM team_task WHERE team_id = ? AND publication = 'published' AND classification_status = 'pending' AND status IN ('pending', 'blocked') AND assignee IS NULL ORDER BY time_created, id")
       .get(teamId) as ClassificationTask | null
     if (!task) return
     const token = generateId("classification")
     const leaseMs = (policy.limits?.maxAttempts ?? 3) * (policy.timeoutMs + (policy.limits?.retryDelayMs ?? 100) + 15_000) + 120_000
-    const admitted = deps.db.run("UPDATE team_task SET classification_status = 'running', classification_token = ?, classification_until = ? WHERE id = ? AND team_id = ? AND classification_status = 'pending' AND assignee IS NULL",
+    const admitted = deps.db.run("UPDATE team_task SET classification_status = 'running', classification_token = ?, classification_until = ? WHERE id = ? AND team_id = ? AND publication = 'published' AND classification_status = 'pending' AND assignee IS NULL",
       [token, Date.now() + leaseMs, task.id, teamId])
     if (!admitted.changes) continue
     const signature = fingerprint(task, policy)

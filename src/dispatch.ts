@@ -12,6 +12,7 @@ import { notifyLead } from "./notify"
 export interface PoolTask {
   id: string
   content: string
+  completion_policy?: "lead"
 }
 
 /** How many candidates to try before giving up (race-fallback bound). */
@@ -31,15 +32,17 @@ function priorityRank(priority: string): number {
  */
 export function pickNextTask(db: Database, teamId: string, agentType: string, limit = MAX_CLAIM_ATTEMPTS): PoolTask[] {
   const rows = db.query(
-    `SELECT id, content, agent, priority FROM team_task
+    `SELECT id, content, agent, priority, completion_policy FROM team_task
       WHERE team_id = ? AND status = 'pending' AND assignee IS NULL
-        AND spawn_context IS NULL
+         AND publication = 'published'
+         AND spawn_context IS NULL
+         AND spawn_options IS NULL
         AND classification_status IN ('not_required', 'completed')
         AND (execution_request IS NULL OR execution_decision IS NOT NULL)
         AND team_id IN (SELECT id FROM team WHERE mission_state != 'critical')
        AND (agent IS NULL OR agent = ?)
      ORDER BY time_created ASC`,
-  ).all(teamId, agentType) as Array<{ id: string; content: string; agent: string | null; priority: string }>
+  ).all(teamId, agentType) as Array<{ id: string; content: string; agent: string | null; priority: string; completion_policy: string }>
 
   return rows
     .sort((a, b) => {
@@ -48,7 +51,7 @@ export function pickNextTask(db: Database, teamId: string, agentType: string, li
       return priorityRank(a.priority) - priorityRank(b.priority)
     })
     .slice(0, limit)
-    .map(({ id, content }) => ({ id, content }))
+    .map(({ id, content, completion_policy }) => ({ id, content, ...(completion_policy === "lead" ? { completion_policy: "lead" as const } : {}) }))
 }
 
 export function nextWorkerName(db: Database, teamId: string): string {
@@ -115,6 +118,7 @@ export function pumpTeam(deps: ToolDeps, teamId: string): Promise<void> {
   const task = deps.db.query(
     `SELECT id, content, agent FROM team_task
       WHERE team_id = ? AND status = 'pending' AND assignee IS NULL
+        AND publication = 'published'
         AND classification_status IN ('not_required', 'completed')
         AND (execution_request IS NULL OR execution_decision IS NOT NULL)
         AND team_id IN (SELECT id FROM team WHERE mission_state != 'critical')
@@ -135,7 +139,7 @@ export function pumpTeam(deps: ToolDeps, teamId: string): Promise<void> {
   return executeTeamSpawn(deps, {
     name,
     agent,
-    prompt: dispatchMessage({ id: task.id, content: task.content }),
+    prompt: task.content,
     claim_task: task.id,
   }, team.lead_session_id)
     .then(() => {
@@ -153,7 +157,9 @@ function dispatchMessage(task: PoolTask): string {
     `[System] Auto-dispatch: you have been assigned task ${task.id}.`,
     `Task: ${task.content}`,
     "",
-    "Work on it now. When done, mark it complete with team_tasks_complete and report to the lead as usual.",
+    task.completion_policy === "lead"
+      ? "Work on it now. Report the deliverable to the lead; only the lead closes this task after review and integration. Do not call team_tasks_complete."
+      : "Work on it now. When done, mark it complete with team_tasks_complete and report to the lead as usual.",
     "If the task is unclear or blocked, message the lead instead of guessing.",
   ].join("\n")
 }

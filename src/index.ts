@@ -620,7 +620,7 @@ const plugin: Plugin = async (input) => {
       }),
 
       team_tasks_add: tool({
-        description: "Add tasks or propose execution boundaries. Only the lead authorizes execution_decisions before admission: direct scope, or v3 planned model/variant within its approved range with a reason. Use tasks: [] for existing proposals.",
+        description: "Add tasks or propose execution boundaries. Only the lead authorizes execution_decisions or task_controls before admission. task_controls defer/publish existing unassigned tasks or require lead completion, with a reason. Deferral cannot erase prior disclosures. Use tasks: [] for existing tasks.",
         args: {
           tasks: tool.schema.array(tool.schema.object({
             content: tool.schema.string().describe("Task description"),
@@ -632,13 +632,23 @@ const plugin: Plugin = async (input) => {
               from: tool.schema.string().optional(),
               messageID: tool.schema.string().optional().describe("Exclusive native checkpoint boundary"),
             }).strict().optional().describe("Requires a new session with this context and task profile; never idle-worker reuse. Omit to retain pool reuse. from/current is frozen to the task creator."),
-            complexity: tool.schema.number().int().min(0).max(100).optional().describe("Task complexity for deterministic model routing"),
+             complexity: tool.schema.number().int().min(0).max(100).optional().describe("Task complexity for deterministic model routing"),
+             worktree: tool.schema.boolean().optional().describe("Isolation contract for a new session; preserved by auto-scale"),
+             report_mode: tool.schema.enum(["team_message", "final_response"]).optional().describe("Reporting contract; final_response preserves native permissions and leaves acceptance to the lead"),
+             publication: tool.schema.enum(["published", "deferred"]).optional().describe("Lead-only: defer publication/admission without cancelling the task"),
+             completion_policy: tool.schema.enum(["assignee", "lead"]).optional().describe("Lead-only: require supervisor acceptance after integration"),
           risk: tool.schema.number().int().min(0).max(100).optional().describe("Task risk for model routing only (not review policy)"),
             task_type: tool.schema.string().optional().describe("Task kind for classification"),
             classification_input: tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional().describe("Task-specific classification data"),
             execution: taskExecutionSchema().optional().describe("Execution proposal; lead proposals are authorized, other members await a supervisor decision"),
           })).describe("Tasks to add"),
           execution_decisions: tool.schema.array(taskExecutionSchema().extend({ task_id: tool.schema.string().describe("Existing unassigned, not-yet-admitted task ID") })).optional().describe("Lead-only decisions for existing tasks"),
+          task_controls: tool.schema.array(tool.schema.object({
+            task_id: tool.schema.string(),
+            publication: tool.schema.enum(["published", "deferred"]).optional(),
+            completion_policy: tool.schema.enum(["assignee", "lead"]).optional(),
+            reason: tool.schema.string().min(1).max(2000),
+          }).strict()).optional().describe("Lead-only, justified publication/acceptance changes before first admission. Use tasks: []"),
         },
         async execute(args, ctx) {
           const result = await executeTeamTasksAdd(deps, args, ctx.sessionID)

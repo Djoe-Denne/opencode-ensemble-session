@@ -14,6 +14,7 @@ import {
 } from "./preparation-document"
 import { generateId } from "./util"
 import { taskSpawnContext } from "./session-continuity"
+import { taskSpawnOptions } from "./task-admission"
 
 /** One PM id mapped to the plugin task id created for it. */
 export interface PreparationImportMapping {
@@ -181,6 +182,11 @@ function persistPreparedTask(db: Database, teamId: string, importId: string, ite
   ])
   requirePersisted(db, "UPDATE team_task SET agent=?, spawn_context=? WHERE id=?", [
     item.task.agent ?? null, item.task.context ? JSON.stringify(taskSpawnContext(item.task.context, authorizedBy)) : null, taskId,
+  ])
+  const options = taskSpawnOptions(item.task)
+  requirePersisted(db, "UPDATE team_task SET publication=?, completion_policy=? WHERE id=?", [item.task.publication ?? "published", item.task.completion_policy ?? "assignee", taskId])
+  requirePersisted(db, "UPDATE team_task SET complexity=?, risk=?, spawn_options=? WHERE id=?", [
+    item.task.complexity ?? null, item.task.risk ?? null, Object.keys(options).length ? JSON.stringify(options) : null, taskId,
   ])
   requirePersisted(db, `INSERT INTO preparation_task (
       import_id, team_id, pm_id, task_id, position, task_type, goal, planning_required, planning_reason,

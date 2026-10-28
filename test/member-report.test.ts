@@ -73,7 +73,7 @@ describe("member report protocol", () => {
     const deps = fixture()
     await executeTeamSpawn(deps, { name: "restricted", agent: "qa", prompt: "Review only", worktree: false, report_mode: "final_response" }, "lead")
     const creation = deps.client.calls.find(call => call.method === "session.create")!
-    expect(creation.args[0]).not.toHaveProperty("permission")
+    expect(creation.args[0]).toHaveProperty("permission", [])
     const prompt = JSON.stringify(deps.client.calls.find(call => call.method === "session.promptAsync")!.args)
     expect(prompt).toContain("final response")
     expect(prompt).not.toContain("using team_tasks_complete")

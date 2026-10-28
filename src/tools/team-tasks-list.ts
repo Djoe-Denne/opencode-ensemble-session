@@ -3,7 +3,10 @@ import { requireTeamMember } from "./shared"
 import type { TaskExecutionDecision } from "../execution-policy"
 
 function executionSummary(task: Record<string, unknown>): string {
-  const context = typeof task.spawn_context === "string" ? ` [context:${task.spawn_context}]` : ""
+  const context = (typeof task.spawn_context === "string" ? ` [context:${task.spawn_context}]` : "")
+    + (typeof task.spawn_options === "string" ? ` [admission:${task.spawn_options}]` : "")
+    + (task.publication === "deferred" ? " [publication:deferred]" : "")
+    + (task.completion_policy === "lead" ? " [completion:lead]" : "")
   const raw = task.execution_decision ?? task.execution_request
   if (typeof raw !== "string") return context
   const decision = JSON.parse(raw) as TaskExecutionDecision
@@ -20,8 +23,8 @@ export async function executeTeamTasksList(
   const teamInfo = requireTeamMember(deps, sessionId)
 
   const tasks = deps.db.query(
-    "SELECT * FROM team_task WHERE team_id = ? ORDER BY time_created ASC"
-  ).all(teamInfo.teamId) as Array<Record<string, unknown>>
+    "SELECT * FROM team_task WHERE team_id = ? AND (? = 1 OR publication = 'published') ORDER BY time_created ASC"
+  ).all(teamInfo.teamId, teamInfo.role === "lead" ? 1 : 0) as Array<Record<string, unknown>>
 
   if (tasks.length === 0) return "No tasks on the board."
 

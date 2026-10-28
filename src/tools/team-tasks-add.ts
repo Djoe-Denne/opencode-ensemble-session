@@ -1,5 +1,7 @@
 import type { SpawnContext, ToolDeps } from "../types"
+import { applyTaskControls, taskPublication, validateTaskControls, type TaskControl, type TaskPublication } from "../task-publication"
 import { taskSpawnContext } from "../session-continuity"
+import { taskSpawnOptions, type TaskSpawnOptions } from "../task-admission"
 import { requireTeamMember } from "./shared"
 import { generateId } from "../util"
 import { pumpTeam } from "../dispatch"
@@ -10,7 +12,7 @@ import { log } from "../log"
 import { assertMissionAdmission } from "../mission-policy"
 import { executionStarts, routeExecution, validateTaskExecutionDecision, type AuthorizedTaskExecution, type TaskExecutionDecision } from "../execution-policy"
 
-interface TaskInput {
+interface TaskInput extends TaskSpawnOptions, TaskPublication {
   content: string
   priority: string
   depends_on?: string[]
@@ -26,15 +28,19 @@ interface TaskInput {
 }
 
 /**
- * Execute the team_tasks_add tool. Adds tasks to the shared board.
- * Tasks with unresolved dependencies are marked as 'blocked'.
+ * Add tasks or atomically control pre-admission publication/acceptance.
+ * Dependency status is independent of publication; only the lead controls the latter.
  */
 export async function executeTeamTasksAdd(
   deps: ToolDeps,
-  args: { tasks: TaskInput[]; execution_decisions?: Array<TaskExecutionDecision & { task_id: string }> },
+  args: { tasks: TaskInput[]; execution_decisions?: Array<TaskExecutionDecision & { task_id: string }>; task_controls?: TaskControl[] },
   sessionId: string,
 ): Promise<string> {
   const teamInfo = requireTeamMember(deps, sessionId)
+  const controls = args.task_controls ?? []
+  const publications = args.tasks.map(task => taskPublication(task))
+  if ((controls.length || publications.some(value => Object.keys(value).length)) && teamInfo.role !== "lead") throw new Error("Only the lead supervisor can control task publication and completion policy")
+  validateTaskControls(controls)
   const policy = getMissionClassification(deps.db, teamInfo.teamId)
   const decisions = args.execution_decisions ?? []
   if (decisions.length && teamInfo.role !== "lead") throw new Error("Only the lead supervisor can authorize task execution decisions")
@@ -46,6 +52,7 @@ export async function executeTeamTasksAdd(
   }
   const requests = args.tasks.map(task => task.execution === undefined ? undefined : request(task.execution))
   const contexts = args.tasks.map(task => task.context === undefined ? undefined : taskSpawnContext(task.context, sessionId))
+  const options = args.tasks.map(task => taskSpawnOptions(task))
   const updates = decisions.map(decision => ({ taskID: decision.task_id, decision: request(decision) }))
   updates.forEach(({ taskID }) => {
     const row = deps.db.query("SELECT status, assignee, model_routing FROM team_task WHERE id=? AND team_id=?").get(taskID, teamInfo.teamId) as { status: string; assignee: string | null; model_routing: string | null } | null
@@ -72,7 +79,7 @@ export async function executeTeamTasksAdd(
   }
 
   const unknown = [...new Set(args.tasks.flatMap(task => task.depends_on ?? []))].filter(id =>
-    !deps.db.query("SELECT id FROM team_task WHERE id = ? AND team_id = ?").get(id, teamInfo.teamId),
+    !deps.db.query("SELECT id FROM team_task WHERE id = ? AND team_id = ? AND (? = 1 OR publication = 'published')").get(id, teamInfo.teamId, teamInfo.role === "lead" ? 1 : 0),
   )
   if (unknown.length) throw new Error(`Unknown depends_on task IDs in this team: ${unknown.join(", ")}`)
   args.tasks.forEach(task => {
@@ -94,6 +101,7 @@ export async function executeTeamTasksAdd(
   const now = Date.now()
 
   const ids = deps.db.transaction(() => {
+    applyTaskControls(deps.db, teamInfo.teamId, sessionId, controls, now)
     if (admittedPolicy) {
       const current = assertMissionAdmission(deps.db, teamInfo.teamId)
       if (current?.hash !== admittedPolicy.hash || current.revision !== admittedPolicy.revision) throw new Error("Mission approval changed during execution decision")
@@ -125,6 +133,10 @@ export async function executeTeamTasksAdd(
         [id, teamInfo.teamId, task.content, resolved ? "pending" : "blocked", task.priority, depsJson, agent, task.complexity ?? null, task.risk ?? null, now, now]
       )
       if (contexts[index]) deps.db.run("UPDATE team_task SET spawn_context=? WHERE id=?", [JSON.stringify(contexts[index]), id])
+      const publication = publications[index]
+      deps.db.run("UPDATE team_task SET publication=?, completion_policy=? WHERE id=?", [publication?.publication ?? "published", publication?.completion_policy ?? "assignee", id])
+      const spawnOptions = options[index]
+      if (spawnOptions && Object.keys(spawnOptions).length) deps.db.run("UPDATE team_task SET spawn_options=? WHERE id=?", [JSON.stringify(spawnOptions), id])
       deps.db.run("UPDATE team_task SET task_type = ?, classification_input = ?, classification_status = ? WHERE id = ?",
         [task.task_type ?? null, task.classification_input ? JSON.stringify(task.classification_input) : null,
           policy && (policy.method !== "manual" || (policy.specialized && task.task_type === "x86")) && (task.complexity === undefined || task.risk === undefined) ? "pending" : "not_required", id])
@@ -142,5 +154,5 @@ export async function executeTeamTasksAdd(
   pumpTeam(deps, teamInfo.teamId)
   void classifyBoardTasks(deps, teamInfo.teamId).catch(error => { log(`classification:drain-failed ${String(error)}`) })
 
-  return `Added ${ids.length} task${ids.length !== 1 ? "s" : ""}: ${ids.join(", ")}${updates.length ? `; recorded ${updates.length} supervisor execution decision(s)` : ""}`
+  return `Added ${ids.length} task${ids.length !== 1 ? "s" : ""}: ${ids.join(", ")}${updates.length ? `; recorded ${updates.length} supervisor execution decision(s)` : ""}${controls.length ? `; recorded ${controls.length} task control(s). Deferral does not erase information already disclosed.` : ""}`
 }

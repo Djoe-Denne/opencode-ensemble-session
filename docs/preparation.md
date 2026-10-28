@@ -28,6 +28,12 @@ and opens execution. Publishing tasks early does not start workers. See
 [command-prepared missions](mission-policy.md) and
 [autonomous execution](autonomous-execution.md).
 
+To keep an audit or consumer unpublished until the supervisor is ready, use
+`publication: "deferred"`. Use `completion_policy: "lead"` on producers whose
+consumers require integrated results. The same fields are accepted by PM task
+documents; see [deferred publication and supervisor acceptance](task-publication.md)
+for native corrections, dependency semantics and confidentiality limitations.
+
 ## Command syntax
 
 `/ensemble-mission <objective>` is unchanged. Optional discovery uses:
@@ -306,6 +312,22 @@ it cannot be satisfied by reusing an old worker. Independent review/QA should
 specify `{ "mode": "fresh" }`. Omitted context preserves pool reuse. For imported
 tasks, omitted `from`/`current` means the supervisor session, not the temporary
 PM session. See [task pool](task-pool.md) for capacity and failure behavior.
+
+Optional `complexity` and `risk` are integer PM scores from 0 to 100. Optional
+`worktree` is a boolean; `report_mode` is `team_message` or `final_response`.
+These are persisted atomically, not inferred from handoff prose. Explicit
+isolation/reporting also requires a new session; auto-scale and manual spawn
+apply the same contract and reject conflicting overrides before allocation.
+Existing documents without these fields retain their defaults and replay hash.
+`worktree:false` cannot appear in a `separate-worktrees` parallel group.
+
+For restrictive QA, use `agent`, `context:{mode:"fresh"}`, `worktree:false`, and
+`report_mode:"final_response"`. In a governed mission the candidate runs under
+native profile permissions and the approved model; it needs no team tools or
+phase transition. The retained final response does not complete its task or
+release dependent authors. The lead first reviews and persists/integrates it.
+Runtime qualification can be the first task; its future proof is not required
+to prepare that task. Import itself launches nothing; user `start` is unchanged.
 
 Dependencies must form a DAG. An unknown id, a duplicate id, a self-dependency,
 and a longer cycle are all rejected. The cycle message names the ids in order.

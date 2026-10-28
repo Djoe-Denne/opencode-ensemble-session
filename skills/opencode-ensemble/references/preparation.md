@@ -141,7 +141,16 @@ missing information, unverified catalogue or unavailable required tools. These
 are reported evidence, not a guarantee of plan quality or execution approval.
 Task keys are only `id`,
 `title`, `type`, `goal`, `dependsOn`, `planning`, `acceptanceCriteria`,
-`verification`, and `handoff`, plus optional `agent` and `context`.
+`verification`, and `handoff`, plus optional `agent`, `context`, `complexity`,
+`risk`, `worktree`, and `report_mode`. Scores are integers 0–100; isolation is
+boolean; reporting is `team_message` or `final_response`. These fields survive
+import atomically and apply equally to auto-scale and manual spawn; conflicting
+spawn overrides are refused. Explicit isolation/reporting also requires a new
+session. For restrictive readers use `worktree:false` and
+`report_mode:"final_response"`: the approved model is pinned without adding
+permissions, team tools or phase transitions; the lead reviews the retained
+candidate before completing the task. A first-task runtime qualification gates
+authors, not preparation of that task. Import does not launch a worker.
 `agent` names a verified native profile. `context` accepts the same
 `fresh`/`fork`/`checkpoint`/`compact_fork` contract as `team_spawn` and is
 preserved on the imported board task. Explicit context requires a new session
@@ -190,7 +199,8 @@ and a `note` that says what the path contributes. The parser does not open the
 path. At least one source is required. Acceptance criteria and verification
 are non-empty lists.
 
-`parallelGroups[].isolation` is exactly `separate-worktrees`. `integrationNotes`
+`parallelGroups[].isolation` is exactly `separate-worktrees`; it cannot include a
+`worktree:false` task. `integrationNotes`
 tells the supervisor how to reconcile those branches. A direct or transitive
 dependency inside the group is rejected. Do not schedule two writers in one
 shared worktree and call it a parallel group.

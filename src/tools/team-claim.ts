@@ -19,8 +19,8 @@ export function claimTask(db: Database, teamId: string, taskId: string, assignee
   assertMissionAdmission(db, teamId)
   const mission = db.query("SELECT mission_state FROM team WHERE id = ?").get(teamId) as { mission_state: string } | null
   if (mission?.mission_state === "critical") throw new Error("Mission is critical; resolve the classification safety/budget failure before claiming work")
-  const task = db.query("SELECT content, status, assignee, classification_status, execution_request, execution_decision, spawn_context, agent FROM team_task WHERE id = ? AND team_id = ?")
-    .get(taskId, teamId) as { content: string; status: string; assignee: string | null; classification_status: string; execution_request: string | null; execution_decision: string | null; spawn_context: string | null; agent: string | null } | null
+   const task = db.query("SELECT content, status, assignee, classification_status, execution_request, execution_decision, spawn_context, spawn_options, agent FROM team_task WHERE id = ? AND team_id = ? AND publication = 'published'")
+    .get(taskId, teamId) as { content: string; status: string; assignee: string | null; classification_status: string; execution_request: string | null; execution_decision: string | null; spawn_context: string | null; spawn_options: string | null; agent: string | null } | null
   if (!task) throw new Error(`Task "${taskId}" not found`)
   if (task.execution_request && !task.execution_decision) throw new Error("Task execution proposal requires a supervisor decision before admission")
   if (!["not_required", "completed"].includes(task.classification_status)) throw new Error(`Task "${taskId}" is awaiting classification (${task.classification_status})`)
@@ -31,7 +31,7 @@ export function claimTask(db: Database, teamId: string, taskId: string, assignee
   // Atomic claim: UPDATE only if still pending and unassigned
   const route = routeMissionTask(db, teamId, taskId)
   db.transaction(() => {
-    if (task.spawn_context !== null) {
+    if (task.spawn_context !== null || task.spawn_options !== null) {
       const admission = db.run("UPDATE team_member SET context_task_id=NULL WHERE team_id=? AND name=? AND context_task_id=? AND (? IS NULL OR agent=?)",
         [teamId, assignee, taskId, task.agent, task.agent])
       if (!admission.changes) throw new Error("Task context requires a new session with the requested profile; use team_spawn with claim_task")
@@ -43,8 +43,8 @@ export function claimTask(db: Database, teamId: string, taskId: string, assignee
       if (approved?.hash !== route.policyHash || approved.revision !== route.policyRevision) throw new Error("Mission approval changed during claim")
     }
     const result = db.run(
-    "UPDATE team_task SET status = 'in_progress', assignee = ?, time_updated = ? WHERE id = ? AND team_id = ? AND status = 'pending' AND assignee IS NULL AND classification_status IN ('not_required', 'completed') AND team_id IN (SELECT id FROM team WHERE mission_state != 'critical')",
-    [assignee, Date.now(), taskId, teamId]
+    "UPDATE team_task SET status = 'in_progress', assignee = ?, time_updated = ?, admitted_at = COALESCE(admitted_at, ?) WHERE id = ? AND team_id = ? AND publication = 'published' AND status = 'pending' AND assignee IS NULL AND classification_status IN ('not_required', 'completed') AND team_id IN (SELECT id FROM team WHERE mission_state != 'critical')",
+    [assignee, Date.now(), Date.now(), taskId, teamId]
     )
 
     if (result.changes === 0) throw new Error(`Task "${taskId}" is already claimed (race condition)`)

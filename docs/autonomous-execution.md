@@ -132,4 +132,9 @@ Command-prepared missions retain `prepare/config/start` approval. Direct V2 team
 freeze the same catalogue policy at explicit creation. Existing v1 grid policies
 and V1/no-catalogue workflows retain read/operation compatibility; they are not
 silently migrated. Autonomous workers need V2 model/catalogue/permission APIs,
-an owned board task and collaborative reporting (not `final_response`).
+an owned board task. Collaborative reporting uses the planning/implementation
+transition. `final_response` instead runs the assigned planning/review as a
+native-profile candidate: the approved model/reasoning is pinned, no planning
+permission overrides or team tools are granted, and phase/reasoning transitions
+are refused. The lead reviews and persists/integrates its retained result before
+completing the task. Native profile permissions remain authoritative.
