@@ -106,7 +106,7 @@ missions every **ten minutes**. No external cron or OS scheduled task is needed.
 This is a conditional recovery backstop, not a periodic task reminder to workers
 and not a replacement for normal event-driven report delivery.
 
-A wake is eligible only when unfinished board work (`pending`/`in_progress`) or
+For **supervised** missions, a wake is eligible only when unfinished board work (`pending`/`in_progress`) or
 unreviewed worker reports remain, the mission is running under its approved
 policy (legacy teams retain their existing admission rules), and recorded work
 has not changed for at least ten minutes. The check consults native session
@@ -118,11 +118,36 @@ without pending reports are left alone. Pending native permission requests also
 suppress V2 recovery when the host exposes the public permission-list API; failed
 or malformed status/permission inspection is not treated as proof of idleness.
 
+For a mission whose **last approved `autonomy.mode` is `long_run`**, an active,
+unarchived mission with an inactive supervisor and no active worker/helper is
+eligible even when its state is `attention`/`critical`, all tasks are `blocked`
+or `completed`, or the board is empty. These labels do not prove mission closure
+or an autonomously insoluble blocker. A changed draft, stale initialization flag,
+pending native permission or permission-inspection failure cannot by itself
+suppress the diagnostic wake. The lead must investigate, pursue useful authorized
+alternatives or finalize the mission; the controller does not reset safety states
+or admit unapproved operations. The legacy classification `mission_mode` alone
+does not activate this behavior. Corrupt approved-policy integrity fails closed.
+
+Long runs are also checked immediately at plugin startup, without waiting for
+ten minutes of unchanged metadata. Native busy/retry/unknown activity still
+prevents duplicate supervision; failed activity inspection is not proof of idle.
+Archived teams/projects remain excluded. There is no separate terminal mission
+state in this schema: an active mission with a completed board is woken to verify
+closure, not to redo its completed tasks.
+
 Immediately before waking, activity and admission are checked again. A concise
 diagnostic is saved to the lead's team inbox, then a persistent synthetic message
 wakes the idle lead to inspect missing reports and resume permitted coordination.
 The check never spawns, aborts, completes tasks, changes the mission policy or
 grants permissions. It does not certify that a worker finished successfully.
+For long runs, the final check verifies approved autonomy and liveness, not mutable
+draft admission. Native access is managed separately by the V2 permission manager.
+
+`team_status` displays the latest persistent recovery observation (UTC, outcome,
+reason), or explicitly says no check is recorded. Reasons distinguish active
+native sessions, unavailable activity, admission/state exclusions and wake cooldown.
+Observations do not change mission progress timestamps or wake deduplication.
 
 An unchanged incident reuses the same inbox diagnostic, and persisted recovery
 state limits delivery to at most one attempt per team per ten-minute window,

@@ -12,6 +12,7 @@ function mockSetupCtx() {
   const hooks: Record<string, Array<(event: never) => unknown>> = {}
   const commands: MissionCommandDefinition[] = []
   let commandsDisposed = false
+  const nativeSessions = new Map<string, Record<string, unknown>>()
   const hook = (domain: string) => async (_name: string, cb: (event: never) => unknown) => {
     ;(hooks[domain] ??= []).push(cb)
     return { dispose: async () => undefined }
@@ -31,7 +32,8 @@ function mockSetupCtx() {
       switchAgent: async () => undefined,
       switchModel: async () => undefined,
       interrupt: async () => undefined,
-      get: async () => ({ id: "ses_x" }),
+      get: async (input: Record<string, unknown>) => structuredClone(nativeSessions.get(String(input.sessionID)) ?? { id: input.sessionID, agent: "build", permissions: [], metadata: {} }),
+      update: async (input: Record<string, unknown>) => { nativeSessions.set(String(input.sessionID), { agent: "build", ...input }) },
       context: async () => [],
       active: async () => ({}),
       hook: hook("session"),
@@ -39,6 +41,7 @@ function mockSetupCtx() {
     permission: {
       rules: async () => undefined,
     },
+    agent: { get: async () => ({ permissions: [{ action: "*", resource: "*", effect: "allow" }] }) },
     worktree: {
       create: async () => ({ directory: "/wt/x" }),
       remove: async () => undefined,
@@ -76,6 +79,40 @@ function seedLeadAndMember(handle: Awaited<ReturnType<typeof setupEnsemble>>) { 
 }
 
 describe("v2-setup (issue #36)", () => {
+  test("context synchronizes native long-run permissions and restores them after archive", async () => {
+    const f = mockSetupCtx()
+    const sessions = new Map<string, Record<string, unknown>>([
+      ["ses_lead", { agent: "orchestrator", permissions: [], metadata: { user: true } }],
+      ["ses_alice", { agent: "reviewer", permissions: [], metadata: {} }],
+    ])
+    const updates: string[] = []
+    Object.assign(f.ctx.session, {
+      get: async (input: { sessionID: string }) => structuredClone(sessions.get(input.sessionID)),
+      update: async (input: { sessionID: string }) => { updates.push(input.sessionID); Object.assign(sessions.get(input.sessionID)!, input) },
+    })
+    Object.assign(f.ctx, { agent: { get: async () => ({ permissions: [{ action: "read", resource: "*", effect: "ask" }, { action: "edit", resource: "*", effect: "deny" }] }) } })
+    const handle = await setupEnsemble(f.ctx, { dbPath: ":memory:", dashboardPort: 0 })
+    try {
+      seedLeadAndMember(handle)
+      handle.db.run("INSERT INTO project (id, name, path, time_created, time_updated) VALUES (?, 'fixture', ?, 1, 1)", [f.ctx.location.directory, f.ctx.location.directory])
+      handle.db.run("UPDATE team SET project_id = ? WHERE id = 'team1'", [f.ctx.location.directory])
+      const deps = setupDeps()
+      deps.config = { ...deps.config, modelRouting: { ...deps.config.modelRouting, models: [{ id: "fixture/worker", intelligenceScore: 60, averageCostPerTask: 1, available: true }] } }
+      const policy = { ...historicalModelPolicy(deps), autonomy: { mode: "long_run", instructions: ["Continue autonomously."] } }
+      const json = JSON.stringify(policy)
+      const hash = createHash("sha256").update(json).digest("hex")
+      handle.db.run("INSERT INTO mission_policy_revision (team_id, revision, policy_json, policy_hash, time_created) VALUES ('team1', 1, ?, ?, 1)", [json, hash])
+      for (const sessionID of sessions.keys()) await f.hooks.session![0]!({ sessionID, system: [] } as never)
+      expect(updates).toEqual(["ses_lead", "ses_alice"])
+      expect(sessions.get("ses_lead")!.permissions).toContainEqual({ action: "*", resource: "*", effect: "allow" })
+      expect(sessions.get("ses_alice")!.permissions).toContainEqual({ action: "edit", resource: "*", effect: "deny" })
+      handle.db.run("UPDATE team SET status = 'archived' WHERE id = 'team1'")
+      await f.hooks.session![0]!({ sessionID: "ses_lead", system: [] } as never)
+      expect(sessions.get("ses_lead")!.permissions).toEqual([])
+      expect(sessions.get("ses_lead")!.metadata).toEqual({ user: true })
+    } finally { await handle.dispose() }
+  })
+
   test("journals native sub-agent MCP denials and isolation failures without changing permission decisions", async () => {
     const directory = mkdtempSync(join(tmpdir(), "ensemble-permission-integration-"))
     const f = mockSetupCtx()

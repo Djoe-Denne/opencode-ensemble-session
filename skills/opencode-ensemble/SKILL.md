@@ -43,6 +43,21 @@ execute authorized steps and continue; reports are informational, not requests
 for a new go. Research, test and arbitrate before asking about a genuinely
 consequential unresolved dilemma; technical difficulty alone does not justify
 a question. Preserve explicit prohibitions, native permissions and safety gates.
+On V2 the approved autonomy also drives native session overrides: full lead access
+while preserving explicit session denies; workers keep profile/planning/reporting
+restrictions with routine asks allowed. Revocation/cleanup restores owned rules.
+For an approved, unclosed long run, the safety timer wakes an idle supervisor when
+no worker/helper is active, including blocked/attention/critical and completed-board
+cases. It does not clear admission or safety gates. `team_status` exposes the latest
+check/reason; no recorded tick is not evidence that the timer has run.
+Necessary non-secret local reads and read-only diagnostics within the mandate
+already have mission authorization: use permitted tools without another chat GO.
+Distinguish that delegation from actual tool enforcement; diagnose a native decline
+without inventing missing authority, broadening rights or bypassing the refusal.
+An acceptance failure freezes the affected acceptance/integration, not all useful
+authorized investigation. Before declaring a partial/global block, identify the
+failed criterion, affected dependencies and remaining authorized next steps; keep
+working where permitted without relaxing limits or retrying frozen experiments.
 Optional PM discovery before `start` uses
 `/ensemble-mission prepare [--pm <agent>] [--preplan <file>] [--history none|fork|checkpoint] [--before <messageID>] <mandat>`.
 A new session requires the objective; an existing draft always transmits its

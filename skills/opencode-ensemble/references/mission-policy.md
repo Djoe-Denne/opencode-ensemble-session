@@ -108,6 +108,27 @@ user-approval gates. Check prerequisites and existing authority, execute authori
 steps, record consequential decisions briefly and continue without a new go.
 Progress reports are informational, not permission requests.
 
+Necessary non-secret local reads and read-only diagnostics within the mandate
+already have mission authorization, including relevant source files, existing
+evidence and configuration/profile metadata. Do not ask for permission merely
+because an exact local path or diagnostic command was not listed. Use the
+permitted native tool normally; this adds no tool rights, secret access or access
+outside scope. A generic `Permission.DeclinedError` does not establish its cause
+or missing mission authorization. Inspect existing evidence and identify the
+actual action/boundary; an observed native denial remains binding even with an
+unknown cause. Do not retry a confirmed refusal or switch tools to evade it.
+Escalate only for a specific indispensable action with no compliant authorized
+alternative, while continuing unaffected work.
+
+An acceptance failure is not automatically an execution blocker. Freeze the
+affected acceptance/integration, not permitted diagnosis, source analysis,
+documentation research, useful specialist consultation or independent work.
+Before declaring a partial/global block, identify the failed criterion, affected
+dependencies and remaining authorized next steps. Do not end as partially blocked
+while useful authorized work remains. Continue a bounded investigation and report
+the missing proof honestly; do not relax test limits or retry explicitly frozen
+experiments without authority. Those restrictions do not forbid all other work.
+
 Read authorization from the approved objective, mandate and decision delegation,
 not from whether every necessary architectural or contract decision was listed in
 the plan. Do not change the objective or expand scope. Initial `config`/`start`

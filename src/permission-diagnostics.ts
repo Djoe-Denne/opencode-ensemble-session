@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path"
 import { getDbPath } from "./db"
 
 /** Distinct symptoms, not automatic conclusions about the configured permission rule. */
-export const PERMISSION_INCIDENT_CATEGORIES = ["permission_denied", "user_rejected", "filesystem_access_denied", "external_authorization_denied", "tool_unavailable", "ensemble_isolation_denied"] as const
+export const PERMISSION_INCIDENT_CATEGORIES = ["permission_denied", "permission_declined", "user_rejected", "filesystem_access_denied", "external_authorization_denied", "tool_unavailable", "ensemble_isolation_denied"] as const
 type Category = typeof PERMISSION_INCIDENT_CATEGORIES[number]
 type Observation = "tool_error" | "native_tool_state" | "reported_tool_error" | "isolation_guard"
 
@@ -50,7 +50,8 @@ function classify(error: unknown, depth = 0): { category: Category; fingerprint:
   const code = typeof value?.code === "string" ? value.code : ""
   const tag = typeof value?.type === "string" ? value.type : typeof value?._tag === "string" ? value._tag : ""
   const text = `${code} ${tag} ${message.slice(0, 8192)}`
-  const category: Category | undefined = /user (?:rejected|denied)|rejected by (?:the )?user/i.test(text) ? "user_rejected"
+  const category: Category | undefined = tag === "Permission.DeclinedError" || message.trim() === "Permission.DeclinedError" ? "permission_declined"
+    : /user (?:rejected|denied)|rejected by (?:the )?user/i.test(text) ? "user_rejected"
     : /\bEACCES\b|\bEPERM\b/i.test(text) ? "filesystem_access_denied"
     : value?.status === 401 || value?.status === 403 ? "external_authorization_denied"
     : /permission.{0,30}(?:denied|rejected)|access (?:is )?denied|not allowed to (?:use|call|execute|access)|do not have permission|does not have permission|rule.{0,60}prevents.{0,60}tool call|not permitted by.{0,30}(?:policy|rule|agent)|accès refusé|permission refusée/i.test(text) ? "permission_denied"
@@ -179,6 +180,12 @@ export class PermissionDiagnostics {
     const texts = typeof content === "string" ? [content] : Array.isArray(content) ? content.map(item => object(item)?.text) : []
     texts.forEach(text => {
       if (typeof text !== "string" || text.length > 32768) return
+      // Code Mode completes the dispatcher even when a nested native call fails.
+      // Require its error marker and an exact native tag, never quoted prose.
+      if (value.tool === "execute" && object(result?.metadata)?.error === true && text.trim() === "Permission.DeclinedError") {
+        const signal = classify(text.trim())
+        if (signal) this.record(context, signal, "reported_tool_error")
+      }
       try { packets.push(JSON.parse(text)) } catch { /* Ordinary successful text is not evidence of a refusal. */ }
     })
     packets.forEach(packet => {

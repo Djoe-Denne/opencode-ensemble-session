@@ -591,6 +591,8 @@ export async function executeTeamCleanup(
 
   const pending = cleanupWarnings.length > 0 || conflicted.length > 0
   if (!pending) {
+    // Keep cleanup retryable if the native host cannot restore owned overrides.
+    await deps.syncMissionPermissions?.(teamInfo.teamId, true)
     commitArchive(deps.db, teamInfo.teamId)
     deps.registry.unregisterTeam(teamInfo.teamId)
     spawnFailures.delete(teamInfo.teamId)

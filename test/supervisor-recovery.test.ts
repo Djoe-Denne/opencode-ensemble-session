@@ -1,10 +1,37 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test"
 import { setupDeps, insertMember, insertTeam } from "./helpers"
 import { SupervisorRecovery } from "../src/supervisor-recovery"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
+import { approveMission, openMissionConfiguration, prepareMission } from "../src/mission-policy"
 
 const INTERVAL = 10 * 60 * 1000
 const recoveries: SupervisorRecovery[] = []
-afterEach(() => recoveries.splice(0).forEach(recovery => recovery.stop()))
+const directories: string[] = []
+afterEach(() => {
+  recoveries.splice(0).forEach(recovery => recovery.stop())
+  directories.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true }))
+})
+
+async function longRunFixture() {
+  const deps = setupDeps()
+  deps.directory = mkdtempSync(join(tmpdir(), "ensemble-recovery-longrun-"))
+  directories.push(deps.directory)
+  deps.config = { ...deps.config, modelRouting: { ...deps.config.modelRouting,
+    models: [{ id: "fixture/worker", intelligenceScore: 60, averageCostPerTask: 1, available: true }] } }
+  const mission = await prepareMission(deps, "lead", "Complete the approved long-run mission")
+  const policy = JSON.parse(readFileSync(mission.policyPath, "utf8"))
+  policy.autonomy = { mode: "long_run", instructions: ["Decide and continue autonomously."] }
+  writeFileSync(mission.policyPath, JSON.stringify(policy))
+  openMissionConfiguration(deps, mission.teamId, "lead")
+  approveMission(deps, mission.teamId, "lead")
+  deps.db.run("INSERT INTO team_task (id, team_id, content, status, priority, time_created, time_updated) VALUES ('task', ?, 'Unfinished', 'pending', 'medium', 1, 1)", [mission.teamId])
+  deps.client.session.status = async () => ({ data: {} })
+  const recovery = new SupervisorRecovery({ db: deps.db, client: deps.client, projectId: deps.directory })
+  recoveries.push(recovery)
+  return { ...mission, deps, recovery, policy, wakes: () => deps.client.calls.filter(call => call.method === "session.promptAsync") }
+}
 
 function fixture() {
   const deps = setupDeps()
@@ -25,6 +52,93 @@ function fixture() {
 }
 
 describe("supervisor liveness recovery", () => {
+  test("records skipped and attempted checks without changing mission progress", async () => {
+    const f = await longRunFixture()
+    const progress = f.deps.db.query("SELECT time_updated FROM team WHERE id = ?").get(f.teamId)
+    f.deps.client.session.status = async () => ({ data: { lead: { type: "busy" } } })
+    await f.recovery.check()
+    const observation = () => f.deps.db.query("SELECT outcome, reason, checked_at FROM supervisor_recovery_observation WHERE team_id = ?").get(f.teamId)
+    expect(observation()).toMatchObject({ outcome: "skipped", reason: "native_session_active" })
+    f.deps.client.session.status = async () => ({ data: {} })
+    await f.recovery.check()
+    expect(observation()).toMatchObject({ outcome: "wake_attempted", reason: "idle_approved_long_run" })
+    await f.recovery.check()
+    expect(observation()).toMatchObject({ outcome: "skipped", reason: "wake_cooldown" })
+    expect(f.deps.db.query("SELECT time_updated FROM team WHERE id = ?").get(f.teamId)).toEqual(progress)
+  })
+
+  test("startup uses approved autonomy even when the legacy mode disagrees", async () => {
+    const f = await longRunFixture()
+    f.deps.db.run("UPDATE team SET mission_mode = 'supervised' WHERE id = ?", [f.teamId])
+    f.recovery.start()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(f.wakes()).toHaveLength(1)
+  })
+
+  test("invalid approved integrity cannot activate long-run recovery", async () => {
+    const f = await longRunFixture()
+    f.deps.db.run("UPDATE mission_policy_revision SET policy_hash = 'invalid' WHERE team_id = ?", [f.teamId])
+    await f.recovery.check()
+    expect(f.wakes()).toHaveLength(0)
+    expect(f.deps.db.query("SELECT reason FROM supervisor_recovery_observation WHERE team_id = ?").get(f.teamId)).toEqual({ reason: "approved_policy_invalid" })
+  })
+
+  test("legacy classification mode alone does not enable long-run exclusions", async () => {
+    const f = fixture()
+    f.deps.db.run("UPDATE team SET mission_mode = 'long_run'")
+    f.deps.db.run("UPDATE team_task SET status = 'blocked'")
+    await f.make().check()
+    expect(f.wakes()).toHaveLength(0)
+  })
+
+  test.each(["blocked", "attention", "critical", "completed-board", "empty-board", "stale-spawn", "draft-changed", "recent"])("approved long run wakes an idle unfinished mission despite %s", async scenario => {
+    const f = await longRunFixture()
+    if (scenario === "blocked") f.deps.db.run("UPDATE team_task SET status = 'blocked' WHERE team_id = ?", [f.teamId])
+    if (scenario === "attention" || scenario === "critical") f.deps.db.run("UPDATE team SET mission_state = ? WHERE id = ?", [scenario, f.teamId])
+    if (scenario === "completed-board") f.deps.db.run("UPDATE team_task SET status = 'completed' WHERE team_id = ?", [f.teamId])
+    if (scenario === "empty-board") f.deps.db.run("DELETE FROM team_task WHERE team_id = ?", [f.teamId])
+    if (scenario === "stale-spawn") {
+      insertMember(f.deps.db, f.teamId, "worker", "worker-session")
+      f.deps.db.run("UPDATE team_member SET spawn_pending = 1 WHERE team_id = ?", [f.teamId])
+    }
+    if (scenario === "draft-changed") writeFileSync(f.policyPath, JSON.stringify({ ...f.policy, startingIntelligence: 55 }))
+    await f.recovery.check()
+    expect(f.wakes()).toHaveLength(1)
+    expect(f.deps.client.calls.some(call => call.method === "session.create" || call.method === "session.abort")).toBe(false)
+    expect(f.deps.db.query("SELECT mission_state FROM team WHERE id = ?").get(f.teamId)).toEqual({ mission_state: scenario === "attention" || scenario === "critical" ? scenario : "running" })
+  })
+
+  test("long-run pending permission does not suppress supervisor diagnosis", async () => {
+    const f = await longRunFixture()
+    const recovery = new SupervisorRecovery({ db: f.deps.db, client: f.deps.client, projectId: f.deps.directory, hasPendingPermission: async () => true })
+    recoveries.push(recovery)
+    await recovery.check()
+    expect(f.wakes()).toHaveLength(1)
+  })
+
+  test("long-run permission inspection failure does not suppress an otherwise safe wake", async () => {
+    const f = await longRunFixture()
+    const recovery = new SupervisorRecovery({ db: f.deps.db, client: f.deps.client, projectId: f.deps.directory, hasPendingPermission: async () => { throw new Error("permission lookup failed") } })
+    recoveries.push(recovery)
+    await recovery.check()
+    expect(f.wakes()).toHaveLength(1)
+  })
+
+  test("long run still respects active workers and archived projects or teams", async () => {
+    const f = await longRunFixture()
+    f.deps.client.session.status = async () => ({ data: { lead: { type: "busy" } } })
+    await f.recovery.check()
+    expect(f.wakes()).toHaveLength(0)
+    f.deps.client.session.status = async () => ({ data: {} })
+    f.deps.db.run("UPDATE project SET status = 'archived' WHERE id = ?", [f.deps.directory])
+    await f.recovery.check()
+    expect(f.wakes()).toHaveLength(0)
+    f.deps.db.run("UPDATE project SET status = 'active' WHERE id = ?", [f.deps.directory])
+    f.deps.db.run("UPDATE team SET status = 'archived' WHERE id = ?", [f.teamId])
+    await f.recovery.check()
+    expect(f.wakes()).toHaveLength(0)
+  })
+
   test("persists one diagnostic and wakes the idle lead when no worker is active", async () => {
     const f = fixture()
     await f.make().check()

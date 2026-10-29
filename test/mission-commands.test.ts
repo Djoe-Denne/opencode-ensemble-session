@@ -58,6 +58,27 @@ describe("mission command parsing", () => {
 })
 
 describe("native mission command", () => {
+  test("synchronizes native access after approval and before execution delivery", async () => {
+    const f = commandFixture()
+    let synchronized = false
+    await registerMissionCommands(f.host, f.deps, f.models, undefined, async teamId => {
+      expect(buildMissionAutonomyPrompt(f.deps.db, teamId)).toContain("Approved long-run autonomy")
+      expect((f.prompts.at(-1) as { text: string }).text).not.toContain("Mission started")
+      synchronized = true
+      throw new Error("native access write failed")
+    })
+    await f.invoke("Fix cache")
+    const row = f.deps.db.query("SELECT policy_path FROM mission_policy").get() as { policy_path: string }
+    const policy = JSON.parse(readFileSync(row.policy_path, "utf8"))
+    writeFileSync(row.policy_path, JSON.stringify({ ...policy, autonomy: { mode: "long_run", instructions: ["Continue autonomously."] } }))
+    await f.invoke("config")
+    const before = f.prompts.length
+    await expect(f.invoke("start")).rejects.toThrow("native access write failed")
+    expect(synchronized).toBe(true)
+    expect(f.prompts).toHaveLength(before)
+    expect(f.deps.client.calls.some(call => call.method === "session.create")).toBe(false)
+  })
+
   test("config presents decision priorities and only user start activates the autonomy suffix", async () => {
     const f = commandFixture()
     await registerMissionCommands(f.host, f.deps, f.models)

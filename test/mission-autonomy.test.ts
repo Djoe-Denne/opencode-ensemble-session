@@ -184,6 +184,35 @@ describe("approved long-run autonomy", () => {
     expect(buildMissionDecisionPrompt(f.deps.db, f.teamId)).not.toContain("Contract ratification")
   })
 
+  test("long-run local reads are already delegated without inventing rights or bypassing a refusal", async () => {
+    const f = await fixture()
+    f.edit({ mode: "long_run", instructions: ["Prioritize quality."] })
+    expect(buildMissionAutonomyPrompt(f.deps.db, f.teamId)).toBe("")
+    f.approve()
+    const text = buildMissionAutonomyPrompt(f.deps.db, f.teamId)
+    expect(text).toContain("Necessary non-secret local reads and read-only diagnostics are already covered")
+    expect(text).toContain("Do not ask whether you may read a local file")
+    expect(text).toContain("configuration/profile metadata")
+    expect(text).toContain("Use the permitted native tool normally")
+    expect(text).toContain("Permission.DeclinedError alone does not establish")
+    expect(text).toContain("do not retry a confirmed refusal or switch tools to evade it")
+    expect(text).toContain("specific indispensable action")
+    expect(text).toContain("without expanding permissions")
+  })
+
+  test("an unmet acceptance criterion does not stop authorized long-run investigation", async () => {
+    const f = await fixture()
+    f.edit({ mode: "long_run", instructions: ["Prioritize quality."] })
+    f.approve()
+    const text = buildMissionAutonomyPrompt(f.deps.db, f.teamId)
+    expect(text).toContain("An acceptance failure is not automatically an execution blocker")
+    expect(text).toContain("Freeze only the affected acceptance/integration")
+    expect(text).toContain("allowed diagnosis, source analysis, documentation research")
+    expect(text).toContain("failed criterion, affected dependencies and remaining authorized next steps")
+    expect(text).toContain("Do not end the mission as partially blocked while useful authorized work remains")
+    expect(text).toContain("Do not relax test limits or repeat explicitly frozen experiments")
+  })
+
   test.each([null, {}, { mode: "fast" }, { mode: "long_run" }, { mode: "long_run", instructions: [] },
     { mode: "long_run", instructions: [" "] }, { mode: "long_run", instructions: [3] },
     { mode: "long_run", instructions: ["x".repeat(2001)] }, { mode: "long_run", instructions: Array(51).fill("x") },

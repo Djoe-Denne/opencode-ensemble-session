@@ -29,6 +29,7 @@ export async function runPermissionDiagnostics(args: readonly string[], io: Diag
     else {
       const categories = {
         permission_denied: "Permission denied (the precise rule is not established)",
+        permission_declined: "Native permission declined (user rejection or service lifecycle cause is not established)",
         user_rejected: "The user rejected the action",
         filesystem_access_denied: "The operating system refused file access",
         external_authorization_denied: "An external service refused authorization (401/403)",

@@ -541,7 +541,7 @@ describe("preparation runtime", () => {
     }
   })
   test("registers the preparation run migration", () => {
-    expect(MIGRATIONS).toHaveLength(30)
+    expect(MIGRATIONS).toHaveLength(31)
     const { deps } = runtimeFixture([])
     expect(deps.db.query("SELECT name FROM sqlite_master WHERE name = 'preparation_run'").get()).toEqual({ name: "preparation_run" })
   })

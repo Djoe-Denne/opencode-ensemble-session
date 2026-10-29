@@ -108,6 +108,24 @@ describe("permission failure diagnostics", () => {
     expect(f.lines().join(" ")).not.toContain("secret-token-123")
   })
 
+  test("captures the real Code Mode declined envelope without inferring a human veto", () => {
+    const f = fixture()
+    f.logger.observeToolAfter({ ...denied(), tool: "execute", status: "completed", error: undefined, result: {
+      content: [{ type: "text", text: "Permission.DeclinedError" }],
+      metadata: { error: true, toolCalls: [{ tool: "context-mode.ctx_execute", status: "error", input: { secret: "private-input" } }] },
+    } })
+    expect(f.records()[0]).toMatchObject({ category: "permission_declined", observation: "reported_tool_error", tool: "execute" })
+    expect(f.lines().join(" ")).not.toContain("private-input")
+  })
+
+  test("recognizes a tagged declined error but not successful text quoting that tag", () => {
+    const f = fixture()
+    f.logger.observeToolAfter({ ...denied(), error: { _tag: "Permission.DeclinedError" } })
+    expect(f.records()[0]?.category).toBe("permission_declined")
+    f.logger.observeToolAfter({ ...denied("quoted"), tool: "execute", status: "completed", result: { content: "Permission.DeclinedError" } })
+    expect(f.records()).toHaveLength(1)
+  })
+
   test("records isolation denials without changing the agent or granting rights", () => {
     const f = fixture()
     f.logger.recordIsolation({ sessionID: "child", agent: "qa-reader", tool: "team_message", id: "isolation" })

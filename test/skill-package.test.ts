@@ -78,5 +78,7 @@ describe("opencode-ensemble agent skill", () => {
     expect(text).toContain("SDK publication");
     expect(text).toContain("Kind operations");
     expect(text).toContain("not categorical exceptions");
+    expect(text).toContain("non-secret local reads");
+    expect(text).toContain("acceptance failure");
   });
 });

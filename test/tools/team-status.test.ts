@@ -18,6 +18,15 @@ describe("team_status", () => {
     expect(result).toContain("No teammates")
   })
 
+  test("shows liveness decisions even inside the normal status throttle window", async () => {
+    await executeTeamStatus(deps, "lead-sess")
+    deps.db.run("INSERT INTO supervisor_recovery_observation (team_id, checked_at, outcome, reason) VALUES ('t1', ?, 'skipped', 'native_session_active')", [Date.now() + 1000])
+    const result = await executeTeamStatus(deps, "lead-sess")
+    expect(result).toContain("Supervisor recovery:")
+    expect(result).toContain("native_session_active")
+    expect(result).toContain("skipped")
+  })
+
   test("shows members with status and agent", async () => {
     insertMember(deps.db, "t1", "alice", "sess-alice", "busy", "running")
     insertMember(deps.db, "t1", "bob", "sess-bob", "ready", "idle")

@@ -110,6 +110,31 @@ approved long-run priorities. It does not activate a draft or grant permissions.
 
 ### Long-run decision delegation
 
+On V2, approval also reconciles **native session overrides**, independently of
+the prompt. The lead receives `* / * / allow`, followed by any existing explicit
+session denies. Workers use their effective native profile and session overlays
+with routine `ask` rules converted to `allow`; profile denies, planning denies,
+reporting mode and scope remain binding. An inherited broad session allow is not
+propagated into a restricted worker. Helpers/preparation sessions receive no grant.
+
+Reconciliation runs after approval before execution delivery and before each team
+session context, after the initialization guard. Updates are verified by native
+readback; unsupported or failed writes are errors, not assumed success. Metadata
+records the owned override and original rules across reloads. Approved revocation
+or cleanup restores those rules and preserves appended user restrictions and
+unrelated metadata. Cleanup remains retryable until restoration succeeds.
+Draft edits alone neither activate nor revoke access. Global configuration and
+native profiles are never rewritten.
+
+These overrides do not defeat native policies/hooks, explicit denials or operating
+system restrictions. Existing pending native requests are **not** auto-replied to:
+the public plugin permission API exposes list/get/reply but no side-effect-free
+reevaluation contract that could establish a safe new decision. Ensemble does not
+fabricate user consent or replay an action to evade a denial. A long-run idle
+supervisor can still be woken to diagnose the boundary and continue independent
+work. A foreground native permission wait remains active, not proven idle. The
+separate native lifecycle/reload defect is not patched by these overrides.
+
 Long run is an approved delegation of decisions, not just resilience to a failed
 classifier. In the mission draft (policy versions 1, 2 and 3), persist the user's
 general decision priorities independently of classification:
@@ -152,6 +177,29 @@ checks prerequisites and existing authority, performs authorized steps, records
 consequential decisions briefly and continues without confirmation. Progress
 reports are informational, not permission requests. These defaults accompany any
 approved long-run priorities; users need not repeat them in `instructions`.
+
+Necessary non-secret local reads and read-only diagnostics within the approved
+mandate already have mission authorization. This includes relevant source files,
+existing evidence and configuration/profile metadata. Do not ask whether a local
+file may be read or an ordinary diagnostic may be run because its exact path or
+command was not enumerated; use the permitted native tool normally. This grants
+no extra tool rights, secret access or out-of-scope access. A generic
+`Permission.DeclinedError` does not establish the cause or missing mission
+authorization. Inspect available diagnostic evidence, identify the actual action
+and observed boundary, and never retry a confirmed refusal or change tools to
+evade it. An observed native denial remains binding even when its cause is
+unknown. Escalate only for a specific indispensable action with no compliant
+authorized alternative; continue unaffected work.
+
+An acceptance failure is not automatically an execution blocker. Freeze only
+the affected acceptance/integration, not allowed diagnosis, source analysis,
+documentation research, useful specialist consultation or independent work.
+Before declaring a partial/global block, identify the failed criterion, affected
+dependencies and remaining authorized next steps. Do not end as partially blocked
+while useful authorized work remains: pursue a bounded next investigation and
+report the missing proof honestly. Do not relax test limits or retry explicitly
+frozen experiments without authority; those restrictions do not forbid every
+other investigation.
 
 Authorization comes from the approved objective, mandate and decision delegation,
 not from enumerating every necessary architectural or contract decision in the

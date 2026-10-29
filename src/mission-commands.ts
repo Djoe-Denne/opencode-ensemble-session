@@ -267,7 +267,7 @@ async function deliverPreparation(host: MissionCommandHost, deps: ToolDeps, inpu
 }
 
 /** Register the generic mission command on supported V2 hosts. */
-export async function registerMissionCommands(host: MissionCommandHost, deps: ToolDeps, availableModels?: () => Promise<readonly MissionPolicyModel[]>, preparation?: PreparationPort): Promise<MissionCommandRegistration | undefined> {
+export async function registerMissionCommands(host: MissionCommandHost, deps: ToolDeps, availableModels?: () => Promise<readonly MissionPolicyModel[]>, preparation?: PreparationPort, syncPermissions?: (teamId: string) => Promise<void>): Promise<MissionCommandRegistration | undefined> {
   if (!host.command) return undefined
   return host.command.transform(editor => {
     editor.add({
@@ -302,6 +302,7 @@ export async function registerMissionCommands(host: MissionCommandHost, deps: To
         if (!availableModels) throw new Error("Native model catalogue API unavailable; mission cannot be approved on this host")
         const presented = getPresentedMission(deps, team.teamId, input.sessionID)
         const approved = approveMission(deps, team.teamId, input.sessionID, await availableModels(), presented)
+        await syncPermissions?.(approved.teamId)
         if (!presented.approved) {
           void classifyBoardTasks(deps, team.teamId).then(() => pumpTeam(deps, team.teamId)).catch(error => { log(`mission-policy:start-failed ${String(error)}`) })
           void pumpTeam(deps, team.teamId)

@@ -22,9 +22,10 @@ function computeStateMarker(deps: ToolDeps, teamId: string): number {
        SELECT MAX(time_updated) as x FROM team_member WHERE team_id = ?
        UNION SELECT MAX(time_updated) FROM team_task WHERE team_id = ?
         UNION SELECT MAX(time_created) FROM team_message WHERE team_id = ?
-        UNION SELECT MAX(time_updated) FROM mission_policy WHERE team_id = ?
+         UNION SELECT MAX(time_updated) FROM mission_policy WHERE team_id = ?
+         UNION SELECT checked_at FROM supervisor_recovery_observation WHERE team_id = ?
      )`
-   ).get(teamId, teamId, teamId, teamId) as { marker: number | null } | null
+   ).get(teamId, teamId, teamId, teamId, teamId) as { marker: number | null } | null
   return row?.marker ?? 0
 }
 
@@ -73,6 +74,11 @@ export async function executeTeamStatus(
   lines.push(`Undelivered messages: ${undelivered.c}`)
   const explicitPolicy = missionPolicySummary(deps.db, teamInfo.teamId)
   if (explicitPolicy) lines.push(explicitPolicy)
+  const recovery = deps.db.query("SELECT checked_at, outcome, reason FROM supervisor_recovery_observation WHERE team_id = ?")
+    .get(teamInfo.teamId) as { checked_at: number; outcome: string; reason: string } | null
+  lines.push(recovery
+    ? `Supervisor recovery: ${recovery.outcome} (${recovery.reason}); last check ${new Date(recovery.checked_at).toISOString()}`
+    : "Supervisor recovery: no check recorded yet")
   const mission = deps.db.query("SELECT mission_mode, mission_state, classification_policy, classification_runtime FROM team WHERE id = ?").get(teamInfo.teamId) as { mission_mode: string; mission_state: string; classification_policy: string | null; classification_runtime: string | null }
   if (mission.classification_policy) {
     const policy = JSON.parse(mission.classification_policy) as { method: string; toolId: string; helperModel: string; generalModel?: string }

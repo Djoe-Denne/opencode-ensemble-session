@@ -401,6 +401,13 @@ export const MIGRATIONS: string[] = [
      time_created INTEGER NOT NULL
    );
    CREATE INDEX task_control_event_task_idx ON task_control_event(team_id, task_id, time_created);`,
+  // Migration 31: liveness decisions are separate from mission progress and wake deduplication.
+  `CREATE TABLE supervisor_recovery_observation (
+      team_id TEXT PRIMARY KEY REFERENCES team(id) ON DELETE CASCADE,
+      checked_at INTEGER NOT NULL,
+      outcome TEXT NOT NULL,
+      reason TEXT NOT NULL
+    );`,
 ]
 
 /**

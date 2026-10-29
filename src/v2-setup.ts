@@ -37,6 +37,7 @@ import type { MissionCommandHost } from "./mission-commands"
 import type { NativeMissionModel } from "./mission-native-models"
 import { nativeMissionModels } from "./mission-native-models"
 import { registerMissionCommands } from "./mission-commands"
+import { MissionPermissions } from "./mission-permissions"
 import { preparationContextText } from "./preparation-runtime"
 import { createPreparationPort } from "./v2-preparation"
 import { bundledSkillsDir, registerPluginSkills, type SkillDefinition } from "./plugin-skills"
@@ -342,7 +343,8 @@ export async function setupEnsemble(
     )
   })
 
-  await ctx.session.hook("context", (raw) => {
+  const missionPermissions = new MissionPermissions(db, ctx)
+  await ctx.session.hook("context", async (raw) => {
     const event = raw as unknown as {
       sessionID: string
       agent?: string
@@ -360,6 +362,7 @@ export async function setupEnsemble(
     const preparation = preparationContextText(db, event.sessionID)
     if (preparation) event.system.push({ type: "text", text: preparation })
     const teamInfo = findTeamBySession(db, registry, event.sessionID)
+    await missionPermissions.syncSession(teamInfo?.teamId, event.sessionID)
     if (!teamInfo) return
     const prompt =
       teamInfo.role === "lead"
@@ -427,6 +430,7 @@ export async function setupEnsemble(
     directory: ctx.location.directory,
     config,
     progressTracker,
+    syncMissionPermissions: (teamId, restore) => missionPermissions.syncTeam(teamId, restore),
     loadPreparationProfiles: () => loadPreparationProfiles(ctx.location.directory),
   }
   const listClassifiers = ctx.tool.list?.bind(ctx.tool)
@@ -440,7 +444,7 @@ export async function setupEnsemble(
     vlog("permission-diagnostics:catalogue-unavailable; incidents will retain tool names without namespace enrichment.")
   }
   const preparationPort = createPreparationPort(ctx, true, async () => deps.nativeModels ? await deps.nativeModels() : [], client.continuity)
-  const missionCommands = await registerMissionCommands(ctx, deps, deps.nativeModels, preparationPort)
+  const missionCommands = await registerMissionCommands(ctx, deps, deps.nativeModels, preparationPort, teamId => missionPermissions.syncTeam(teamId))
   // Self-register the shipped skills so instructions follow the running
   // revision even when an external skills pointer lags behind a deployment.
   try {

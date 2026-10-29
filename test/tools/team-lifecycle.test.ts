@@ -281,6 +281,17 @@ describe("team_cleanup", () => {
     insertTeam(deps.db, "t1", "my-team", "lead-sess")
   })
 
+  test("does not archive until native permission restoration succeeds", async () => {
+    const calls: unknown[] = []
+    deps.syncMissionPermissions = async (teamId, restore) => { calls.push([teamId, restore]); throw new Error("restore failed") }
+    await expect(executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, noopMerge, noopDelete, false)).rejects.toThrow("restore failed")
+    expect(deps.db.query("SELECT status FROM team WHERE id = 't1'").get()).toEqual({ status: "active" })
+    deps.syncMissionPermissions = async (teamId, restore) => { calls.push([teamId, restore]) }
+    await executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, noopMerge, noopDelete, false)
+    expect(calls).toEqual([["t1", true], ["t1", true]])
+    expect(deps.db.query("SELECT status FROM team WHERE id = 't1'").get()).toEqual({ status: "archived" })
+  })
+
   test("archives team when all members are shutdown", async () => {
     insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
     deps.registry.register("t1", "alice", "sess-alice")

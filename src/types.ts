@@ -11,6 +11,8 @@ import type { BusinessProfilesConfig } from "./business-profiles"
  * This avoids global state and makes tools testable with mocks.
  */
 export interface ToolDeps {
+  /** Reconcile native session access after mission lifecycle transitions (V2). */
+  syncMissionPermissions?: (teamId: string, restore?: boolean) => Promise<void>
   db: Database
   registry: MemberRegistry
   tracker: DescendantTracker
