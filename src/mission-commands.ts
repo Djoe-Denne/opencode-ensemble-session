@@ -14,6 +14,7 @@ import { missionReportingInstructions } from "./mission-reporting"
 import { dirname, join } from "node:path"
 import { executionStarts, planningCatalogue } from "./execution-policy"
 import { PreparationAdmissionError } from "./preparation-admission"
+import { closeMission } from "./mission-close"
 import { executePreparation, PREPARATION_SESSION_TITLE, preparationSessionReference, type PreparationPort, type PreparationRunResult, type PreparationRequest } from "./preparation-runtime"
 
 const QA_CONFIG_GUIDANCE = 'Discuss mission QA interactively: light (targeted checks), proportionate (risk-based checks; default), or reinforced (explicit verification plan and independent review). Offer the current/default choice for confirmation, not a new questionnaire per task. Ask only for consequential commands and acceptance criteria. Persist corrections in verification: { level, commands?, acceptance? } before presenting config again. Project safety/mandatory rules cannot be silently waived; surface conflicts for explicit arbitration. Do not impose a fixed QA agent pipeline.'
@@ -21,7 +22,7 @@ const AUTONOMY_CONFIG_GUIDANCE = 'When the user requests long_run, persist their
 
 /** A generic mission command; project workflows remain in project instructions. */
 export interface MissionCommand {
-  action: "prepare" | "config" | "start"
+  action: "prepare" | "config" | "start" | "close"
   text: string
   preparation?: Omit<PreparationRequest, "text">
 }
@@ -68,7 +69,9 @@ function parsePrepareRequest(text: string): MissionCommand {
 /** Parse the single command namespace without interpreting user preferences. */
 export function parseMissionCommand(input: string): MissionCommand {
   const text = input.trim()
-  if (!text) throw new Error("Provide a mission objective, config, or start")
+  if (!text) throw new Error("Provide a mission objective, config, start, or close")
+  if (text === "close") return { action: "close", text: "" }
+  if (/^close\s/.test(text)) throw new Error("close accepts no extra arguments; it preserves resources and requires completed tasks and stopped members")
   if (text === "start") return { action: "start", text: "" }
   if (/^start\s/.test(text)) throw new Error("start accepts no extra arguments; configure the proposal first")
   if (text === "config") return { action: "config", text: "" }
@@ -272,10 +275,17 @@ export async function registerMissionCommands(host: MissionCommandHost, deps: To
   return host.command.transform(editor => {
     editor.add({
       name: "ensemble-mission",
-      description: "Prepare a mission, configure providers/models in chat, then explicitly approve with start.",
+      description: "Prepare/configure a mission, approve with start, or close completed work without deleting resources.",
       execute: async input => {
         checkToolIsolation(deps.registry, deps.tracker, "team_create", input.sessionID, deps.db)
         const command = parseMissionCommand(input.prompt.text)
+        if (command.action === "close") {
+          const closed = await closeMission(deps, input.sessionID)
+          await host.session.prompt({ ...input.prompt, sessionID: input.sessionID,
+            delivery: input.delivery, resume: false,
+            text: `Mission ${closed.alreadyClosed ? "already closed" : "closed"}: archived without deleting files, worktrees, branches or history. No tasks cancelled and no worker aborted. Native permission restoration verified where supported.` })
+          return
+        }
         if (command.action === "prepare" && command.preparation) {
           await deliverPreparation(host, deps, input, command, preparation)
           return

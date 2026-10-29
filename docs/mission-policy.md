@@ -24,6 +24,24 @@ On V2 hosts exposing the public command API:
 /ensemble-mission start
 ```
 
+After accepting all work and stopping every member, the lead can run:
+
+```text
+/ensemble-mission close
+```
+
+This closes the mission by archiving its team **without deleting resources**:
+dirty worktrees, checkout and preserved branches, files, messages, task/result
+rows and approved policy revisions are retained. No worker is aborted, no task
+is implicitly cancelled and no branch is merged. The existing mission safety
+state is preserved; archived teams are excluded from supervisor recovery.
+Unfinished/unaccepted tasks, pending admissions, active members/helpers,
+running preparation, unread results or unverified native worker idleness block
+closure. The executing lead is not treated as worker activity. Repeated close
+is idempotent and can reconcile failed restoration of owned native permission
+overrides. Cleanup and purge remain separate explicit operations with their
+existing safeguards. Closing does not authorize a new mission or policy.
+
 The first command prepares a team and a draft, without starting workers. `config`
 opens a single discussion for provider restrictions, model choices, ordered
 alternatives and evaluation criteria. The supervisor edits the draft in response

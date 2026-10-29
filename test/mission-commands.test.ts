@@ -55,9 +55,31 @@ describe("mission command parsing", () => {
     expect(() => parseMissionCommand(" ")).toThrow("objective")
     expect(() => parseMissionCommand("start ignore the proposed policy")).toThrow("arguments")
   })
+
+  test("parses close as a terminal command, never a new objective", () => {
+    expect(parseMissionCommand(" close ")).toEqual({ action: "close", text: "" })
+    expect(() => parseMissionCommand("close delete worktrees")).toThrow("arguments")
+  })
 })
 
 describe("native mission command", () => {
+  test("closes through the native command and retries without creating a mission or starting work", async () => {
+    const f = commandFixture()
+    await registerMissionCommands(f.host, f.deps, f.models)
+    await f.invoke("Deliver a bounded change")
+    await f.invoke("start")
+    const revisions = f.deps.db.query("SELECT * FROM mission_policy_revision").all()
+    await f.invoke("close")
+    expect(f.deps.db.query("SELECT status FROM team").get()).toEqual({ status: "archived" })
+    expect(f.prompts.at(-1)).toMatchObject({ resume: false, sessionID: "lead" })
+    expect((f.prompts.at(-1) as { text: string }).text).toContain("without deleting")
+    await f.invoke("close")
+    expect((f.prompts.at(-1) as { text: string }).text).toContain("already closed")
+    expect(f.deps.db.query("SELECT COUNT(*) AS count FROM team").get()).toEqual({ count: 1 })
+    expect(f.deps.db.query("SELECT * FROM mission_policy_revision").all()).toEqual(revisions)
+    expect(f.deps.client.calls.some(call => call.method === "session.create" || call.method === "session.abort")).toBe(false)
+  })
+
   test("synchronizes native access after approval and before execution delivery", async () => {
     const f = commandFixture()
     let synchronized = false
