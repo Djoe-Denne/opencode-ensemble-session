@@ -1,4 +1,7 @@
 import type { ToolDeps } from "../types"
+import { findTeamBySession } from "../types"
+import { retireMemberWorktree } from "../member-worktree-retirement"
+import { retirementDiagnostic } from "../worktree-retirement"
 import { requireLead, requireCanPurgeArchivedTeams, checkWorktreeDirty } from "./shared"
 import type { IsDirtyFn } from "./shared"
 import { spawnFailures } from "./team-spawn"
@@ -459,6 +462,11 @@ export async function executeTeamCleanup(
     return `Permanently deleted ${targets.length} ${noun}: ${targets.map(target => target.name).join(", ")}.`
   }
 
+  if (!findTeamBySession(deps.db, deps.registry, sessionId)) {
+    const archived = deps.db.query("SELECT name FROM team WHERE lead_session_id = ? AND project_id = ? AND status = 'archived' ORDER BY time_updated DESC LIMIT 1")
+      .get(sessionId, deps.directory) as { name: string } | null
+    if (archived) return `Team "${archived.name}" is already archived. No resources were changed.`
+  }
   const teamInfo = requireLead(deps, sessionId)
 
   const members = deps.db.query("SELECT name, session_id, status, worktree_dir, worktree_branch, checkout_branch, preserved_branch, workspace_id, merge_applied FROM team_member WHERE team_id = ?")
@@ -559,14 +567,21 @@ export async function executeTeamCleanup(
       try {
         await deps.client.workspace.remove({ id: member.workspace_id })
         deps.db.run("UPDATE team_member SET workspace_id = NULL WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
-      } catch { /* best effort */ }
+      } catch (error) {
+        const detail = retirementDiagnostic(error, member.name, "workspace-release")
+        log(detail)
+        cleanupWarnings.push(detail)
+        continue
+      }
     }
     if (member.worktree_dir) {
       try {
-        await deps.client.worktree.remove({ worktreeRemoveInput: { directory: member.worktree_dir } })
+        await retireMemberWorktree(deps, teamInfo.teamId, member.name, member)
         deps.db.run("UPDATE team_member SET worktree_dir = NULL WHERE team_id = ? AND name = ?", [teamInfo.teamId, member.name])
-      } catch {
-        cleanupWarnings.push(`${member.name}: could not remove worktree; branches retained`)
+      } catch (error) {
+        const detail = retirementDiagnostic(error, member.name, "worktree-retire")
+        log(detail)
+        cleanupWarnings.push(`${member.name}: could not remove worktree; branches retained. ${detail}`)
         continue
       }
     }

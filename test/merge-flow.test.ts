@@ -296,6 +296,26 @@ describe("team_merge", () => {
     expect(row.preserved_branch).not.toBeNull()
   })
 
+  test("finishMerge retains verified retirement failures and retries without another squash merge", async () => {
+    await executeTeamCreate(deps, { name: "verified-retirement" }, lead)
+    await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "task" }, lead)
+    await executeTeamShutdown(deps, { member: "alice" }, lead, undefined, noopPreserve)
+    let merges = 0
+    let retirements = 0
+    const merge: MergeBranchFn = async () => { merges++; return { ok: true } }
+    deps.client.worktree.retire = async () => { retirements++; throw Object.assign(new Error("native registration remains"), { code: "EBUSY" }) }
+    const pending = await executeTeamMerge(deps, { member: "alice" }, lead, merge, noopDelete, noopOverlap)
+    expect(pending).toContain("cleanup pending")
+    expect(pending).toContain("EBUSY")
+    expect(pending).toContain("worktree-retire")
+    expect(deps.db.query("SELECT merge_applied FROM team_member WHERE name = 'alice'").get()).toEqual({ merge_applied: 1 })
+    deps.client.worktree.retire = async () => { retirements++ }
+    const done = await executeTeamMerge(deps, { member: "alice" }, lead, merge, noopDelete, noopOverlap)
+    expect(done).not.toContain("cleanup pending")
+    expect(merges).toBe(1)
+    expect(retirements).toBe(2)
+  })
+
   test("retries a failed safety-ref deletion without refreshing a released checkout", async () => {
     await executeTeamCreate(deps, { name: "release-partial" }, lead)
     await executeTeamSpawn(deps, { name: "alice", agent: "build", prompt: "task" }, lead)

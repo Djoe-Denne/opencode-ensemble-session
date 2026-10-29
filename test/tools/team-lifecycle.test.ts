@@ -403,6 +403,32 @@ describe("team_cleanup", () => {
     expect(row.worktree_branch).toBe("ensemble-my-team-alice")
   })
 
+  test("verified retirement and partial branch deletion retry without another merge or worktree removal", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
+    deps.db.run("UPDATE team_member SET worktree_dir = '/owned/checkout', checkout_branch = 'checkout', worktree_branch = 'checkout', preserved_branch = 'safety', merge_applied = 1 WHERE name = 'alice'")
+    let retirementCalls = 0
+    let merges = 0
+    deps.client.worktree.retire = async () => { retirementCalls++; throw Object.assign(new Error("native registration remains token=hidden"), { code: "EBUSY" }) }
+    const merge: MergeBranchFn = async () => { merges++; return { ok: true } }
+    const failed = await executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, merge, noopDelete)
+    expect(failed).toContain("cleanup pending")
+    expect(failed).toContain("EBUSY")
+    expect(failed).not.toContain("hidden")
+    expect(deps.db.query("SELECT worktree_dir FROM team_member WHERE name = 'alice'").get()).toEqual({ worktree_dir: "/owned/checkout" })
+    deps.client.worktree.retire = async () => { retirementCalls++ }
+    const partial = await executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, merge, async branch => branch !== "safety")
+    expect(partial).toContain("cleanup pending")
+    expect(deps.db.query("SELECT worktree_dir, checkout_branch, preserved_branch FROM team_member WHERE name = 'alice'").get()).toEqual({ worktree_dir: null, checkout_branch: null, preserved_branch: "safety" })
+    const done = await executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, merge, noopDelete)
+    expect(done).toContain("cleaned up")
+    expect(retirementCalls).toBe(2)
+    expect(merges).toBe(0)
+    expect(deps.client.calls.filter(call => call.method === "worktree.remove")).toHaveLength(0)
+    const archived = deps.db.query("SELECT time_updated FROM team WHERE id = 't1'").get()
+    expect(await executeTeamCleanup(deps, { force: false }, "lead-sess")).toContain("already archived")
+    expect(deps.db.query("SELECT time_updated FROM team WHERE id = 't1'").get()).toEqual(archived)
+  })
+
   test("cleanup with no worktrees does not mention branches", async () => {
     insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
     deps.registry.register("t1", "alice", "sess-alice")
@@ -436,6 +462,17 @@ describe("team_cleanup", () => {
     expect((wsRemoveCalls[0]!.args[0] as { id: string }).id).toBe("ws-alice-123")
   })
 
+  test("failed workspace release retains subsequent worktree and branch resources", async () => {
+    insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
+    deps.db.run("UPDATE team_member SET workspace_id = 'workspace', worktree_dir = '/owned/tree' WHERE name = 'alice'")
+    deps.client.workspace.remove = async () => { throw Object.assign(new Error("workspace busy"), { code: "EBUSY" }) }
+    const result = await executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, noopMerge, noopDelete, false)
+    expect(result).toContain("cleanup pending")
+    expect(result).toContain("workspace-release")
+    expect(deps.client.calls.filter(call => call.method === "worktree.remove")).toHaveLength(0)
+    expect(deps.db.query("SELECT workspace_id, worktree_dir FROM team_member WHERE name = 'alice'").get()).toEqual({ workspace_id: "workspace", worktree_dir: "/owned/tree" })
+  })
+
   test("nulls workspace_id in DB after successful workspace removal", async () => {
     insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
     deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ?, workspace_id = ? WHERE name = 'alice'",
@@ -448,7 +485,7 @@ describe("team_cleanup", () => {
     expect(row.workspace_id).toBeNull()
   })
 
-  test("cleanup continues if workspace.remove fails", async () => {
+  test("cleanup retains an unverified workspace-gone error instead of archiving", async () => {
     insertMember(deps.db, "t1", "alice", "sess-alice", "shutdown", "idle")
     deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ?, workspace_id = ? WHERE name = 'alice'",
       ["/tmp/worktree-alice", "ensemble-my-team-alice", "ws-alice-123"])
@@ -457,7 +494,9 @@ describe("team_cleanup", () => {
     deps.client.workspace.remove = async () => { throw new Error("workspace gone") }
 
     const result = await executeTeamCleanup(deps, { force: false }, "lead-sess", undefined, noopMerge, noopDelete, false)
-    expect(result).toContain("cleaned up")
+    expect(result).toContain("cleanup pending")
+    expect(result).toContain("workspace gone")
+    expect(deps.db.query("SELECT status FROM team WHERE id = 't1'").get()).toEqual({ status: "active" })
   })
 
   test("cleanup lists multiple branches when multiple members have worktrees", async () => {

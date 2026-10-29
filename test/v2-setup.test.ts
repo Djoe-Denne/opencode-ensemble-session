@@ -76,6 +76,8 @@ function seedLeadAndMember(handle: Awaited<ReturnType<typeof setupEnsemble>>) { 
     ["team1", "alice", "ses_alice", now, now],
   )
   handle.registry.register("team1", "alice", "ses_alice")
+  handle.db.run("INSERT OR IGNORE INTO project (id, name, path, time_created, time_updated) VALUES ('/tmp/v2-setup-test', 'fixture', '/tmp/v2-setup-test', 1, 1)")
+  handle.db.run("UPDATE team SET project_id = '/tmp/v2-setup-test' WHERE id = 'team1'")
 }
 
 describe("v2-setup (issue #36)", () => {
@@ -94,7 +96,7 @@ describe("v2-setup (issue #36)", () => {
     const handle = await setupEnsemble(f.ctx, { dbPath: ":memory:", dashboardPort: 0 })
     try {
       seedLeadAndMember(handle)
-      handle.db.run("INSERT INTO project (id, name, path, time_created, time_updated) VALUES (?, 'fixture', ?, 1, 1)", [f.ctx.location.directory, f.ctx.location.directory])
+      handle.db.run("INSERT OR IGNORE INTO project (id, name, path, time_created, time_updated) VALUES (?, 'fixture', ?, 1, 1)", [f.ctx.location.directory, f.ctx.location.directory])
       handle.db.run("UPDATE team SET project_id = ? WHERE id = 'team1'", [f.ctx.location.directory])
       const deps = setupDeps()
       deps.config = { ...deps.config, modelRouting: { ...deps.config.modelRouting, models: [{ id: "fixture/worker", intelligenceScore: 60, averageCostPerTask: 1, available: true }] } }
@@ -163,7 +165,7 @@ describe("v2-setup (issue #36)", () => {
     const handle = await setupEnsemble(f.ctx, { dbPath: ":memory:", dashboardPort: 0 })
     try {
       seedLeadAndMember(handle)
-      handle.db.run("INSERT INTO project (id, name, path, time_created, time_updated) VALUES (?, 'Recovery fixture', ?, 1, 1)", [f.ctx.location.directory, f.ctx.location.directory])
+      handle.db.run("INSERT OR IGNORE INTO project (id, name, path, time_created, time_updated) VALUES (?, 'Recovery fixture', ?, 1, 1)", [f.ctx.location.directory, f.ctx.location.directory])
       handle.db.run("UPDATE team SET project_id = ?, time_updated = 1", [f.ctx.location.directory])
       handle.db.run("UPDATE team_member SET time_updated = 1")
       handle.db.run("INSERT INTO team_task (id, team_id, content, status, priority, time_created, time_updated) VALUES ('stranded', 'team1', 'Resume work', 'pending', 'medium', 1, 1)")
@@ -307,7 +309,7 @@ describe("v2-setup (issue #36)", () => {
     await handle.dispose()
   })
 
-  test("restart retries a lost lead wake without duplicating a durable candidate or notification", async () => {
+  test.each(["lost-wake", "candidate-only", "worktree-context"])("restart retries %s without duplicating a durable candidate or notification", async scenario => {
     const { join } = await import("node:path")
     const { tmpdir } = await import("node:os")
     const { rm } = await import("node:fs/promises")
@@ -319,9 +321,11 @@ describe("v2-setup (issue #36)", () => {
     seedLeadAndMember(first)
     first.db.run("UPDATE team_member SET report_mode = 'final_response'")
     await first.dispatch({ type: "session.execution.succeeded", data: { sessionID: "ses_alice" } })
+    if (scenario === "candidate-only") first.db.run("UPDATE team_message SET read = 1, delivered = 1")
     await first.dispose()
     first.db.close()
     const next = mockSetupCtx()
+    if (scenario === "worktree-context") Object.assign(next.ctx.location, { directory: "/tmp/lead-worktree", project: { id: "native-project", canonical: "/tmp/v2-setup-test" } })
     const wakes: Record<string, unknown>[] = []
     let contextInstalledAtWake = false
     next.ctx.session.synthetic = async input => {
@@ -340,6 +344,36 @@ describe("v2-setup (issue #36)", () => {
       second.db.close()
       await rm(dbPath, { force: true })
     }
+  })
+
+  test.each(["read", "superseded", "other-project"])("restart does not remind about %s results with undelivered acknowledgements", async scenario => {
+    const dbPath = join(tmpdir(), `ensemble-read-report-${crypto.randomUUID()}.db`)
+    const f = mockSetupCtx()
+    f.ctx.session.context = async () => [{ type: "assistant", id: "read-final", finish: "stop", time: { created: Date.now() + 1, completed: Date.now() + 2 }, content: [{ type: "text", text: "Reviewed candidate" }] }]
+    f.ctx.session.synthetic = async () => { throw new Error("lost wake") }
+    const first = await setupEnsemble(f.ctx, { dbPath, dashboardPort: 0 })
+    seedLeadAndMember(first)
+    first.db.run("UPDATE team_member SET report_mode = 'final_response'")
+    await first.dispatch({ type: "session.execution.succeeded", data: { sessionID: "ses_alice" } })
+    const { executeTeamResults } = await import("../src/tools/team-results")
+    const deps = { ...setupDeps(), db: first.db, registry: first.registry }
+    expect(await executeTeamResults(deps, {}, "ses_lead")).toContain("Reviewed candidate")
+    expect(await executeTeamResults(deps, {}, "ses_lead")).toBe("No unread messages.")
+    expect(first.db.query("SELECT delivered, read FROM team_message").get()).toMatchObject({ delivered: 0, read: 1 })
+    if (scenario === "superseded") first.db.run("UPDATE member_result SET read = 0, superseded = 1")
+    if (scenario === "other-project") {
+      first.db.run("UPDATE member_result SET read = 0")
+      first.db.run("UPDATE team SET project_id = 'default'")
+    }
+    await first.dispose()
+    first.db.close()
+    const next = mockSetupCtx()
+    const wakes: Record<string, unknown>[] = []
+    next.ctx.session.synthetic = async input => { wakes.push(input); return {} }
+    const second = await setupEnsemble(next.ctx, { dbPath, dashboardPort: 0 })
+    try {
+      expect(wakes.filter(wake => JSON.stringify(wake).includes("Undelivered team reports"))).toHaveLength(0)
+    } finally { await second.dispose(); second.db.close(); rmSync(dbPath, { force: true }) }
   })
 
   test("registers and disposes the generic mission command through the public host API", async () => {

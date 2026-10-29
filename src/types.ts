@@ -5,6 +5,7 @@ import type { ProgressTracker } from "./progress"
 import type { ClassificationPort } from "./mission-classification"
 import type { MissionPolicyModel } from "./mission-model-policy"
 import type { BusinessProfilesConfig } from "./business-profiles"
+import type { WorktreeRetirementRequest } from "./v2-worktree-retirement"
 
 /**
  * Shared dependencies injected into every tool's execute function.
@@ -105,6 +106,8 @@ export interface PluginClient {
     selectSession(options: { sessionID?: string }): Promise<unknown>
   }
   worktree: {
+    /** V2 verified Git/native/path retirement; ordinary remove remains for rollback/V1. */
+    retire?(input: WorktreeRetirementRequest): Promise<void>
     create(options: { worktreeCreateInput?: { name?: string; startCommand?: string } }): Promise<{ data?: { name: string; branch: string; directory: string } }>
     remove(options: { worktreeRemoveInput?: { directory: string } }): Promise<unknown>
     list(): Promise<{ data?: Array<{ name: string; branch: string; directory: string }> }>

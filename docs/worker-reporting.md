@@ -101,6 +101,12 @@ candidate recovery, subject to the message metadata exposed by its SDK.
 
 ## Supervisor liveness safety check
 
+Startup report reminders use unread, reviewable evidence, not delivery flags
+alone. An unread nonsuperseded native candidate can justify recovery even when
+its notification was acknowledged; an already-read message with a lost delivery
+acknowledgement cannot. Reminders are scoped to the project and to the team that
+`team_results` resolves for the lead. These are separate from liveness recovery.
+
 While the plugin is loaded, an internal timer checks each project's active
 missions every **ten minutes**. No external cron or OS scheduled task is needed.
 This is a conditional recovery backstop, not a periodic task reminder to workers

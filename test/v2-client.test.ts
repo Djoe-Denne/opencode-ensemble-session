@@ -81,6 +81,20 @@ function mockGit(map: Record<string, string | null>) {
 }
 
 describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
+  test("verified member retirement carries native project identity to the checked teardown adapter", async () => {
+    const { ctx } = mockCtx()
+    const host = { ...ctx, location: { directory: "/canonical", project: { id: "native-project" } } }
+    const request = { directory: "/owned/ensemble-worker", canonicalDirectory: "/canonical", expectedName: "ensemble-worker", checkoutBranch: "checkout", preservedBranch: "safety" }
+    let called = false
+    const client = createV2Client(host, { retireWorktree: async (native, project, input) => {
+      called = true
+      expect(native).toBe(ctx.worktree)
+      expect(project).toBe("native-project")
+      expect(input).toEqual(request)
+    } })
+    await client.worktree.retire?.(request)
+    expect(called).toBe(true)
+  })
   test("reads activity through the authenticated same-process public API when the plugin domain omits active", async () => {
     const { ctx } = mockCtx()
     const host: V2Context = ctx

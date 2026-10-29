@@ -5,6 +5,8 @@ import { mergeBranch, deleteBranch, getOverlappingFiles, preserveBranch } from "
 import type { MergeBranchFn, DeleteBranchFn, OverlapCheckFn, PreserveBranchFn } from "./merge-helper"
 import { log } from "../log"
 import { branchToMerge, liveCheckoutBranch } from "../worktree-state"
+import { retireMemberWorktree } from "../member-worktree-retirement"
+import { retirementDiagnostic } from "../worktree-retirement"
 
 interface MergeMember {
   status: string
@@ -116,10 +118,12 @@ async function finishMerge(deps: ToolDeps, teamId: string, memberName: string, m
   // host teardown and local/remote checkout deletion have both succeeded.
   if (member.worktree_dir) {
     try {
-      await deps.client.worktree.remove({ worktreeRemoveInput: { directory: member.worktree_dir } })
+      await retireMemberWorktree(deps, teamId, memberName, member)
       deps.db.run("UPDATE team_member SET worktree_dir = NULL WHERE team_id = ? AND name = ?", [teamId, memberName])
-    } catch {
-      return `Merged ${memberName}'s changes (unstaged); cleanup pending: could not remove their worktree. Branches retained; retry team_merge.`
+    } catch (error) {
+      const detail = retirementDiagnostic(error, memberName, "worktree-retire")
+      log(detail)
+      return `Merged ${memberName}'s changes (unstaged); cleanup pending: could not remove their worktree. Branches retained; retry team_merge.\n${detail}`
     }
   }
   if (source && source !== branch && !(await delBranch(source, deps.directory, branch))) {

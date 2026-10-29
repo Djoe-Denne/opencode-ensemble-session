@@ -8,6 +8,7 @@ import { createV2Client, type V2Context } from "../src/v2-client"
 import { executeTeamMerge } from "../src/tools/team-merge"
 import { executeTeamCleanup } from "../src/tools/team-cleanup"
 import { setupDeps, insertTeam, insertMember } from "./helpers"
+import { worktreeSlug } from "../src/worktree-guard"
 
 let root: string
 let repo: string
@@ -116,24 +117,27 @@ test("a remote rejection keeps the local branch and a later retry completes dele
 })
 
 test("native detached creation → agent commit → supervisor merge → local/remote branch cleanup", async () => {
-  const directory = join(root, "worker")
+  const parent = join(root, "opencode", "worktree", "fixture")
+  mkdirSync(parent, { recursive: true })
+  const directory = join(parent, worktreeSlug(repo, "t1", "alice"))
   const remote = join(root, "remote.git")
   git(repo, "init", "--bare", remote)
   git(repo, "remote", "add", "origin", remote)
+  let registered = true
   const adapter = createV2Client({
-    location: { directory: repo },
+    location: { directory: repo, project: { id: "native-fixture" } },
     session: {} as V2Context["session"],
     worktree: {
       create: async () => {
         git(repo, "worktree", "add", "--detach", directory, "HEAD")
         return { directory }
       },
-      remove: async () => { git(repo, "worktree", "remove", directory) },
-      list: async () => [],
+      remove: async () => { git(repo, "worktree", "remove", directory); registered = false },
+      list: async () => registered ? [{ directory }] : [],
       refresh: async () => undefined,
     },
   })
-  const worktree = (await adapter.worktree.create({ worktreeCreateInput: { name: "ensemble-integration" } })).data!
+  const worktree = (await adapter.worktree.create({ worktreeCreateInput: { name: worktreeSlug(repo, "t1", "alice") } })).data!
   writeFileSync(join(directory, "worker.txt"), "agent contribution\n")
   git(directory, "add", "worker.txt")
   git(directory, "commit", "-m", "agent work")
@@ -145,6 +149,8 @@ test("native detached creation → agent commit → supervisor merge → local/r
   deps.preserveBranch = preserveBranch
   deps.client.worktree = adapter.worktree
   insertTeam(deps.db, "t1", "integration", "lead")
+  deps.db.run("INSERT INTO project (id, name, path, time_created, time_updated) VALUES (?, 'fixture', ?, 1, 1)", [repo, repo])
+  deps.db.run("UPDATE team SET project_id = ? WHERE id = 't1'", [repo])
   insertMember(deps.db, "t1", "alice", "worker-session", "shutdown", "completed")
   deps.db.run("UPDATE team_member SET worktree_dir = ?, worktree_branch = ?, checkout_branch = ?, preserved_branch = ? WHERE name = 'alice'", [directory, worktree.branch, worktree.branch, safety])
   try {

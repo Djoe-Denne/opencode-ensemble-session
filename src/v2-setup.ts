@@ -44,7 +44,7 @@ import { bundledSkillsDir, registerPluginSkills, type SkillDefinition } from "./
 
 /** V2 setup context subset (structural, mock-friendly). */
 export interface V2SetupContext {
-  location: { directory: string }
+  location: NonNullable<V2Context["location"]>
   options: Record<string, unknown>
   session: V2Context["session"] & {
     hook(name: string, cb: (event: never) => unknown): Promise<{ dispose(): Promise<void> }>
@@ -150,8 +150,11 @@ export async function setupEnsemble(
   const reportClient = createV2Client(ctx, continuityOptions)
   // Retry the wake, not the report insertion. The durable inbox is the outbox
   // backstop if a process dies after persisting a candidate but before delivery.
-  const pendingLeadInboxes = db.query(`SELECT DISTINCT t.lead_session_id FROM team t JOIN team_message m ON m.team_id = t.id
-    WHERE t.status = 'active' AND m.to_name = 'lead' AND m.delivered = 0`).all() as Array<{ lead_session_id: string }>
+  const pendingLeadInboxes = () => db.query(`SELECT t.id, t.lead_session_id FROM team t JOIN project p ON p.id = t.project_id
+    WHERE t.status = 'active' AND p.status = 'active' AND t.project_id IN (?, ?) AND (
+      EXISTS (SELECT 1 FROM team_message m WHERE m.team_id = t.id AND m.to_name = 'lead' AND m.delivered = 0 AND m.read = 0)
+      OR EXISTS (SELECT 1 FROM member_result r WHERE r.team_id = t.id AND r.read = 0 AND r.superseded = 0)
+    )`).all(ctx.location.directory, ctx.location.project?.canonical ?? ctx.location.directory) as Array<{ id: string; lead_session_id: string }>
 
   /** Send the idle-without-report nudge once per member. */
   const nudgeMember = (teamId: string, memberName: string, sessionId: string): void => {
@@ -464,9 +467,15 @@ export async function setupEnsemble(
       // Aborted on dispose or stream error — nothing to report.
     }
   })()
-  for (const team of pendingLeadInboxes) reportClient.session.promptAsync({ sessionID: team.lead_session_id, synthetic: true,
-    parts: [{ type: "text", text: "[System: Undelivered team reports await review; use team_results.]" }] })
-    .catch(error => vlog(`report:startup-wake-failed ${String(error)}`))
+  for (const team of pendingLeadInboxes()) {
+    // team_results resolves the current team, not an older active team sharing
+    // the same lead. Read/delivery acknowledgements are not unread reports.
+    const owner = findTeamBySession(db, registry, team.lead_session_id)
+    if (owner?.role !== "lead" || owner.teamId !== team.id) continue
+    reportClient.session.promptAsync({ sessionID: team.lead_session_id, synthetic: true,
+      parts: [{ type: "text", text: "[System: Undelivered team reports await review; use team_results.]" }] })
+      .catch(error => vlog(`report:startup-wake-failed ${String(error)}`))
+  }
   for (const member of silent) {
     if (!await recoverFinalResponse(db, reportClient, member.team_id, member.name)) nudgeMember(member.team_id, member.name, member.session_id)
   }

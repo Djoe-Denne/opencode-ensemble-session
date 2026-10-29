@@ -3,10 +3,11 @@ import { runCommand } from "./process"
 import { attachWorktreeBranch } from "./worktree-branches"
 import { createV2Continuity, type V2ContinuityOptions } from "./v2-continuity"
 import { discoverV2HttpBridge } from "./v2-http-bridge"
+import { retireV2Worktree } from "./v2-worktree-retirement"
 
 /** V2 plugin context subset Ensemble needs (structural, mock-friendly). */
 export interface V2Context {
-  location?: { directory: string; project?: { id: string } }
+  location?: { directory: string; project?: { id: string; canonical?: string } }
   session: {
     create(input: Record<string, unknown>): Promise<{ id: string }>
     prompt(input: Record<string, unknown>): Promise<unknown>
@@ -43,6 +44,8 @@ const DIR_WORKSPACE_PREFIX = "v2dir:"
 
 /** Injectable shell lookups (default to git; overridden in tests). */
 export interface V2ClientDeps extends V2ContinuityOptions {
+  /** Verified retirement seam; public native operations remain the default. */
+  retireWorktree?: typeof retireV2Worktree
   /** Current branch checked out in a directory, or null when unknown. */
   gitBranch?: (directory: string) => Promise<string | null>
   /** Worktree directory currently on a branch, or null when none. */
@@ -250,6 +253,7 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
         const directory = (options.worktreeRemoveInput as { directory: string }).directory
         return ctx.worktree.remove({ ...project, directory, force: false })
       },
+      retire: request => (deps.retireWorktree ?? retireV2Worktree)(ctx.worktree, ctx.location?.project?.id, request),
       list: async () => {
         const entries = await ctx.worktree.list(project)
         return {
