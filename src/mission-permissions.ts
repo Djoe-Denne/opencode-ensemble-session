@@ -79,8 +79,11 @@ export class MissionPermissions {
     } else if (delegated) {
       if (!this.host.agent?.get || typeof session.agent !== "string") throw new Error("Native worker profile permissions are unavailable")
       const directory = object(session.location)?.directory
-      const profile = object(await this.host.agent.get({ agentID: session.agent,
+      const response = object(await this.host.agent.get({ agentID: session.agent,
         ...(typeof directory === "string" ? { location: { directory } } : {}) }))
+      // AgentApi.get returns { location, data } on native V2 hosts; some
+      // adapters expose Agent.Info directly. Validate the effective rules either way.
+      const profile = object(response?.data) ?? response
       if (!Array.isArray(profile?.permissions)) throw new Error("Native worker profile permissions are unavailable")
       const allowQuestions = (rule: Rule): Rule => rule.effect === "ask" ? { ...rule, effect: "allow" } : rule
       // Do not propagate an inherited lead wildcard into a restricted worker.

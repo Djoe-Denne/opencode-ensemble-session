@@ -49,6 +49,28 @@ async function fixture() {
 }
 
 describe("native long-run mission permissions", () => {
+  test("reads effective worker permissions from the native agent response envelope", async () => {
+    const f = await fixture()
+    insertMember(f.deps.db, f.teamId, "reviewer", "worker")
+    f.sessions.set("worker", { agent: "reviewer", permissions: [], metadata: {}, location: { directory: f.deps.directory } })
+    f.host.agent!.get = async () => ({ location: { directory: f.deps.directory }, data: { id: "reviewer", permissions: f.profiles.get("reviewer") } })
+    f.edit("long_run"); f.approve()
+    await f.manager.syncTeam(f.teamId)
+    expect(f.sessions.get("worker")!.permissions).toContainEqual({ action: "*", resource: "*", effect: "deny" })
+    expect(f.sessions.get("worker")!.permissions).toContainEqual({ action: "read", resource: "*.env", effect: "allow" })
+    expect(f.sessions.get("worker")!.permissions).not.toContainEqual(full)
+  })
+
+  test("does not replace unavailable worker profile permissions with full access", async () => {
+    const f = await fixture()
+    insertMember(f.deps.db, f.teamId, "reviewer", "worker")
+    f.sessions.set("worker", { agent: "reviewer", permissions: [], metadata: {}, location: { directory: f.deps.directory } })
+    f.host.agent!.get = async () => ({ location: { directory: f.deps.directory }, data: { id: "reviewer" } })
+    f.edit("long_run"); f.approve()
+    await expect(f.manager.syncSession(f.teamId, "worker")).rejects.toThrow("profile permissions are unavailable")
+    expect(f.sessions.get("worker")!.permissions).toEqual([])
+  })
+
   test("inherited worker admission receives access after isolation, never during preparation", async () => {
     const f = await fixture()
     insertMember(f.deps.db, f.teamId, "worker", "worker")

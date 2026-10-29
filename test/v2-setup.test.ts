@@ -90,7 +90,7 @@ describe("v2-setup (issue #36)", () => {
       get: async (input: { sessionID: string }) => structuredClone(sessions.get(input.sessionID)),
       update: async (input: { sessionID: string }) => { updates.push(input.sessionID); Object.assign(sessions.get(input.sessionID)!, input) },
     })
-    Object.assign(f.ctx, { agent: { get: async () => ({ permissions: [{ action: "read", resource: "*", effect: "ask" }, { action: "edit", resource: "*", effect: "deny" }] }) } })
+    Object.assign(f.ctx, { agent: { get: async () => ({ location: f.ctx.location, data: { permissions: [{ action: "read", resource: "*", effect: "ask" }, { action: "edit", resource: "*", effect: "deny" }] } }) } })
     const handle = await setupEnsemble(f.ctx, { dbPath: ":memory:", dashboardPort: 0 })
     try {
       seedLeadAndMember(handle)
