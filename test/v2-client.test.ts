@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { createV2Client } from "../src/v2-client"
+import type { V2Context } from "../src/v2-client"
 
 /** Minimal mock of the V2 ctx domains Ensemble uses. Records calls. */
 function mockCtx() {
@@ -80,6 +81,38 @@ function mockGit(map: Record<string, string | null>) {
 }
 
 describe("v2-client adapter (issue #36, DRY: reuses all tool logic)", () => {
+  test("reads activity through the authenticated same-process public API when the plugin domain omits active", async () => {
+    const { ctx } = mockCtx()
+    const host: V2Context = ctx
+    delete host.session.active
+    const requests: string[] = []
+    const client = createV2Client(host, {
+      discoverBridge: async () => ({ apiUrl: "http://localhost:1234", authorization: "Bearer fixture" }),
+      fetch: (async (input, init) => {
+        const url = String(input)
+        requests.push(url)
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer fixture")
+        return Response.json(url.endsWith("/api/info") ? { pid: process.pid } : { data: { worker: { type: "running" } } })
+      }) as typeof fetch,
+    })
+    expect(await client.session.status()).toEqual({ data: { worker: { type: "busy" } } })
+    expect(requests).toEqual(["http://localhost:1234/api/info", "http://localhost:1234/api/session/active"])
+  })
+
+  test.each(["wrong-server", "malformed-activity", "http-error", "no-service"])("activity bridge fails closed for %s", async scenario => {
+    const { ctx } = mockCtx()
+    const host: V2Context = ctx
+    delete host.session.active
+    const client = createV2Client(host, {
+      discoverBridge: async () => scenario === "no-service" ? undefined : { apiUrl: "http://localhost:1234" },
+      fetch: (async input => {
+        if (String(input).endsWith("/api/info")) return Response.json({ pid: scenario === "wrong-server" ? process.pid + 1 : process.pid })
+        return scenario === "http-error" ? new Response("", { status: 503 }) : Response.json({ data: [] })
+      }) as typeof fetch,
+    })
+    await expect(client.session.status()).rejects.toThrow(/activity|same OpenCode process/)
+  })
+
   test("direct task claims can pin an exact native model/variant without enqueuing a new prompt", async () => {
     const { calls, ctx } = mockCtx()
     const client = createV2Client(ctx)

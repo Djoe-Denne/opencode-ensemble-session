@@ -2,6 +2,7 @@ import type { PluginClient } from "./types"
 import { runCommand } from "./process"
 import { attachWorktreeBranch } from "./worktree-branches"
 import { createV2Continuity, type V2ContinuityOptions } from "./v2-continuity"
+import { discoverV2HttpBridge } from "./v2-http-bridge"
 
 /** V2 plugin context subset Ensemble needs (structural, mock-friendly). */
 export interface V2Context {
@@ -14,7 +15,7 @@ export interface V2Context {
     interrupt(input: Record<string, unknown>): Promise<unknown>
     get(input: Record<string, unknown>): Promise<unknown>
     context(input: Record<string, unknown>): Promise<unknown[]>
-    active(): Promise<Record<string, { type: string }>>
+    active?(): Promise<Record<string, { type: string }>>
     synthetic(input: Record<string, unknown>): Promise<unknown>
     fork?(input: Record<string, unknown>): Promise<{ id: string }>
     move?(input: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<unknown>
@@ -171,7 +172,33 @@ export function createV2Client(ctx: V2Context, deps: V2ClientDeps = {}): PluginC
       }),
       abort: async (options) => ctx.session.interrupt({ sessionID: options.sessionID }),
       status: async () => {
-        const active = await ctx.session.active()
+        // The installed public Plugin.Context omits active(), although the
+        // same server exposes it through its authenticated public HTTP API.
+        const active = ctx.session.active ? await ctx.session.active() : await (async () => {
+          const bridge = deps.apiUrl
+            ? { apiUrl: deps.apiUrl, authorization: deps.authorization }
+            : await (deps.discoverBridge ?? discoverV2HttpBridge)()
+          if (!bridge) throw new Error("Native activity unavailable: shared service not discovered")
+          const authorization = deps.authorization ?? bridge.authorization
+          const get = async (route: string): Promise<unknown> => {
+            const response = await (deps.fetch ?? globalThis.fetch)(new URL(route, bridge.apiUrl), {
+              method: "GET", redirect: "error", signal: AbortSignal.timeout(10_000),
+              headers: authorization ? { authorization } : {},
+            })
+            if (!response.ok) throw new Error(`Native activity inspection failed (HTTP ${response.status})`)
+            return response.json()
+          }
+          const info = await get("/api/info")
+          if (!info || typeof info !== "object" || !("pid" in info) || info.pid !== process.pid) {
+            throw new Error("Native activity bridge must address the same OpenCode process")
+          }
+          const result = await get("/api/session/active")
+          return result && typeof result === "object" && "data" in result ? result.data : result
+        })()
+        if (!active || typeof active !== "object" || Array.isArray(active) || Object.values(active).some(value =>
+          !value || typeof value !== "object" || !("type" in value) || typeof value.type !== "string")) {
+          throw new Error("Malformed native activity response; idleness is not established")
+        }
         const data: Record<string, { type: string }> = {}
         for (const sessionID of Object.keys(active)) data[sessionID] = { type: "busy" }
         return { data }

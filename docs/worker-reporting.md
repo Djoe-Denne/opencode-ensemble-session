@@ -136,6 +136,12 @@ Archived teams/projects remain excluded. There is no separate terminal mission
 state in this schema: an active mission with a completed board is woken to verify
 closure, not to redo its completed tasks.
 
+Some V2 hosts expose activity only through the public HTTP API, not the plugin's
+session domain. In that case Ensemble discovers the authenticated shared service,
+verifies that `/api/info` identifies the same server process, then reads
+`/api/session/active`. An unavailable service, different process, HTTP failure or
+malformed response fails closed; none is interpreted as an empty active set.
+
 Immediately before waking, activity and admission are checked again. A concise
 diagnostic is saved to the lead's team inbox, then a persistent synthetic message
 wakes the idle lead to inspect missing reports and resume permitted coordination.
